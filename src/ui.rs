@@ -1,10 +1,13 @@
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, Mode};
 use crate::sidebar;
+use crate::theme::{ACCENT, BORDER, SIDEBAR_BG, TEXT, TEXT_DIM};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     sidebar::render(frame.buffer_mut(), app);
@@ -14,12 +17,106 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let screen = tab.screen();
     render_screen(frame.buffer_mut(), pane, screen);
 
-    if screen.scrollback() == 0 && !screen.hide_cursor() {
-        let (row, col) = screen.cursor_position();
-        if row < pane.height && col < pane.width {
-            frame.set_cursor_position(Position::new(pane.x + col, pane.y + row));
+    match app.mode {
+        Mode::Help => render_help(frame, app),
+        Mode::ConfirmQuit => render_confirm_quit(frame, app),
+        Mode::Normal | Mode::Tab => {
+            if screen.scrollback() == 0 && !screen.hide_cursor() {
+                let (row, col) = screen.cursor_position();
+                if row < pane.height && col < pane.width {
+                    frame.set_cursor_position(Position::new(pane.x + col, pane.y + row));
+                }
+            }
         }
     }
+}
+
+/// Every binding, grouped; `{p}` is replaced by the prefix label.
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    ("Tab mode — press {p}, then", &[
+        ("j k  ↓ ↑", "next / previous tab"),
+        ("1 … 9", "go to tab (9 = last)"),
+        ("Tab", "back to the previous tab"),
+        ("g G", "first / last tab"),
+        ("J K", "move tab down / up"),
+        ("t c", "new tab"),
+        ("x w", "close tab"),
+        ("b s", "collapse / expand sidebar"),
+        ("h l  ← →", "narrower / wider sidebar"),
+        ("{p}", "send {p} to the shell"),
+        ("q", "quit"),
+        ("Esc ⏎", "back to the terminal"),
+    ]),
+    ("Anywhere", &[
+        ("^PgDn ^PgUp", "next / previous tab"),
+        ("^⇧PgDn ^⇧PgUp", "move tab down / up"),
+        ("Alt 1 … 9", "go to tab"),
+    ]),
+    ("Mouse", &[
+        ("click / drag", "switch / reorder tabs"),
+        ("middle-click ×", "close tab"),
+        ("drag the divider", "resize the sidebar"),
+    ]),
+];
+
+fn render_help(frame: &mut Frame, app: &App) {
+    let prefix = app.config.prefix.label();
+    let key_width = 18;
+    let mut lines = Vec::new();
+    for (section, bindings) in HELP {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        let section = section.replace("{p}", &prefix);
+        lines.push(Line::styled(section, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
+        for (keys, action) in *bindings {
+            let keys = keys.replace("{p}", &prefix);
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {keys:<key_width$}"), Style::new().fg(TEXT)),
+                Span::styled(action.replace("{p}", &prefix), Style::new().fg(TEXT_DIM)),
+            ]));
+        }
+    }
+    let area = popup_area(frame.area(), 54, lines.len() as u16 + 2);
+    let block = popup_block(" sasha keys ");
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_confirm_quit(frame: &mut Frame, app: &App) {
+    let count = app.tabs.len();
+    let lines = vec![
+        Line::styled(format!("Close {count} tabs and quit?"), Style::new().fg(TEXT)),
+        Line::default(),
+        Line::from(vec![
+            Span::styled(" y ", Style::new().fg(SIDEBAR_BG).bg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" quit    ", Style::new().fg(TEXT_DIM)),
+            Span::styled(" n ", Style::new().fg(TEXT).bg(BORDER).add_modifier(Modifier::BOLD)),
+            Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+        ]),
+    ];
+    let area = popup_area(frame.area(), 34, lines.len() as u16 + 2);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(popup_block(" quit ")), area);
+}
+
+fn popup_block(title: &str) -> Block<'_> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(BORDER))
+        .title(Span::styled(title, Style::new().fg(TEXT).add_modifier(Modifier::BOLD)))
+        .style(Style::new().bg(SIDEBAR_BG).fg(TEXT))
+        .padding(ratatui::widgets::Padding::horizontal(1))
+}
+
+fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
+    let [area] = Layout::horizontal([Constraint::Length(width.min(area.width))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [area] = Layout::vertical([Constraint::Length(height.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    area
 }
 
 /// Copies the emulator's visible cells into the ratatui buffer.

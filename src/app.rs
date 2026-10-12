@@ -3,15 +3,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::cursor::SetCursorStyle;
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::DefaultTerminal;
 use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
+use crate::config::Config;
 use crate::input;
 use crate::sidebar::{self, Hit, Layout};
 use crate::tab::{Tab, TabId};
-use crate::ui;
+use crate::{theme, ui};
 
 /// Minimum time between two frames (~120 fps).
 const FRAME: Duration = Duration::from_millis(8);
@@ -27,6 +31,16 @@ pub enum AppEvent {
     Exited(TabId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Keys go to the shell.
+    Normal,
+    /// Entered with the prefix key: single keys manage tabs.
+    Tab,
+    Help,
+    ConfirmQuit,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
     Tab(usize),
@@ -34,8 +48,12 @@ enum Drag {
 }
 
 pub struct App {
+    pub(crate) config: Config,
+    pub(crate) mode: Mode,
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active: usize,
+    /// The tab that was active before the current one.
+    previous: Option<TabId>,
     pub(crate) layout: Layout,
     /// First visible row of the tab list.
     pub(crate) scroll: usize,
@@ -47,15 +65,19 @@ pub struct App {
     events_tx: Sender<AppEvent>,
     events: Receiver<AppEvent>,
     started: Instant,
+    cursor_style: u16,
     quit: bool,
 }
 
 impl App {
-    pub fn new(size: Size) -> Result<Self> {
+    pub fn new(config: Config, size: Size) -> Result<Self> {
         let (events_tx, events) = mpsc::channel();
         let mut app = Self {
+            config,
+            mode: Mode::Normal,
             tabs: Vec::new(),
             active: 0,
+            previous: None,
             layout: Layout::default(),
             scroll: 0,
             hover: None,
@@ -66,6 +88,7 @@ impl App {
             events_tx,
             events,
             started: Instant::now(),
+            cursor_style: 0,
             quit: false,
         };
         app.relayout(size);
@@ -98,14 +121,24 @@ impl App {
         self.drag == Some(Drag::Divider)
     }
 
-    /// Paint the active tab in the accent colour (a modal state is active).
+    /// Paint the active tab in the accent colour while keys drive the tabs.
     pub fn highlight_active(&self) -> bool {
-        false
+        self.mode == Mode::Tab
     }
 
+    /// Badge and hint text for the bottom of the sidebar.
     pub fn footer(&self) -> (Option<(&'static str, Color)>, String) {
-        let count = self.tabs.len();
-        (None, format!("{count} tab{}", if count == 1 { "" } else { "s" }))
+        let short = self.layout.collapsed;
+        let prefix = self.config.prefix.label();
+        match self.mode {
+            Mode::Normal => (None, format!("{prefix} tab keys · {prefix} ? help")),
+            Mode::Tab => (
+                Some((if short { "TAB" } else { "TABS" }, theme::ACCENT)),
+                "j/k move · t new · x close · ? help".to_owned(),
+            ),
+            Mode::Help => (Some(("?", theme::ACCENT)), "any key to close".to_owned()),
+            Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, theme::RED)), "y / n".to_owned()),
+        }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -158,6 +191,7 @@ impl App {
             if dirty && last_draw.elapsed() >= FRAME && !self.tabs.is_empty() {
                 self.relayout(terminal.size()?);
                 terminal.draw(|frame| ui::draw(frame, self))?;
+                self.sync_cursor_style()?;
                 last_draw = Instant::now();
                 dirty = false;
             }
@@ -174,6 +208,26 @@ impl App {
         for tab in &mut self.tabs {
             tab.resize(rows, cols);
         }
+    }
+
+    /// Mirrors the active program's cursor shape (e.g. vim's insert bar).
+    fn sync_cursor_style(&mut self) -> Result<()> {
+        let style = self.active_tab().map_or(0, Tab::cursor_style);
+        if style == self.cursor_style {
+            return Ok(());
+        }
+        self.cursor_style = style;
+        let style = match style {
+            1 => SetCursorStyle::BlinkingBlock,
+            2 => SetCursorStyle::SteadyBlock,
+            3 => SetCursorStyle::BlinkingUnderScore,
+            4 => SetCursorStyle::SteadyUnderScore,
+            5 => SetCursorStyle::BlinkingBar,
+            6 => SetCursorStyle::SteadyBar,
+            _ => SetCursorStyle::DefaultUserShape,
+        };
+        crossterm::execute!(std::io::stdout(), style)?;
+        Ok(())
     }
 
     fn pty_size(&self) -> (u16, u16) {
@@ -203,6 +257,11 @@ impl App {
         if index >= self.tabs.len() {
             return;
         }
+        if index != self.active
+            && let Some(current) = self.tabs.get(self.active)
+        {
+            self.previous = Some(current.id);
+        }
         self.active = index;
         let tab = &mut self.tabs[index];
         tab.unseen = false;
@@ -221,6 +280,53 @@ impl App {
         }
         if !self.tabs.is_empty() {
             self.activate(self.active);
+        }
+    }
+
+    /// Activates the tab `delta` steps away, wrapping around.
+    fn cycle(&mut self, delta: isize) {
+        let len = self.tabs.len() as isize;
+        if len > 0 {
+            self.activate((self.active as isize + delta).rem_euclid(len) as usize);
+        }
+    }
+
+    /// Chrome numbering: 1-8 pick a tab, 9 is always the last one.
+    fn jump(&mut self, digit: char) {
+        match digit {
+            '9' => self.activate(self.tabs.len().saturating_sub(1)),
+            '1'..='8' => self.activate(digit as usize - '1' as usize),
+            _ => {}
+        }
+    }
+
+    fn activate_previous(&mut self) {
+        if let Some(index) = self.tabs.iter().position(|t| Some(t.id) == self.previous) {
+            self.activate(index);
+        }
+    }
+
+    fn shift_active(&mut self, delta: isize) {
+        let to = self.active as isize + delta;
+        if (0..self.tabs.len() as isize).contains(&to) {
+            self.move_tab(self.active, to as usize);
+        }
+    }
+
+    fn resize_sidebar(&mut self, delta: i16) {
+        self.collapsed = false;
+        self.sidebar_width = self.sidebar_width.saturating_add_signed(delta).max(sidebar::MIN_WIDTH);
+        let area = self.layout.sidebar.union(self.layout.pane);
+        self.relayout(area.as_size());
+        // Layout clamps to the screen; keep the stored width in sync with it.
+        self.sidebar_width = self.layout.sidebar.width.max(sidebar::MIN_WIDTH);
+    }
+
+    fn request_quit(&mut self) {
+        if self.tabs.len() > 1 {
+            self.mode = Mode::ConfirmQuit;
+        } else {
+            self.quit = true;
         }
     }
 
@@ -274,6 +380,79 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        match self.mode {
+            Mode::Normal => self.normal_key(key),
+            Mode::Tab => self.tab_mode_key(key),
+            Mode::Help => self.mode = Mode::Normal,
+            Mode::ConfirmQuit => {
+                self.quit = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
+                self.mode = Mode::Normal;
+            }
+        }
+    }
+
+    fn normal_key(&mut self, key: KeyEvent) {
+        if self.config.prefix.matches(&key) {
+            self.mode = Mode::Tab;
+            return;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // Browser-style shortcuts that don't need the prefix.
+        match key.code {
+            KeyCode::PageDown if ctrl && shift => self.shift_active(1),
+            KeyCode::PageUp if ctrl && shift => self.shift_active(-1),
+            KeyCode::PageDown if ctrl => self.cycle(1),
+            KeyCode::PageUp if ctrl => self.cycle(-1),
+            KeyCode::Char(c @ '1'..='9') if alt && !ctrl => self.jump(c),
+            _ => self.send_key(key),
+        }
+    }
+
+    fn tab_mode_key(&mut self, key: KeyEvent) {
+        if self.config.prefix.matches(&key) {
+            // Prefix twice sends it through, like tmux.
+            let byte = self.config.prefix.byte();
+            if let Some(tab) = self.active_tab() {
+                tab.write([byte]);
+            }
+            self.mode = Mode::Normal;
+            return;
+        }
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('J') => self.shift_active(1),
+            KeyCode::Char('K') => self.shift_active(-1),
+            KeyCode::Down if shift => self.shift_active(1),
+            KeyCode::Up if shift => self.shift_active(-1),
+            KeyCode::Char('j' | 'n') | KeyCode::Down => self.cycle(1),
+            KeyCode::Char('k' | 'p') | KeyCode::Up => self.cycle(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.activate(0),
+            KeyCode::Char('G') | KeyCode::End => self.activate(self.tabs.len().saturating_sub(1)),
+            KeyCode::Char(c @ '1'..='9') => {
+                self.jump(c);
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Tab => {
+                self.activate_previous();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('t' | 'c') => {
+                let _ = self.new_tab();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('x' | 'w') => self.close_tab(self.active),
+            KeyCode::Char('b' | 's') => self.set_collapsed(!self.collapsed),
+            KeyCode::Char('h' | '<') | KeyCode::Left => self.resize_sidebar(-2),
+            KeyCode::Char('l' | '>') | KeyCode::Right => self.resize_sidebar(2),
+            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('q') => self.request_quit(),
+            _ => self.mode = Mode::Normal,
+        }
+    }
+
+    fn send_key(&mut self, key: KeyEvent) {
         let Some(tab) = self.active_tab_mut() else { return };
         let bytes = input::encode_key(&key, tab.screen().application_cursor());
         if !bytes.is_empty() {
@@ -308,6 +487,17 @@ impl App {
                 return;
             }
             _ => {}
+        }
+
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            match self.mode {
+                Mode::Help | Mode::ConfirmQuit => {
+                    self.mode = Mode::Normal;
+                    return;
+                }
+                Mode::Tab if hit == Some(Hit::Pane) => self.mode = Mode::Normal,
+                _ => {}
+            }
         }
 
         match (mouse.kind, hit) {

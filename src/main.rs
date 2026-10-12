@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod input;
 mod procinfo;
 mod sidebar;
@@ -21,6 +22,8 @@ use ratatui::DefaultTerminal;
 use ratatui::backend::CrosstermBackend;
 
 fn main() -> Result<()> {
+    let Some(config) = config::Config::from_args()? else { return Ok(()) };
+
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -28,7 +31,7 @@ fn main() -> Result<()> {
     }));
 
     let mut terminal = setup_terminal()?;
-    let result = app::App::new(terminal.size()?).and_then(|mut app| app.run(&mut terminal));
+    let result = app::App::new(config, terminal.size()?).and_then(|mut app| app.run(&mut terminal));
     restore_terminal();
     result
 }
