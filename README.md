@@ -10,6 +10,8 @@ workspace is a folder with its own tabs, and each tab is a real PTY running your
 Like tmux, the tabs live in a background server: close the window and they keep running, and
 run `sasha` again to get them back.
 
+![sasha in Terminal.app: workspaces on the far left, a tab group, and Claude Code running in the active tab](docs/screenshot.png)
+
 ```
 ▎ WD    ≡  web-dashboard          ⌕  │➜  web-dashboard git:(dev) yarn dev
         ───────────────────────────  │  VITE ready in 412 ms
