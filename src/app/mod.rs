@@ -1,5 +1,8 @@
 mod keys;
 mod mouse;
+mod panels;
+
+pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrPanel};
 
 use std::io;
 use std::os::unix::net::UnixStream;
@@ -15,6 +18,8 @@ use ratatui::style::Color;
 
 use crate::config::Config;
 use crate::awake::Awake;
+use crate::github::{FileDiff, Pr};
+use crate::ports::Port;
 use crate::layout::{self, Hit, Layout, ListItem, Row};
 use crate::links::{self, Link};
 use crate::protocol::{self, Hello};
@@ -47,6 +52,10 @@ pub enum AppEvent {
     Gone(ClientId),
     /// `sasha --kill-server`.
     Kill,
+    /// Background work for the panels finishing.
+    Prs(PathBuf, Result<Vec<Pr>, String>),
+    PrFiles(u64, Result<Vec<FileDiff>, String>),
+    Ports(Result<Vec<Port>, String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +74,8 @@ pub enum Mode {
     Workspaces,
     /// Putting the active tab into a tab group (query in `App::input`).
     Groups,
+    /// A panel over the pane: pull requests or ports (`App::panel`).
+    Panel,
     Help,
     ConfirmQuit,
 }
@@ -137,6 +148,8 @@ pub struct App {
     client: Option<Attached>,
     /// Set while sasha keeps the computer from sleeping.
     pub(crate) awake: Option<Awake>,
+    /// The panel shown in `Mode::Panel`.
+    pub(crate) panel: Option<Panel>,
     /// Whether the client's window has focus (when its terminal says).
     focused: bool,
     /// This server's `protocol::build_id`.
@@ -209,6 +222,7 @@ impl App {
             config,
             client: None,
             awake: None,
+            panel: None,
             focused: true,
             build: protocol::build_id(),
             attached_before: false,
@@ -447,6 +461,7 @@ impl App {
         self.mode = Mode::Normal;
         self.input.clear();
         self.renaming = Renaming::Tab;
+        self.panel = None;
         self.hover = None;
         self.drag = None;
         self.selection = None;
@@ -497,7 +512,7 @@ impl App {
     }
 
     /// Workspace and index of the tab with this id.
-    fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
+    pub(crate) fn find_tab(&self, id: TabId) -> Option<(usize, usize)> {
         self.workspaces
             .iter()
             .enumerate()
@@ -595,6 +610,10 @@ impl App {
                 "⏎ add tab · ^D ungroup".to_owned(),
             ),
             Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
+            Mode::Panel => match self.panel {
+                Some(Panel::Ports(_)) => (Some((if short { "PRT" } else { "PORTS" }, p.cyan)), "esc closes".to_owned()),
+                _ => (Some((if short { "PR" } else { "PULLS" }, p.purple)), "esc closes".to_owned()),
+            },
             Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, p.red)), "y / n".to_owned()),
         }
     }
@@ -1506,6 +1525,9 @@ impl App {
                 }
             }
             AppEvent::Kill => self.quit = true,
+            AppEvent::Prs(dir, prs) => self.prs_loaded(&dir, prs),
+            AppEvent::PrFiles(number, files) => self.pr_files_loaded(number, files),
+            AppEvent::Ports(ports) => self.ports_loaded(ports),
             AppEvent::Output(id, bytes) => self.handle_output(id, &bytes),
             AppEvent::Exited(id) => {
                 if let Some((w, t)) = self.find_tab(id) {

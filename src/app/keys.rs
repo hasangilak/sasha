@@ -17,6 +17,7 @@ impl App {
             Mode::Search => self.search_key(key),
             Mode::Workspaces => self.workspaces_key(key),
             Mode::Groups => self.groups_key(key),
+            Mode::Panel => self.panel_key(key),
             Mode::Help => self.mode = Mode::Normal,
             Mode::ConfirmQuit => {
                 self.mode = Mode::Normal;
@@ -116,6 +117,8 @@ impl App {
             KeyCode::Char('a') => self.cycle_activity_bar(),
             KeyCode::Char('o') => self.toggle_stacked(),
             KeyCode::Char('C') => self.toggle_awake(),
+            KeyCode::Char('P') => self.open_prs(),
+            KeyCode::Char('O') => self.open_ports(),
             KeyCode::Char('<') => self.resize_sidebar(-2),
             KeyCode::Char('>') => self.resize_sidebar(2),
             KeyCode::Char('[' | 'v') | KeyCode::PageUp => self.mode = Mode::Scroll,

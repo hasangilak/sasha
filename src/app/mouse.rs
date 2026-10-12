@@ -14,6 +14,21 @@ const WHEEL_LINES: usize = 3;
 impl App {
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
         let hit = self.layout.hit(mouse.column, mouse.row, self);
+        // A panel covers the pane: the wheel scrolls it, a click outside it
+        // closes it.
+        if self.mode == Mode::Panel {
+            match mouse.kind {
+                MouseEventKind::ScrollDown | MouseEventKind::ScrollUp if hit == Some(Hit::Pane) => {
+                    self.panel_wheel(mouse.kind == MouseEventKind::ScrollDown);
+                }
+                MouseEventKind::Down(_) if hit != Some(Hit::Pane) => {
+                    self.panel = None;
+                    self.mode = Mode::Normal;
+                }
+                _ => {}
+            }
+            return;
+        }
         self.hover = hit.filter(|h| *h != Hit::Pane);
         if hit != Some(Hit::Pane) {
             self.hover_link = None;

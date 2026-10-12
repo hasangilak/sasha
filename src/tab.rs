@@ -351,6 +351,10 @@ impl Tab {
             .or_else(|| worked.map(|w| format!("went quiet after {} of output", notify::duration(w))))
     }
 
+    pub fn shell_pid(&self) -> Option<i32> {
+        self.shell_pid
+    }
+
     pub fn cwd(&self) -> Option<&Path> {
         self.cwd.as_deref()
     }

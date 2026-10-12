@@ -36,6 +36,8 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `/` | search tabs |
 | `d` | detach: tabs keep running |
 | `C` | keep the computer awake (☀), or let it sleep (☾) |
+| `P` | open pull requests and their diffs (needs `gh`) |
+| `O` | ports your tabs listen on; `x` `x` force-kills |
 | `q` | quit |
 | `?` | every key |
 
@@ -52,6 +54,9 @@ link to open it.
   still there. After a restart, your tabs come back as fresh shells.
 - **Notifications** when a background tab finishes, rings the bell, or goes quiet (say, Claude
   is done).
+- **Pull requests**: the repo's open PRs, each file marked added, modified or deleted, with
+  its diff. Needs the [GitHub CLI](https://cli.github.com), signed in.
+- **Ports**: what the programs in your tabs listen on, which tab runs them, and a force-kill.
 - **Keep awake**: while it's on, the computer won't sleep, even with the window closed.
 - **Your terminal's colours**, transparency included.
 

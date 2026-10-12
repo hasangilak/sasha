@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, GroupEntry, Mode, PickerEntry, Selection};
 use crate::links::Link;
 use crate::workspace::pretty_path;
-use crate::{activity, sidebar, theme};
+use crate::{activity, panel_view, sidebar, theme};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     activity::render(frame.buffer_mut(), app);
@@ -38,6 +38,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Search => render_search(frame, app),
         Mode::Workspaces => render_workspaces(frame, app),
         Mode::Groups => render_groups(frame, app),
+        Mode::Panel => panel_view::render(frame, app),
         Mode::Normal | Mode::Tab => {
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
@@ -74,6 +75,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("a", "workspace bar: badges → names → hidden"),
         ("o", "sidebar: every workspace's tabs / just this one's"),
         ("C", "keep the computer awake, or let it sleep (☀ / ☾)"),
+        ("P", "open pull requests (gh) and their diffs"),
+        ("O", "open ports in your tabs; x x force-kills"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
         ("d", "detach: tabs keep running, sasha brings them back"),
@@ -355,7 +358,7 @@ fn render_confirm_quit(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(popup_block(" quit ")), area);
 }
 
-fn popup_block(title: &str) -> Block<'_> {
+pub fn popup_block(title: &str) -> Block<'_> {
     let p = theme::palette();
     Block::bordered()
         .border_type(BorderType::Rounded)
