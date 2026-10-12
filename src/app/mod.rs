@@ -210,6 +210,8 @@ pub struct App {
     confirm_remove: Option<WorkspaceId>,
     /// Pinned tab waiting for a second `x` before it's closed.
     confirm_close: Option<TabId>,
+    /// Workspace whose tabs wait for a second click on its heading's ×.
+    confirm_close_section: Option<WorkspaceId>,
     sidebar_width: u16,
     collapsed: bool,
     /// Width of the workspace bar; 0 hides it.
@@ -271,6 +273,7 @@ impl App {
             status: None,
             confirm_remove: None,
             confirm_close: None,
+            confirm_close_section: None,
             sidebar_width: layout::DEFAULT_WIDTH,
             collapsed: false,
             activity_width: layout::ACTIVITY_COMPACT,
@@ -1137,13 +1140,14 @@ impl App {
             let visible = members.into_iter().filter(|&tab| !group.collapsed || tab == on_screen);
             rows.extend(visible.map(|(w, t)| Row::Item(w, ListItem::Tab(t))));
         }
+        // Workspaces with tabs of their own, outside groups.
         let sections: Vec<usize> = (0..self.workspaces.len())
-            .filter(|&w| w == self.current || (!self.current_only && self.workspaces[w].has_loose_tabs()))
+            .filter(|&w| (w == self.current || !self.current_only) && self.workspaces[w].has_loose_tabs())
             .collect();
         // With groups above, a heading keeps the tabs outside them from
         // looking like part of the last group.
         let headings = sections.len() > 1 || !rows.is_empty();
-        for w in sections {
+        for &w in &sections {
             if !rows.is_empty() {
                 rows.push(Row::Gap);
             }
@@ -1153,7 +1157,33 @@ impl App {
             let items = self.workspaces[w].list_items().into_iter();
             rows.extend(items.filter(|item| w == self.current || *item != ListItem::NewTab).map(|item| Row::Item(w, item)));
         }
+        // The current workspace with nothing of its own: just its "+", last.
+        if !sections.contains(&self.current) {
+            if !rows.is_empty() {
+                rows.push(Row::Gap);
+            }
+            rows.push(Row::Item(self.current, ListItem::NewTab));
+        }
         rows
+    }
+
+    /// Closes the tabs a workspace lists under its own heading (those
+    /// outside groups), asking for a second click when that's more than
+    /// one.
+    fn close_section(&mut self, w: usize) {
+        let Some(ws) = self.workspaces.get(w) else { return };
+        let ids: Vec<TabId> = ws.tabs.iter().filter(|t| t.group.is_none()).map(|t| t.id).collect();
+        if ids.len() > 1 && self.confirm_close_section != Some(ws.id) {
+            self.confirm_close_section = Some(ws.id);
+            self.set_status(format!("click × again to close {} tabs in {}", ids.len(), ws.name));
+            return;
+        }
+        self.confirm_close_section = None;
+        for id in ids {
+            if let Some((w, t)) = self.find_tab(id) {
+                self.remove_tab(w, t);
+            }
+        }
     }
 
     /// Where keyboard navigation stops, top to bottom: every tab in the

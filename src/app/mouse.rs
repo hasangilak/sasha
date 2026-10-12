@@ -92,6 +92,10 @@ impl App {
     }
 
     fn click(&mut self, hit: Hit) {
+        // "Click × again" only holds for the very next click.
+        if !matches!(hit, Hit::CloseWorkspace(_)) {
+            self.confirm_close_section = None;
+        }
         match hit {
             // A double-click renames the workspace.
             Hit::Workspace(index) => {
@@ -119,6 +123,7 @@ impl App {
             Hit::Toggle => self.set_collapsed(!self.collapsed),
             Hit::Search => self.start_search(),
             Hit::Awake => self.toggle_awake(),
+            Hit::CloseWorkspace(w) => self.close_section(w),
             Hit::Port(index) => self.open_ports(index),
             Hit::Pr(index) => self.open_bar_pr(index),
             Hit::PrHeading => self.reload_bar_prs(),

@@ -162,7 +162,8 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
     let p = theme::palette();
     let ws = &app.workspaces[w];
     let current = w == app.current;
-    let hovered = app.hover == Some(Hit::Workspace(w));
+    let button_hot = app.hover == Some(Hit::CloseWorkspace(w));
+    let hovered = button_hot || app.hover == Some(Hit::Workspace(w));
     let bg = if hovered { p.hover_bg } else { BG };
     buf.set_style(pill, Style::new().bg(bg));
     let mut badge = Style::new().fg(p.on_accent).bg(ws.color());
@@ -180,6 +181,12 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
     }
     let room = pill.width.saturating_sub(8) as usize;
     render_faded(buf, pill.x + 5, pill.y, &ws.name, room, style, bg);
+    // Hovered: × closes the tabs under it.
+    if hovered {
+        let color = if button_hot { p.red } else { p.text };
+        buf.set_string(pill.right() - 2, pill.y, "×", Style::new().fg(color).bg(bg));
+        return;
+    }
     if !current {
         let marker = match app.workspace_activity(w) {
             Some(Activity::Busy) => Some((SPINNER[app.spinner_frame() % SPINNER.len()], p.accent)),
