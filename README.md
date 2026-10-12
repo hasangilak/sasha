@@ -35,6 +35,7 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `w` | switch workspace, or add a folder |
 | `/` | search tabs |
 | `d` | detach: tabs keep running |
+| `C` | keep the computer awake (☀), or let it sleep (☾) |
 | `q` | quit |
 | `?` | every key |
 
@@ -51,6 +52,7 @@ link to open it.
   still there. After a restart, your tabs come back as fresh shells.
 - **Notifications** when a background tab finishes, rings the bell, or goes quiet (say, Claude
   is done).
+- **Keep awake**: while it's on, the computer won't sleep, even with the window closed.
 - **Your terminal's colours**, transparency included.
 
 Use another prefix with `sasha --prefix ctrl-a`. Turn notifications off with `SASHA_NOTIFY=0`.

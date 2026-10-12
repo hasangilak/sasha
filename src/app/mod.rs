@@ -14,6 +14,7 @@ use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
 use crate::config::Config;
+use crate::awake::Awake;
 use crate::layout::{self, Hit, Layout, ListItem, Row};
 use crate::links::{self, Link};
 use crate::protocol::{self, Hello};
@@ -134,6 +135,8 @@ pub struct App {
     pub(crate) config: Config,
     /// The client showing the tabs, if any.
     client: Option<Attached>,
+    /// Set while sasha keeps the computer from sleeping.
+    pub(crate) awake: Option<Awake>,
     /// Whether the client's window has focus (when its terminal says).
     focused: bool,
     /// This server's `protocol::build_id`.
@@ -205,6 +208,7 @@ impl App {
         let mut app = Self {
             config,
             client: None,
+            awake: None,
             focused: true,
             build: protocol::build_id(),
             attached_before: false,
@@ -1129,6 +1133,21 @@ impl App {
     fn clamp_bar_scroll(&mut self, reveal: bool) {
         let reveal = reveal.then_some(self.current);
         self.activity_scroll = self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), reveal);
+    }
+
+    /// Keeps the computer from sleeping, or lets it sleep again.
+    fn toggle_awake(&mut self) {
+        if self.awake.take().is_some() {
+            self.set_status("the computer can sleep again");
+            return;
+        }
+        match Awake::start() {
+            Ok(awake) => {
+                self.awake = Some(awake);
+                self.set_status("keeping the computer awake");
+            }
+            Err(err) => self.set_status(format!("can't keep the computer awake: {err:#}")),
+        }
     }
 
     /// Every workspace's tabs, or only the current workspace's.

@@ -98,6 +98,7 @@ impl App {
             Hit::HelpButton => self.mode = Mode::Help,
             Hit::Toggle => self.set_collapsed(!self.collapsed),
             Hit::Search => self.start_search(),
+            Hit::Awake => self.toggle_awake(),
             Hit::Tab(index) => {
                 let double = self
                     .last_tab_click

@@ -110,6 +110,14 @@ fn render_header(buf: &mut Buffer, app: &App) -> Option<Position> {
     let search = layout.search_button();
     button(buf, toggle, "≡", Hit::Toggle, BG);
     button(buf, search, "⌕", Hit::Search, p.button_bg);
+    // ☀ keeping the computer awake, ☾ letting it sleep.
+    let awake = layout.awake_button();
+    if !awake.is_empty() {
+        let bg = if app.hover == Some(Hit::Awake) { p.button_hover_bg } else { BG };
+        let (glyph, fg) = if app.awake.is_some() { ("☀", p.yellow) } else { ("☾", p.text_dim) };
+        buf.set_style(awake, Style::new().bg(bg));
+        buf.set_string(awake.x + 1, awake.y, glyph, Style::new().fg(fg).bg(bg));
+    }
 
     if layout.header.height > 1 {
         let y = layout.header.y + 1;

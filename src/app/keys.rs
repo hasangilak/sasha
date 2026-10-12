@@ -115,6 +115,7 @@ impl App {
             KeyCode::Char('b' | 's') => self.set_collapsed(!self.collapsed),
             KeyCode::Char('a') => self.cycle_activity_bar(),
             KeyCode::Char('o') => self.toggle_stacked(),
+            KeyCode::Char('C') => self.toggle_awake(),
             KeyCode::Char('<') => self.resize_sidebar(-2),
             KeyCode::Char('>') => self.resize_sidebar(2),
             KeyCode::Char('[' | 'v') | KeyCode::PageUp => self.mode = Mode::Scroll,

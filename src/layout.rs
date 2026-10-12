@@ -29,6 +29,8 @@ pub enum Hit {
     ActivityDivider,
     /// The current workspace's name, at the top of the tab sidebar.
     WorkspaceName,
+    /// The keep-awake button in the sidebar header.
+    Awake,
     /// A tab (workspace, tab) of another workspace, in the tab sidebar.
     OtherTab(usize, usize),
     Toggle,
@@ -114,12 +116,21 @@ impl Layout {
 
     /// Where the workspace's name sits in the header, between the buttons.
     pub fn workspace_name(&self) -> Rect {
+        let awake = self.awake_button();
+        if awake.is_empty() {
+            return Rect::default();
+        }
+        let x = self.toggle_button().right() + 1;
+        Rect::new(x, self.header.y, awake.x.saturating_sub(x + 1), 1)
+    }
+
+    /// Left of the search button.
+    pub fn awake_button(&self) -> Rect {
         let search = self.search_button();
         if search.is_empty() {
             return Rect::default();
         }
-        let x = self.toggle_button().right() + 1;
-        Rect::new(x, self.header.y, search.x.saturating_sub(x + 1), 1)
+        Rect::new(search.x - 3, search.y, 3, search.height)
     }
 
     pub fn search_button(&self) -> Rect {
@@ -239,6 +250,9 @@ impl Layout {
         }
         if self.search_button().contains(pos) {
             return Some(Hit::Search);
+        }
+        if self.awake_button().contains(pos) {
+            return Some(Hit::Awake);
         }
         if self.workspace_name().contains(pos) {
             return Some(Hit::WorkspaceName);

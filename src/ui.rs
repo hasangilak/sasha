@@ -73,6 +73,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("b s", "collapse / expand the tab sidebar"),
         ("a", "workspace bar: badges → names → hidden"),
         ("o", "sidebar: every workspace's tabs / just this one's"),
+        ("C", "keep the computer awake, or let it sleep (☀ / ☾)"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
         ("d", "detach: tabs keep running, sasha brings them back"),
