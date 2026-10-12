@@ -230,9 +230,13 @@ fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &crate::tab::Tab, 
         theme::process_icon(tab.process_name())
     };
     let icon_color = if active && highlight { fg } else { icon_color };
-    let icon_x = if app.layout.collapsed { pill.x + pill.width / 2 } else { pill.x + 1 };
-    buf.set_string(icon_x, pill.y, icon, Style::new().fg(icon_color).bg(bg));
-    if app.layout.collapsed {
+    // Icon only when collapsed (or squeezed by a tiny window).
+    let icon_only = app.layout.collapsed || pill.width < 8;
+    let icon_x = if icon_only { pill.x + pill.width / 2 } else { pill.x + 1 };
+    if pill.width > 0 {
+        buf.set_string(icon_x, pill.y, icon, Style::new().fg(icon_color).bg(bg));
+    }
+    if icon_only {
         return;
     }
 
