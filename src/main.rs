@@ -1,6 +1,7 @@
 mod activity;
 mod app;
 mod awake;
+mod bars;
 mod client;
 mod clipboard;
 mod config;

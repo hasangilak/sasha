@@ -30,6 +30,9 @@ pub struct SavedLayout {
     /// The sidebar shows only the current workspace's tabs.
     #[serde(default)]
     pub current_only: bool,
+    /// The ports and pull request bars are hidden.
+    #[serde(default)]
+    pub hide_side_bars: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -42,12 +42,12 @@ pub fn render(frame: &mut Frame, app: &App) {
             ("↑↓ file · PgUp PgDn ^u ^d scroll · o browser · esc back".to_owned(), p.text_dim)
         }
         Panel::Prs(panel) => {
-            render_prs(buf, body, panel);
+            render_prs(buf, body, app, panel);
             ("↑↓ choose · ⏎ files · o browser · r reload · esc close".to_owned(), p.text_dim)
         }
         Panel::Ports(panel) => {
             render_ports(buf, app, body, panel);
-            let confirm = panel.confirm.and_then(|pid| panel.ports.ready()?.iter().find(|port| port.pid == pid));
+            let confirm = panel.confirm.and_then(|pid| app.ports.ready()?.iter().find(|port| port.pid == pid));
             match confirm {
                 Some(port) => (format!("press x again to force-kill {} ({})", port.command, port.pid), p.red),
                 None => ("↑↓ choose · x force-kill · ⏎ go to tab · r refresh · esc close".to_owned(), p.text_dim),
@@ -75,10 +75,12 @@ fn first_shown(selected: usize, rows: u16) -> usize {
     selected.saturating_sub(usize::from(rows).saturating_sub(1))
 }
 
-fn render_prs(buf: &mut Buffer, area: Rect, panel: &PrPanel) {
+fn render_prs(buf: &mut Buffer, area: Rect, app: &App, panel: &PrPanel) {
     let p = theme::palette();
     let waiting = "asking GitHub…";
-    let Some(prs) = ready_or_say(buf, area, &panel.prs, waiting, "no open pull requests here") else { return };
+    let Some(prs) = ready_or_say(buf, area, app.prs_of(&panel.dir), waiting, "no open pull requests here") else {
+        return;
+    };
     let first = first_shown(panel.selected, area.height);
     for (i, pr) in prs.iter().enumerate().skip(first).take(area.height as usize) {
         let y = area.y + (i - first) as u16;
@@ -181,7 +183,7 @@ fn render_files(buf: &mut Buffer, area: Rect, open: &OpenPr) {
 fn render_ports(buf: &mut Buffer, app: &App, area: Rect, panel: &PortsPanel) {
     let p = theme::palette();
     let empty = "nothing in your tabs is listening on a port";
-    let Some(ports) = ready_or_say(buf, area, &panel.ports, "looking for ports…", empty) else { return };
+    let Some(ports) = ready_or_say(buf, area, &app.ports, "looking for ports…", empty) else { return };
     let first = first_shown(panel.selected, area.height);
     for (i, port) in ports.iter().enumerate().skip(first).take(area.height as usize) {
         let y = area.y + (i - first) as u16;

@@ -9,10 +9,11 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, GroupEntry, Mode, PickerEntry, Selection};
 use crate::links::Link;
 use crate::workspace::pretty_path;
-use crate::{activity, panel_view, sidebar, theme};
+use crate::{activity, bars, panel_view, sidebar, theme};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     activity::render(frame.buffer_mut(), app);
+    bars::render(frame.buffer_mut(), app);
     let rename_cursor = sidebar::render(frame.buffer_mut(), app);
 
     let pane = app.layout.pane;
@@ -25,6 +26,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         render_scroll_badge(frame.buffer_mut(), pane, screen.scrollback());
     }
     activity::render_tooltip(frame.buffer_mut(), app);
+    bars::render_tooltip(frame.buffer_mut(), app);
 
     match app.mode {
         Mode::Help => render_help(frame, app),
@@ -77,6 +79,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("C", "keep the computer awake, or let it sleep (☀ / ☾)"),
         ("P", "open pull requests (gh) and their diffs"),
         ("O", "open ports in your tabs; x x force-kills"),
+        ("i", "show / hide the ports and pull request bars"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
         ("d", "detach: tabs keep running, sasha brings them back"),

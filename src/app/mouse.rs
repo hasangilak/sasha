@@ -114,6 +114,9 @@ impl App {
             Hit::Toggle => self.set_collapsed(!self.collapsed),
             Hit::Search => self.start_search(),
             Hit::Awake => self.toggle_awake(),
+            Hit::Port(index) => self.open_ports(index),
+            Hit::Pr(index) => self.open_bar_pr(index),
+            Hit::PrHeading => self.reload_bar_prs(),
             Hit::Tab(index) => {
                 let double = self
                     .last_tab_click

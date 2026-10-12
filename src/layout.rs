@@ -13,6 +13,13 @@ pub const ACTIVITY_COMPACT: u16 = 7;
 pub const ACTIVITY_WIDE_MIN: u16 = 12;
 pub const ACTIVITY_WIDE_DEFAULT: u16 = 24;
 pub const ACTIVITY_MAX: u16 = 40;
+/// The ports bar, with its edge.
+pub const PORTS_WIDTH: u16 = 9;
+/// The pull request bar, with its edge.
+pub const PRS_WIDTH: u16 = 32;
+/// Narrower windows leave out the ports bar, and then the pull request bar.
+const PORTS_MIN_AREA: u16 = 80;
+const PRS_MIN_AREA: u16 = 120;
 pub const DEFAULT_WIDTH: u16 = 30;
 pub const MIN_WIDTH: u16 = 16;
 pub const COLLAPSED_WIDTH: u16 = 6;
@@ -31,6 +38,12 @@ pub enum Hit {
     WorkspaceName,
     /// The keep-awake button in the sidebar header.
     Awake,
+    /// A port (by position) in the ports bar.
+    Port(usize),
+    /// A pull request (by position) in the pull request bar.
+    Pr(usize),
+    /// The pull request bar's heading: refreshes the list.
+    PrHeading,
     /// A tab (workspace, tab) of another workspace, in the tab sidebar.
     OtherTab(usize, usize),
     Toggle,
@@ -70,6 +83,10 @@ pub struct Layout {
     pub activity: Rect,
     /// The last column of `activity`.
     pub activity_divider: Rect,
+    /// The slim bar of open ports, right of the workspace bar.
+    pub ports_bar: Rect,
+    /// The open pull requests, right of the terminal pane.
+    pub pr_bar: Rect,
     pub sidebar: Rect,
     pub header: Rect,
     pub list: Rect,
@@ -81,7 +98,8 @@ pub struct Layout {
 
 impl Layout {
     /// `activity_width` 0 hides the workspace bar.
-    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool) -> Self {
+    /// `side_bars` adds the ports and pull request bars where there's room.
+    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool, side_bars: bool) -> Self {
         // Wide workspace bars give way to the sidebar and terminal first.
         let activity_width = activity_width
             .min(area.width.saturating_sub(26).max(ACTIVITY_COMPACT))
@@ -89,6 +107,11 @@ impl Layout {
         let activity = Rect { width: activity_width, ..area };
         let activity_divider = Rect { x: activity.right().saturating_sub(1), width: activity_width.min(1), ..area };
         let rest = Rect { x: area.x + activity_width, width: area.width - activity_width, ..area };
+        let ports_width = if side_bars && area.width >= PORTS_MIN_AREA { PORTS_WIDTH } else { 0 };
+        let ports_bar = Rect { width: ports_width, ..rest };
+        let prs_width = if side_bars && area.width >= PRS_MIN_AREA { PRS_WIDTH } else { 0 };
+        let rest = Rect { x: rest.x + ports_width, width: rest.width - ports_width - prs_width, ..rest };
+        let pr_bar = Rect { x: rest.right(), width: prs_width, ..rest };
 
         let width = if collapsed { COLLAPSED_WIDTH } else { width };
         // Always leave the terminal pane a usable amount of room.
@@ -107,7 +130,20 @@ impl Layout {
             height: inner.height - header.height - footer_height,
             ..inner
         };
-        Self { area, activity, activity_divider, sidebar, header, list, footer, divider, pane, collapsed }
+        Self {
+            area,
+            activity,
+            activity_divider,
+            ports_bar,
+            pr_bar,
+            sidebar,
+            header,
+            list,
+            footer,
+            divider,
+            pane,
+            collapsed,
+        }
     }
 
     pub fn toggle_button(&self) -> Rect {
@@ -238,6 +274,17 @@ impl Layout {
         }
         if self.activity_divider.contains(pos) {
             return Some(Hit::ActivityDivider);
+        }
+        if self.ports_bar.contains(pos) {
+            let index = (y.checked_sub(self.ports_bar.y + 2)?) as usize;
+            return (index < app.port_count()).then_some(Hit::Port(index));
+        }
+        if self.pr_bar.contains(pos) {
+            if y == self.pr_bar.y {
+                return Some(Hit::PrHeading);
+            }
+            let index = (y.checked_sub(self.pr_bar.y + 2)?) as usize;
+            return (index < app.bar_prs().map_or(0, <[_]>::len)).then_some(Hit::Pr(index));
         }
         if self.activity.contains(pos) {
             return self.hit_activity(pos, app);

@@ -2,8 +2,9 @@ mod keys;
 mod mouse;
 mod panels;
 
-pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrPanel};
+pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel};
 
+use std::collections::HashMap;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -150,6 +151,14 @@ pub struct App {
     pub(crate) awake: Option<Awake>,
     /// The panel shown in `Mode::Panel`.
     pub(crate) panel: Option<Panel>,
+    /// Show the ports and pull request bars (where there's room).
+    side_bars: bool,
+    /// The ports programs in the tabs listen on, as last checked.
+    pub(crate) ports: Loadable<Vec<Port>>,
+    ports_checking: bool,
+    ports_checked: Option<Instant>,
+    /// Open pull requests by repository folder, as last fetched.
+    pub(crate) prs: HashMap<PathBuf, PrList>,
     /// Whether the client's window has focus (when its terminal says).
     focused: bool,
     /// This server's `protocol::build_id`.
@@ -223,6 +232,11 @@ impl App {
             client: None,
             awake: None,
             panel: None,
+            side_bars: true,
+            ports: Loadable::Loading,
+            ports_checking: false,
+            ports_checked: None,
+            prs: HashMap::new(),
             focused: true,
             build: protocol::build_id(),
             attached_before: false,
@@ -285,6 +299,7 @@ impl App {
             self.activity_width = layout.activity_width.min(layout::ACTIVITY_MAX);
             self.wide_activity_width = layout.wide_activity_width.clamp(layout::ACTIVITY_WIDE_MIN, layout::ACTIVITY_MAX);
             self.current_only = layout.current_only;
+            self.side_bars = !layout.hide_side_bars;
             self.relayout_now();
         }
         let mut group_ids = Vec::new();
@@ -663,6 +678,7 @@ impl App {
             if last_refresh.elapsed() >= INFO_REFRESH {
                 last_refresh = Instant::now();
                 self.refresh_tabs();
+                self.refresh_bars();
                 self.notify();
                 self.save();
                 dirty = true;
@@ -716,6 +732,7 @@ impl App {
                 activity_width: self.activity_width,
                 wide_activity_width: self.wide_activity_width,
                 current_only: self.current_only,
+                hide_side_bars: !self.side_bars,
             }),
         };
         let result = store::encode(&state).and_then(|json| {
@@ -734,7 +751,7 @@ impl App {
     /// Recomputes the layout and keeps every pty sized to the pane.
     fn relayout(&mut self, size: Size) {
         let area = Rect::new(0, 0, size.width, size.height);
-        self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed);
+        self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed, self.side_bars);
         self.clamp_bar_scroll(false);
         self.clamp_list_scroll(false);
         let (rows, cols) = self.pty_size();
@@ -1169,6 +1186,16 @@ impl App {
         }
     }
 
+    /// Shows or hides the ports and pull request bars.
+    fn toggle_side_bars(&mut self) {
+        self.side_bars = !self.side_bars;
+        self.hover = None;
+        self.relayout_now();
+        if self.side_bars && self.layout.ports_bar.width == 0 {
+            self.set_status("the window is too narrow for the ports and pull request bars");
+        }
+    }
+
     /// Every workspace's tabs, or only the current workspace's.
     fn toggle_stacked(&mut self) {
         self.current_only = !self.current_only;
@@ -1525,7 +1552,7 @@ impl App {
                 }
             }
             AppEvent::Kill => self.quit = true,
-            AppEvent::Prs(dir, prs) => self.prs_loaded(&dir, prs),
+            AppEvent::Prs(dir, prs) => self.prs_loaded(dir, prs),
             AppEvent::PrFiles(number, files) => self.pr_files_loaded(number, files),
             AppEvent::Ports(ports) => self.ports_loaded(ports),
             AppEvent::Output(id, bytes) => self.handle_output(id, &bytes),
