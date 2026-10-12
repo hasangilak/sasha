@@ -1189,6 +1189,16 @@ impl App {
         rows
     }
 
+    /// Takes a workspace's section out of the stacked sidebar, its tabs
+    /// still running; going to the workspace (its badge) brings it back.
+    fn minimize_section(&mut self, w: usize) {
+        let Some(ws) = self.workspaces.get_mut(w) else { return };
+        ws.section_hidden = true;
+        let name = ws.name.clone();
+        self.clamp_list_scroll(false);
+        self.set_status(format!("minimized {name} · click its badge to bring it back"));
+    }
+
     /// Closes a workspace's section of the stacked sidebar, and the tabs
     /// listed in it (those outside groups), asking for a second click when
     /// that's more than one tab. Going to the workspace shows it again.
@@ -1291,9 +1301,18 @@ impl App {
     /// step.
     fn cycle(&mut self, delta: isize) {
         let stops = self.stops();
+        if stops.is_empty() {
+            return;
+        }
         let here = (self.current, self.ws().active);
-        let Some(position) = stops.iter().position(|&stop| stop == here) else { return };
-        let (w, t) = stops[(position as isize + delta).rem_euclid(stops.len() as isize) as usize];
+        // The tab on screen may not be listed (its section is minimized):
+        // start from the top, or the bottom going up.
+        let next = match stops.iter().position(|&stop| stop == here) {
+            Some(position) => (position as isize + delta).rem_euclid(stops.len() as isize) as usize,
+            None if delta > 0 => 0,
+            None => stops.len() - 1,
+        };
+        let (w, t) = stops[next];
         self.go_to(w, t);
     }
 

@@ -162,8 +162,9 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
     let p = theme::palette();
     let ws = &app.workspaces[w];
     let current = w == app.current;
-    let button_hot = app.hover == Some(Hit::CloseWorkspace(w));
-    let hovered = button_hot || app.hover == Some(Hit::Workspace(w));
+    let close_hot = app.hover == Some(Hit::CloseWorkspace(w));
+    let minimize_hot = app.hover == Some(Hit::MinimizeWorkspace(w));
+    let hovered = close_hot || minimize_hot || app.hover == Some(Hit::Workspace(w));
     let bg = if hovered { p.hover_bg } else { BG };
     buf.set_style(pill, Style::new().bg(bg));
     let mut badge = Style::new().fg(p.on_accent).bg(ws.color());
@@ -179,12 +180,14 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
     if current {
         style = style.add_modifier(Modifier::BOLD);
     }
-    let room = pill.width.saturating_sub(8) as usize;
+    let room = pill.width.saturating_sub(if hovered { 10 } else { 8 }) as usize;
     render_faded(buf, pill.x + 5, pill.y, &ws.name, room, style, bg);
-    // Hovered: × closes the tabs under it.
+    // Hovered: – minimizes the section, × closes it and its tabs.
     if hovered {
-        let color = if button_hot { p.red } else { p.text };
-        buf.set_string(pill.right() - 2, pill.y, "×", Style::new().fg(color).bg(bg));
+        let minimize = if minimize_hot { p.accent } else { p.text };
+        buf.set_string(pill.right() - 4, pill.y, "–", Style::new().fg(minimize).bg(bg));
+        let close = if close_hot { p.red } else { p.text };
+        buf.set_string(pill.right() - 2, pill.y, "×", Style::new().fg(close).bg(bg));
         return;
     }
     if !current {

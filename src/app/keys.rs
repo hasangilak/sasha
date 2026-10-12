@@ -136,6 +136,7 @@ impl App {
             KeyCode::Char('b' | 's') => self.set_collapsed(!self.collapsed),
             KeyCode::Char('a') => self.cycle_activity_bar(),
             KeyCode::Char('o') => self.toggle_stacked(),
+            KeyCode::Char('-') => self.minimize_section(self.current),
             KeyCode::Char('C') => self.toggle_awake(),
             KeyCode::Char('P') => self.open_prs(),
             KeyCode::Char('O') => self.open_ports(0),

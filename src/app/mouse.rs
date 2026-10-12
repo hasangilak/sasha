@@ -124,6 +124,7 @@ impl App {
             Hit::Search => self.start_search(),
             Hit::Awake => self.toggle_awake(),
             Hit::CloseWorkspace(w) => self.close_section(w),
+            Hit::MinimizeWorkspace(w) => self.minimize_section(w),
             Hit::Port(index) => self.open_ports(index),
             Hit::Pr(index) => self.open_bar_pr(index),
             Hit::PrHeading => self.reload_bar_prs(),

@@ -43,6 +43,8 @@ pub enum Hit {
     WorkspaceName,
     /// The × on a workspace's heading in the tab sidebar.
     CloseWorkspace(usize),
+    /// The – beside it.
+    MinimizeWorkspace(usize),
     /// The keep-awake button in the sidebar header.
     Awake,
     /// A port (by position) in the ports bar.
@@ -327,12 +329,14 @@ impl Layout {
         }
         let current = app.current;
         match *app.sidebar_rows().get(app.list_scroll + (y - self.list.y) as usize)? {
+            // – and × at the right of a heading.
             Row::Workspace(w) => {
                 let pill = self.pill(y);
-                if !self.collapsed && x + 4 >= pill.right() && x < pill.right() {
-                    Some(Hit::CloseWorkspace(w))
-                } else {
-                    Some(Hit::Workspace(w))
+                let from_right = pill.right().saturating_sub(x);
+                match from_right {
+                    1..=3 if !self.collapsed => Some(Hit::CloseWorkspace(w)),
+                    4..=5 if !self.collapsed => Some(Hit::MinimizeWorkspace(w)),
+                    _ => Some(Hit::Workspace(w)),
                 }
             }
             Row::Item(w, ListItem::Tab(index)) if w == current => {
