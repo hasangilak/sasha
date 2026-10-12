@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use ratatui::style::Color;
 
 use crate::layout::ListItem;
+use crate::store::SavedWorkspace;
 use crate::tab::{Tab, TabId};
 use crate::theme;
 
@@ -47,6 +48,9 @@ pub struct Workspace {
     pub active: usize,
     /// The tab that was active before the current one.
     pub previous: Option<TabId>,
+    /// Tabs saved last time and not reopened yet: they come back the first
+    /// time the workspace is opened.
+    pub dormant: Option<SavedWorkspace>,
 }
 
 impl Workspace {
@@ -60,6 +64,7 @@ impl Workspace {
             groups: Vec::new(),
             active: 0,
             previous: None,
+            dormant: None,
         }
     }
 

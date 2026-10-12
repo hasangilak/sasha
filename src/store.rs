@@ -29,7 +29,7 @@ pub struct SavedLayout {
     pub current_only: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedWorkspace {
     pub path: PathBuf,
     /// The name the user gave it, if any.
@@ -61,7 +61,7 @@ impl SavedWorkspace {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedTab {
     /// The folder it was in.
     pub cwd: PathBuf,
@@ -75,7 +75,7 @@ pub struct SavedTab {
     pub group: Option<usize>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedGroup {
     pub name: String,
     pub color: usize,

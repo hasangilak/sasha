@@ -65,8 +65,10 @@ cargo run --release      # or: cargo install --path .
   new). Started from your home folder, where new terminal windows open, it carries on where you
   left off.
 - `^B q` stops the server and everything running in the tabs, and so does `sasha --kill-server`.
-  So do logging out and restarting the Mac. Next time, every tab and group comes back, in the
-  folder it was in, as a fresh shell. The server also stops when its last tab closes.
+  So do logging out and restarting the Mac. Next time, the workspace you start sasha in gets
+  its tabs and groups back, in the folders they were in, as fresh shells; every other
+  workspace gets its own back the first time you open it. The server also stops when its last
+  tab closes.
 - After you update sasha, the running server is still the old version, and the footer tells you.
   Quit with `^B q` and start sasha again to run the new one; your tabs come back.
 
@@ -87,8 +89,8 @@ keeps its own tabs, and new tabs open inside its folder.
   the folder's name. Names are saved.
 - **Widen** the bar to see names next to the badges: drag its right edge, or press `^B a`, which
   goes badges → names → hidden. Dragging it too narrow for names snaps back to badges.
-- The tab sidebar **stacks every workspace's tabs and groups** under its name, so you can see
-  them all at once. Click any tab to go to it, wherever it is; `^B j` / `^B k` walk through all of
+- The tab sidebar **stacks the tabs and groups of every workspace that has any open**, each under
+  its name, so you can see them all at once. With only one, there are no headings. Click any tab to go to it, wherever it is; `^B j` / `^B k` walk through all of
   them, top to bottom. Clicking a workspace's name switches to it, and middle-clicking another
   workspace's tab closes it. `^B o` switches between this and only the current workspace's tabs.
 - When you start sasha, it opens the workspace that contains the current folder, or adds that
@@ -238,8 +240,8 @@ Double-clicking a link still selects and copies it.
 ## Saved state
 
 `~/.config/sasha/state.json` (or under `$XDG_CONFIG_HOME`) keeps your workspaces, tabs, groups
-and the sidebar sizes, saved as they change. Tabs come back as fresh shells: they don't re-run
-the command that was running before. Set `SASHA_STATE=/some/file.json` to use a different file.
+and the sidebar sizes, saved as they change. Tabs come back as fresh shells, and only when you
+open their workspace: they don't re-run the command that was running before. Set `SASHA_STATE=/some/file.json` to use a different file.
 
 ## How it works
 

@@ -253,8 +253,8 @@ impl App {
         app
     }
 
-    /// Reopens the saved workspaces, tabs (as fresh shells, in the folders
-    /// they were in) and groups, and the layout.
+    /// Brings back the saved workspaces and layout. Their tabs wait until
+    /// each workspace is first opened (see `wake`).
     fn restore(&mut self, state: State) {
         if let Some(layout) = state.layout {
             self.sidebar_width = layout.sidebar_width.max(layout::MIN_WIDTH);
@@ -267,34 +267,44 @@ impl App {
         for mut saved in state.workspaces {
             let index = self.add_workspace(saved.path.clone());
             self.workspaces[index].rename(saved.name.take());
-            let mut group_ids = Vec::new();
-            for group in &saved.groups {
-                let id = self.next_group_id;
-                self.next_group_id += 1;
-                group_ids.push(id);
-                let (name, color, collapsed) = (group.name.clone(), group.color, group.collapsed);
-                self.workspaces[index].groups.push(Group { id, name, color, collapsed, last_active: None });
+            saved.tabs = saved.take_tabs();
+            if !saved.tabs.is_empty() {
+                self.workspaces[index].dormant = Some(saved);
             }
-            for saved_tab in saved.take_tabs() {
-                // A folder that has gone since falls back to the workspace's.
-                let cwd = if saved_tab.cwd.is_dir() { saved_tab.cwd } else { self.workspaces[index].path.clone() };
-                match self.spawn_tab(&cwd) {
-                    Ok(mut tab) => {
-                        tab.pinned = saved_tab.pinned;
-                        tab.custom_prefix = saved_tab.title;
-                        tab.group = saved_tab.group.and_then(|g| group_ids.get(g).copied()).filter(|_| !tab.pinned);
-                        self.workspaces[index].tabs.push(tab);
-                    }
-                    Err(err) => self.set_status(format!("can't reopen a tab: {err}")),
-                }
-            }
-            let ws = &mut self.workspaces[index];
-            // Pinned tabs first, whatever the file says.
-            ws.tabs.sort_by_key(|tab| !tab.pinned);
-            ws.prune_groups();
-            ws.active = saved.active.min(ws.tabs.len().saturating_sub(1));
         }
         self.current = state.current.min(self.workspaces.len().saturating_sub(1));
+    }
+
+    /// Reopens a workspace's saved tabs (as fresh shells, in the folders
+    /// they were in) and groups, the first time it's opened.
+    fn wake(&mut self, index: usize) {
+        let Some(saved) = self.workspaces.get_mut(index).and_then(|ws| ws.dormant.take()) else { return };
+        let mut group_ids = Vec::new();
+        for group in &saved.groups {
+            let id = self.next_group_id;
+            self.next_group_id += 1;
+            group_ids.push(id);
+            let (name, color, collapsed) = (group.name.clone(), group.color, group.collapsed);
+            self.workspaces[index].groups.push(Group { id, name, color, collapsed, last_active: None });
+        }
+        for saved_tab in saved.tabs {
+            // A folder that has gone since falls back to the workspace's.
+            let cwd = if saved_tab.cwd.is_dir() { saved_tab.cwd } else { self.workspaces[index].path.clone() };
+            match self.spawn_tab(&cwd) {
+                Ok(mut tab) => {
+                    tab.pinned = saved_tab.pinned;
+                    tab.custom_prefix = saved_tab.title;
+                    tab.group = saved_tab.group.and_then(|g| group_ids.get(g).copied()).filter(|_| !tab.pinned);
+                    self.workspaces[index].tabs.push(tab);
+                }
+                Err(err) => self.set_status(format!("can't reopen a tab: {err}")),
+            }
+        }
+        let ws = &mut self.workspaces[index];
+        // Pinned tabs first, whatever the file says.
+        ws.tabs.sort_by_key(|tab| !tab.pinned);
+        ws.prune_groups();
+        ws.active = saved.active.min(ws.tabs.len().saturating_sub(1));
     }
 
     // ── Clients ─────────────────────────────────────────────────────────
@@ -349,7 +359,8 @@ impl App {
     /// tab right there. Started from the home folder, where new terminal
     /// windows open, it carries on where you left off instead.
     fn open_launch_folder(&mut self, launch: &Path) -> Result<()> {
-        let fresh = !self.attached_before && self.tab_count() == 0;
+        let saved = self.workspaces.iter().any(|ws| !ws.tabs.is_empty() || ws.dormant.is_some());
+        let fresh = !self.attached_before && !saved;
         self.attached_before = true;
         let at_home = std::env::home_dir().is_some_and(|home| home == launch);
         if at_home && !fresh {
@@ -789,6 +800,7 @@ impl App {
         self.current = index;
         self.selection = None;
         self.clamp_bar_scroll(true);
+        self.wake(index);
         // A workspace never shows an empty pane.
         if self.ws().tabs.is_empty() {
             if let Err(err) = self.new_tab() {
@@ -986,9 +998,15 @@ impl App {
         }
     }
 
-    /// Whether the tab sidebar stacks every workspace's tabs.
+    /// Workspaces with a section in the sidebar: the current one, and any
+    /// other with open tabs.
+    fn shown_workspaces(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.workspaces.len()).filter(|&w| w == self.current || !self.workspaces[w].tabs.is_empty())
+    }
+
+    /// Whether the tab sidebar stacks several workspaces' tabs.
     fn stacked(&self) -> bool {
-        !self.current_only && self.workspaces.len() > 1
+        !self.current_only && self.shown_workspaces().count() > 1
     }
 
     /// Rows of the tab sidebar: every workspace's heading and tabs, stacked
@@ -1002,8 +1020,8 @@ impl App {
             return self.workspaces.get(self.current).map_or_else(Vec::new, |_| section(self.current).collect());
         }
         let mut rows = Vec::new();
-        for w in 0..self.workspaces.len() {
-            if w > 0 {
+        for w in self.shown_workspaces() {
+            if !rows.is_empty() {
                 rows.push(Row::Gap);
             }
             rows.push(Row::Workspace(w));
@@ -1434,6 +1452,17 @@ impl App {
 }
 
 fn save_workspace(ws: &Workspace) -> SavedWorkspace {
+    // Not opened since the last start: its tabs stay as they were saved.
+    if let Some(dormant) = &ws.dormant {
+        return SavedWorkspace {
+            path: ws.path.clone(),
+            name: ws.custom_name.clone(),
+            tabs: dormant.tabs.clone(),
+            groups: dormant.groups.clone(),
+            active: dormant.active,
+            pinned: Vec::new(),
+        };
+    }
     // Groups in the order they appear, numbered for the tabs to refer to.
     let groups = ws.groups_in_order();
     let tabs = ws
