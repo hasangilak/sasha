@@ -1075,7 +1075,9 @@ impl App {
         let sections: Vec<usize> = (0..self.workspaces.len())
             .filter(|&w| w == self.current || (!self.current_only && self.workspaces[w].has_loose_tabs()))
             .collect();
-        let headings = sections.len() > 1;
+        // With groups above, a heading keeps the tabs outside them from
+        // looking like part of the last group.
+        let headings = sections.len() > 1 || !rows.is_empty();
         for w in sections {
             if !rows.is_empty() {
                 rows.push(Row::Gap);
@@ -1245,12 +1247,18 @@ impl App {
         }
     }
 
-    /// Pins a tab (out of its group) or unpins it.
+    /// Pins a tab, taking it out of its group, or unpins it, back into the
+    /// group it was in.
     fn toggle_pin(&mut self, index: usize) {
         let Some(tab) = self.ws().tabs.get(index) else { return };
         let pin = !tab.pinned;
         let message = format!("{} {}", if pin { "pinned" } else { "unpinned" }, tab.title());
-        self.set_membership(self.current, index, pin, None);
+        let (group, before) = (tab.group, tab.group_before_pin);
+        let back = before.filter(|&id| !pin && self.group(id).is_some());
+        if let Some(tab) = self.ws_mut().tabs.get_mut(index) {
+            tab.group_before_pin = if pin { group } else { None };
+        }
+        self.set_membership(self.current, index, pin, back);
         self.set_status(message);
     }
 
@@ -1324,8 +1332,9 @@ impl App {
         self.groups.retain(|g| workspaces.iter().flat_map(|ws| &ws.tabs).any(|tab| tab.group == Some(g.id)));
     }
 
-    /// Starts a group holding the active tab, in the first colour no other
-    /// group has.
+    /// Starts a group in the first colour no other group has. It takes the
+    /// active tab, unless that tab is already in a group: then it starts with
+    /// a new terminal instead, so the other group keeps its tabs.
     fn new_group(&mut self, name: String) {
         let id = self.next_group_id;
         self.next_group_id += 1;
@@ -1335,6 +1344,13 @@ impl App {
             .find(|c| !self.groups.iter().any(|g| g.color == *c))
             .unwrap_or(self.groups.len() % colors);
         self.groups.push(Group { id, name, color, collapsed: false, last_active: None });
+        if self.active_tab().is_some_and(|t| t.group.is_some()) {
+            if let Err(err) = self.open_tab(Some(id)) {
+                self.set_status(format!("can't start a shell: {err}"));
+                self.prune_groups();
+            }
+            return;
+        }
         let active = self.ws().active;
         self.set_membership(self.current, active, false, Some(id));
     }

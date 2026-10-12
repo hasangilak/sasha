@@ -118,6 +118,8 @@ pub struct Tab {
     pub pinned: bool,
     /// The tab group this tab belongs to (never set on pinned tabs).
     pub group: Option<GroupId>,
+    /// The group it was in before it was pinned: unpinning puts it back.
+    pub group_before_pin: Option<GroupId>,
     /// Name of the process in the foreground of this tab's tty.
     fg_name: String,
     fg_pgid: Option<i32>,
@@ -216,6 +218,7 @@ impl Tab {
             custom_prefix: None,
             pinned: false,
             group: None,
+            group_before_pin: None,
             fg_name: String::new(),
             fg_pgid: shell_pid,
             title_owner: None,
