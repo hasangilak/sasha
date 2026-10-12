@@ -1,20 +1,21 @@
 # sasha
 
-A terminal with Chrome-style vertical tabs, built with [ratatui](https://ratatui.rs).
+A terminal with Chrome-style vertical tabs and VS Code-style workspaces, built with
+[ratatui](https://ratatui.rs).
 
-sasha runs inside your existing terminal app (Ghostty, iTerm2, Terminal.app …) and gives
-every shell its own tab in a sidebar. Each tab is a real PTY running your login shell.
+sasha runs inside your existing terminal app (Ghostty, iTerm2, Terminal.app …). Each
+workspace is a folder with its own tabs, and each tab is a real PTY running your login shell.
 
 ```
-  ≡                       ⌕  │➜  sasha git:(main) cargo build
- ─────────────────────────── │   Compiling sasha v0.1.0
-  ❯ sasha                    │    Finished `dev` profile in 2.1s
-  ⠹ cargo · api           •  │➜  sasha git:(main)
-  ✎ main.rs - NVIM        ×  │
-  ⇄ ssh · prod               │
-              +              │
-                             │
- ^B tab keys · ^B ? help     │
+▎ WD    ≡  web-dashboard          ⌕  │➜  web-dashboard git:(dev) yarn dev
+        ───────────────────────────  │  VITE ready in 412 ms
+  SA ⠹    ❯ dev server            ⚲  │  ➜  Local: http://localhost:5173/
+          ✎ main.ts - NVIM        ⚲  │
+  ~       ─────────────────────────  │
+          ❯ web-dashboard         ×  │
+  +       ⠹ cargo · infra         •  │
+                     +               │
+  ?    ^B tab keys · ^B ? help       │
 ```
 
 ## Run it
@@ -26,10 +27,34 @@ cargo install --path .
 sasha
 ```
 
-## The sidebar
+## Workspaces
+
+The thin bar on the far left lists your workspaces as coloured initials (`WD` for
+`web-dashboard-api`). Click one, or use `^B h` / `^B l`, to switch. Each workspace
+keeps its own tabs, and new tabs open inside its folder.
+
+- **Add** one with `+` in the bar or `^B w`, then type a path (`~/Work/…`). `Tab` completes
+  folder names. `^B w` also offers the folder you're currently in.
+- **Remove** one in `^B w` with `^D`. If it has open tabs, you press it twice.
+- When you start sasha, it opens the workspace that contains the current folder, or adds that
+  folder as a new workspace.
+- A spinner or dot next to a badge means a tab in that workspace is printing, or printed
+  something you haven't seen.
+
+## Pinned tabs
+
+Pin a tab with `^B p` or a right-click. Pinned tabs:
+
+- sit at the top of their workspace, above a separator, marked with `⚲` (click it to unpin)
+- need `x` pressed twice to close, and ignore middle-click
+- **come back when sasha restarts**, in the folder they were last in and with their custom name
+
+Dragging a tab across the separator pins or unpins it.
+
+## The tab sidebar
 
 - **Titles** come from what's running: `sasha` (the folder) for an idle shell, `cargo · api`
-  while a command runs, or the program's own title (vim, ssh). Rename a tab to pin a name.
+  while a command runs, or the program's own title (vim, ssh). Rename a tab to fix its name.
 - **Icons** stand in for favicons: `❯` shell, `✎` editor, `±` git, `⇄` ssh, `▸` build/runtime …
 - A **spinner** means a background tab is printing output right now. A **blue dot** means it
   printed something you haven't seen, and a **yellow dot** means it rang the bell.
@@ -38,22 +63,26 @@ sasha
 ## Keys
 
 Press the **prefix** (`Ctrl+B` by default) to enter **tab mode**. The active tab turns blue and
-the keys below drive the tabs until you press `Esc`.
+the keys below work until you press `Esc`.
 
 | Tab mode | |
 |---|---|
 | `j` `k` / `↓` `↑` | next / previous tab |
+| `h` `l` / `←` `→` | previous / next workspace |
 | `1` … `9` | go to tab (`9` = last) |
-| `Tab` | back to the previous tab |
+| `Tab` / `Shift+Tab` | previous tab / previous workspace |
 | `g` `G` | first / last tab |
 | `J` `K` | move tab down / up |
-| `t` `c` | new tab (opens in the current tab's folder) |
-| `x` `w` | close tab |
+| `t` `n` `c` | new tab |
+| `x` | close tab (pinned tabs: press twice) |
+| `p` | pin / unpin tab |
 | `r` `,` | rename tab (empty name = automatic title) |
-| `/` `f` | search tabs |
+| `w` | workspaces: switch, add a folder, `^D` to remove |
+| `/` `f` | search tabs in every workspace |
 | `[` `v` `PgUp` | scroll mode (`j` `k` `^u` `^d` `g` `G`, `q` exits) |
-| `b` `s` | collapse / expand the sidebar |
-| `h` `l` / `←` `→` | narrower / wider sidebar |
+| `b` `s` | collapse / expand the tab sidebar |
+| `a` | show / hide the workspace bar |
+| `<` `>` | narrower / wider sidebar |
 | prefix again | send the prefix to the shell |
 | `?` | help |
 | `q` | quit |
@@ -68,10 +97,12 @@ the keys below drive the tabs until you press `Esc`.
 
 | Mouse | |
 |---|---|
-| click / drag a tab | switch / reorder |
+| workspace badge / `+` | switch workspace / add a folder |
+| click / drag a tab | switch / reorder (across the separator to pin or unpin) |
+| right-click a tab | pin / unpin |
 | `×` or middle-click | close |
 | double-click a tab | rename |
-| `+` / `⌕` / `≡` | new tab / search / collapse |
+| `⌕` / `≡` | search / collapse |
 | drag the divider | resize the sidebar |
 | wheel | scroll back through output |
 | drag in the terminal | select and copy (double-click = word, triple-click = line) |
@@ -83,15 +114,25 @@ On macOS, `Alt+…` shortcuts only work when your terminal sends Option as Alt
 (Ghostty: `macos-option-as-alt = true`; iTerm2: Profiles → Keys → Left Option = Esc+).
 The prefix keys work everywhere.
 
+## Saved state
+
+Workspaces and pinned tabs live in `~/.config/sasha/state.json` (or under `$XDG_CONFIG_HOME`).
+Set `SASHA_STATE=/some/file.json` to use a different file. Restored pinned tabs start a fresh
+shell. They don't re-run the command that was running before.
+
 ## How it works
 
 | File | |
 |---|---|
 | `src/tab.rs` | a shell in a PTY (`portable-pty`) mirrored by a `vt100` emulator; answers terminal queries |
-| `src/sidebar.rs` | layout, hit-testing and drawing of the tab strip |
-| `src/app.rs` | event loop, modes (normal / tab / scroll / rename / search) and input routing |
+| `src/workspace.rs` | a folder plus its tabs; badge initials and colour |
+| `src/store.rs` | loading / saving workspaces and pinned tabs |
+| `src/layout.rs` | screen layout and mouse hit-testing |
+| `src/activity.rs` | the workspace bar |
+| `src/sidebar.rs` | the tab strip |
+| `src/ui.rs` | the terminal pane, pickers and popups |
+| `src/app/` | event loop and state (`mod.rs`), keyboard (`keys.rs`), mouse (`mouse.rs`) |
 | `src/input.rs` | turns key and mouse events back into xterm byte sequences |
-| `src/ui.rs` | draws the terminal pane and popups |
 | `src/procinfo.rs` | foreground process name and working directory (macOS, Linux) |
 | `src/clipboard.rs` | `pbcopy` / `wl-copy` / `xclip`, with OSC 52 as a fallback |
 
