@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode, PickerEntry, Selection};
+use crate::app::{App, GroupEntry, Mode, PickerEntry, Selection};
 use crate::workspace::pretty_path;
 use crate::{activity, sidebar, theme};
 
@@ -35,6 +35,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Mode::Search => render_search(frame, app),
         Mode::Workspaces => render_workspaces(frame, app),
+        Mode::Groups => render_groups(frame, app),
         Mode::Normal | Mode::Tab => {
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
@@ -55,9 +56,13 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("Tab  ⇧Tab", "previous tab / previous workspace"),
         ("g G", "first / last tab"),
         ("J K", "move tab down / up"),
-        ("t n c", "new tab"),
+        ("t n c", "new tab (in the tab's group)"),
         ("x", "close tab (pinned: press twice)"),
         ("p", "pin / unpin tab"),
+        ("m", "add tab to a group, or name a new one"),
+        ("u", "take tab out of its group"),
+        ("z", "collapse / expand the tab's group"),
+        ("e", "edit group: name, ⇥ colour"),
         ("r ,", "rename tab (empty name = automatic)"),
         ("w", "workspaces: switch, add a folder, ^D remove"),
         ("/ f", "search tabs in every workspace"),
@@ -80,6 +85,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("double-click tab", "rename it"),
         ("middle-click ×", "close tab"),
         ("right-click tab", "pin / unpin (click ⚲ to unpin)"),
+        ("click group", "collapse / expand"),
+        ("2×-click group", "rename it"),
+        ("right-click group", "change its colour"),
+        ("drag tab to group", "add it / take it out"),
         ("workspace bar", "switch workspace, + adds a folder"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
         ("⇧ drag", "select even when an app uses the mouse"),
@@ -201,6 +210,48 @@ fn render_workspaces(frame: &mut Frame, app: &App) {
         empty: "no matching folders",
         rows,
         hint: Some(hint),
+    });
+}
+
+/// Putting the active tab into a new or existing tab group.
+fn render_groups(frame: &mut Frame, app: &App) {
+    let p = theme::palette();
+    let ws = app.ws();
+    let current = app.active_tab().and_then(|t| t.group);
+    let rows = app
+        .group_entries()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            GroupEntry::New(name) => Some(PickerRow {
+                badge: Some(("+".to_owned(), p.green)),
+                icon: (" ", p.text),
+                title: if name.is_empty() { "new group".to_owned() } else { format!("new group “{name}”") },
+                detail: String::new(),
+            }),
+            GroupEntry::Group(id) => {
+                let group = ws.group(id)?;
+                let count = ws.group_range(id).len();
+                let initial = group.name.chars().next().map_or_else(String::new, |c| c.to_uppercase().collect());
+                Some(PickerRow {
+                    badge: Some((initial, group.color())),
+                    icon: if current == Some(id) { ("●", group.color()) } else { (" ", p.text) },
+                    title: if group.name.is_empty() { "unnamed group".to_owned() } else { group.name.clone() },
+                    detail: format!(
+                        "{count} tab{}{}",
+                        if count == 1 { "" } else { "s" },
+                        if group.collapsed { " · collapsed" } else { "" }
+                    ),
+                })
+            }
+        })
+        .collect();
+    render_picker(frame, app, Picker {
+        title: " add tab to group ",
+        prompt: ("▾", p.cyan),
+        placeholder: "name a new group, or pick one",
+        empty: "",
+        rows,
+        hint: Some(("⏎ add tab · ^D ungroup · esc".to_owned(), p.text_dim)),
     });
 }
 

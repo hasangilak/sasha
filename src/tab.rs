@@ -12,6 +12,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 
 use crate::app::AppEvent;
 use crate::procinfo;
+use crate::workspace::GroupId;
 
 pub type TabId = u64;
 
@@ -85,6 +86,8 @@ pub struct Tab {
     pub custom_title: Option<String>,
     /// Pinned tabs sit at the top of their workspace and are restored on startup.
     pub pinned: bool,
+    /// The tab group this tab belongs to (never set on pinned tabs).
+    pub group: Option<GroupId>,
     /// Name of the process in the foreground of this tab's tty.
     fg_name: String,
     fg_pgid: Option<i32>,
@@ -168,6 +171,7 @@ impl Tab {
             shell_pid,
             custom_title: None,
             pinned: false,
+            group: None,
             fg_name: String::new(),
             fg_pgid: shell_pid,
             title_owner: None,

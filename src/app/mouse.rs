@@ -22,7 +22,7 @@ impl App {
 
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             match self.mode {
-                Mode::Help | Mode::ConfirmQuit | Mode::Search | Mode::Workspaces => {
+                Mode::Help | Mode::ConfirmQuit | Mode::Search | Mode::Workspaces | Mode::Groups => {
                     self.mode = Mode::Normal;
                     return;
                 }
@@ -44,20 +44,20 @@ impl App {
                     self.close_tab(index);
                 }
             }
-            // Right-click pins and unpins.
+            // Right-click pins and unpins, and changes a group's colour.
             (MouseEventKind::Down(MouseButton::Right), Some(Hit::Tab(index) | Hit::Close(index))) => {
                 self.toggle_pin(index);
             }
+            (MouseEventKind::Down(MouseButton::Right), Some(Hit::Group(id))) => self.cycle_group_color(id),
             (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(hit)) => {
                 let down = mouse.kind == MouseEventKind::ScrollDown;
                 if matches!(hit, Hit::Workspace(_) | Hit::AddWorkspace | Hit::HelpButton) {
                     let scroll = if down { self.activity_scroll + 1 } else { self.activity_scroll.saturating_sub(1) };
                     self.activity_scroll = self.layout.clamp_activity_scroll(scroll, self.workspaces.len(), None);
                 } else {
-                    let (tabs, pinned) = (self.ws().tabs.len(), self.ws().pinned_count());
                     let ws = &mut self.workspaces[self.current];
-                    let scroll = if down { ws.scroll + 1 } else { ws.scroll.saturating_sub(1) };
-                    ws.scroll = self.layout.clamp_scroll(scroll, tabs, pinned, None);
+                    ws.scroll = if down { ws.scroll + 1 } else { ws.scroll.saturating_sub(1) };
+                    ws.clamp_scroll(&self.layout, None);
                 }
             }
             _ => {}
@@ -80,7 +80,17 @@ impl App {
                 if double {
                     self.start_rename();
                 } else {
-                    self.drag = Some(Drag::Tab(index));
+                    self.drag = Some(Drag::Tab(self.ws().tabs[index].id));
+                }
+            }
+            // Click collapses or expands; a double-click undoes the first
+            // click's toggle and renames instead.
+            Hit::Group(id) => {
+                let double = self.last_group_click.is_some_and(|(at, g)| g == id && at.elapsed() < MULTI_CLICK);
+                self.last_group_click = if double { None } else { Some((Instant::now(), id)) };
+                self.toggle_group(id);
+                if double {
+                    self.start_group_rename(id);
                 }
             }
             // On a pinned tab the button is the pin itself.
@@ -105,10 +115,14 @@ impl App {
                 self.collapsed = false;
                 self.relayout_now();
             }
-            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Tab(from))) => {
-                if let Some(Hit::Tab(to) | Hit::Close(to)) = hit {
-                    self.move_tab(from, to);
-                    self.drag = Some(Drag::Tab(to));
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Tab(id))) => {
+                let Some(from) = self.ws().tabs.iter().position(|t| t.id == id) else { return true };
+                match hit {
+                    Some(Hit::Tab(to) | Hit::Close(to)) => self.move_tab(from, to),
+                    Some(Hit::Group(group)) => self.drop_on_group(from, group),
+                    // Past the last tab: to the end, out of any group.
+                    Some(Hit::NewTab) => self.place_tab(from, usize::MAX, false, None),
+                    _ => {}
                 }
             }
             (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Select)) => {

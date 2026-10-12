@@ -6,8 +6,9 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, Mode};
-use crate::layout::{Hit, ListItem, list_items};
+use crate::layout::{Hit, ListItem};
 use crate::tab::Tab;
+use crate::workspace::GroupId;
 use crate::theme::{self, BG};
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -24,14 +25,25 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
     render_header(buf, app);
     let ws = app.ws();
     let mut cursor = None;
-    for (item_index, item) in list_items(ws.tabs.len(), ws.pinned_count()).into_iter().enumerate() {
+    let renaming = app.mode == Mode::Rename && !layout.collapsed;
+    for (item_index, item) in ws.list_items().into_iter().enumerate() {
         let Some(row) = layout.row_of(item_index, ws.scroll) else { continue };
         let pill = layout.pill(row);
+        // Tabs in a group hang off a rail in the group's colour.
+        if let ListItem::Tab(index) = item
+            && let Some(group) = ws.group_of(index)
+        {
+            buf.set_string(layout.list.x, row, "▎", Style::new().fg(group.color()).bg(BG));
+        }
         match item {
-            ListItem::Tab(index) if app.mode == Mode::Rename && index == ws.active && !layout.collapsed => {
+            ListItem::Tab(index) if renaming && app.renaming_group.is_none() && index == ws.active => {
                 cursor = Some(render_rename(buf, app, pill));
             }
             ListItem::Tab(index) => render_tab(buf, app, index, &ws.tabs[index], pill),
+            ListItem::Group(id) if renaming && app.renaming_group == Some(id) => {
+                cursor = Some(render_group_rename(buf, app, id, pill));
+            }
+            ListItem::Group(id) => render_group(buf, app, id, pill),
             ListItem::Separator => {
                 let line = "─".repeat(pill.width.saturating_sub(2) as usize);
                 buf.set_string(pill.x + 1, row, line, Style::new().fg(p.border).bg(BG));
@@ -145,17 +157,82 @@ fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) 
     render_faded(buf, pill.x + 3, pill.y, &tab.title(), max_width, title_style, bg);
 }
 
+/// A group's header: a chip with its name in its colour, like Chrome's.
+/// A collapsed group also shows how many tabs it hides and whether any of
+/// them is busy or has news.
+fn render_group(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect) {
+    let p = theme::palette();
+    let ws = app.ws();
+    let Some(group) = ws.group(id) else { return };
+    let hovered = app.hover == Some(Hit::Group(id));
+    let bg = if hovered { p.hover_bg } else { BG };
+    buf.set_style(pill, Style::new().bg(bg));
+    let chip = Style::new().fg(p.on_accent).bg(group.color()).add_modifier(Modifier::BOLD);
+    if app.layout.collapsed || pill.width < 8 {
+        let initial = group.name.chars().next().map_or_else(String::new, |c| c.to_uppercase().collect());
+        buf.set_stringn(pill.x, pill.y, format!(" {initial:1} "), pill.width as usize, chip);
+        return;
+    }
+
+    let dim = Style::new().fg(if hovered { p.text } else { p.text_dim }).bg(bg);
+    let mut right = pill.right() - 2;
+    buf.set_string(right, pill.y, if group.collapsed { "▸" } else { "▾" }, dim);
+    if group.collapsed {
+        let tabs = &ws.tabs[ws.group_range(id)];
+        let count = tabs.len().to_string();
+        right -= count.len() as u16 + 1;
+        buf.set_string(right, pill.y, &count, dim);
+        let marker = if tabs.iter().any(|t| app.is_busy(t)) {
+            Some((SPINNER[app.spinner_frame() % SPINNER.len()], p.accent))
+        } else if tabs.iter().any(|t| t.bell) {
+            Some(("•", p.yellow))
+        } else if tabs.iter().any(|t| t.unseen) {
+            Some(("•", p.accent))
+        } else {
+            None
+        };
+        if let Some((glyph, color)) = marker {
+            right -= 2;
+            buf.set_string(right, pill.y, glyph, Style::new().fg(color).bg(bg));
+        }
+    }
+
+    // The chip: " name ", or a dash of colour for an unnamed group.
+    let room = right.saturating_sub(pill.x + 3) as usize;
+    buf.set_string(pill.x, pill.y, " ", chip);
+    let end = render_faded(buf, pill.x + 1, pill.y, &group.name, room, chip, group.color());
+    buf.set_string(end, pill.y, if group.name.is_empty() { "  " } else { " " }, chip);
+}
+
+/// A group's header turned into a text field for its name.
+fn render_group_rename(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect) -> Position {
+    let Some(group) = app.ws().group(id) else { return Position::new(pill.x, pill.y) };
+    let chip = Style::new().fg(theme::palette().on_accent).bg(group.color()).add_modifier(Modifier::BOLD);
+    let (tail, width) = input_tail(&app.input, pill.width.saturating_sub(4) as usize);
+    let end = pill.x + 1 + width as u16;
+    buf.set_string(pill.x, pill.y, " ", chip);
+    buf.set_string(pill.x + 1, pill.y, &tail, chip.add_modifier(Modifier::UNDERLINED));
+    buf.set_string(end, pill.y, " ", chip);
+    Position::new(end, pill.y)
+}
+
 /// The active tab's row turned into a text field.
 fn render_rename(buf: &mut Buffer, app: &App, pill: Rect) -> Position {
     let p = theme::palette();
     let style = Style::new().fg(p.text).bg(p.active_bg);
     buf.set_style(pill, style);
     buf.set_string(pill.x + 1, pill.y, "✎", Style::new().fg(p.green).bg(p.active_bg));
-    // Show the end of the text when it's longer than the row.
-    let room = pill.width.saturating_sub(5) as usize;
+    let (tail, width) = input_tail(&app.input, pill.width.saturating_sub(5) as usize);
+    buf.set_string(pill.x + 3, pill.y, &tail, style.add_modifier(Modifier::UNDERLINED));
+    Position::new(pill.x + 3 + width as u16, pill.y)
+}
+
+/// The end of `text` that fits in `room` columns, and its width: while
+/// typing, the end is what matters.
+fn input_tail(text: &str, room: usize) -> (String, usize) {
     let mut width = 0;
     let mut tail: Vec<char> = Vec::new();
-    for c in app.input.chars().rev() {
+    for c in text.chars().rev() {
         let w = c.width().unwrap_or(0);
         if width + w > room {
             break;
@@ -163,14 +240,13 @@ fn render_rename(buf: &mut Buffer, app: &App, pill: Rect) -> Position {
         width += w;
         tail.push(c);
     }
-    let tail: String = tail.into_iter().rev().collect();
-    buf.set_string(pill.x + 3, pill.y, &tail, style.add_modifier(Modifier::UNDERLINED));
-    Position::new(pill.x + 3 + width as u16, pill.y)
+    (tail.into_iter().rev().collect(), width)
 }
 
 /// Draws `text` clipped to `max_width`; clipped text fades out into the
-/// background over its last few columns, like Chrome's tab titles.
-pub fn render_faded(buf: &mut Buffer, x: u16, y: u16, text: &str, max_width: usize, style: Style, bg: Color) {
+/// background over its last few columns, like Chrome's tab titles. Returns
+/// the column after the text.
+pub fn render_faded(buf: &mut Buffer, x: u16, y: u16, text: &str, max_width: usize, style: Style, bg: Color) -> u16 {
     let p = theme::palette();
     let mut glyphs = Vec::new();
     let mut width = 0;
@@ -196,6 +272,7 @@ pub fn render_faded(buf: &mut Buffer, x: u16, y: u16, text: &str, max_width: usi
         buf.set_string(col, y, c.to_string(), style);
         col += *w as u16;
     }
+    col
 }
 
 fn render_footer(buf: &mut Buffer, app: &App) {

@@ -84,6 +84,11 @@ impl Palette {
         }
     }
 
+    /// Colours a tab group can be, in Chrome's order.
+    pub fn group_colors(&self) -> [Color; 9] {
+        [self.text_dim, self.blue, self.red, self.yellow, self.green, self.pink, self.purple, self.cyan, self.orange]
+    }
+
     /// Colours a workspace badge can be.
     pub fn badge_colors(&self) -> [Color; 8] {
         [self.blue, self.green, self.orange, self.purple, self.yellow, self.cyan, self.red, self.pink]

@@ -2,7 +2,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{App, Mode, PickerEntry};
+use super::{App, GroupEntry, Mode, PickerEntry};
+use crate::workspace::GroupId;
 use crate::input;
 use crate::workspace;
 
@@ -15,6 +16,7 @@ impl App {
             Mode::Rename => self.rename_key(key),
             Mode::Search => self.search_key(key),
             Mode::Workspaces => self.workspaces_key(key),
+            Mode::Groups => self.groups_key(key),
             Mode::Help => self.mode = Mode::Normal,
             Mode::ConfirmQuit => {
                 self.quit = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
@@ -70,8 +72,8 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.cycle(-1),
             KeyCode::Char('l') | KeyCode::Right => self.cycle_workspace(1),
             KeyCode::Char('h') | KeyCode::Left => self.cycle_workspace(-1),
-            KeyCode::Char('g') | KeyCode::Home => self.activate(0),
-            KeyCode::Char('G') | KeyCode::End => self.activate(self.ws().tabs.len().saturating_sub(1)),
+            KeyCode::Char('g') | KeyCode::Home => self.jump('1'),
+            KeyCode::Char('G') | KeyCode::End => self.jump('9'),
             KeyCode::Char(c @ '1'..='9') => {
                 self.jump(c);
                 self.mode = Mode::Normal;
@@ -85,13 +87,25 @@ impl App {
                 self.mode = Mode::Normal;
             }
             KeyCode::Char('t' | 'n' | 'c') => {
-                if let Err(err) = self.new_tab() {
+                if let Err(err) = self.new_tab_in_group() {
                     self.set_status(format!("can't start a shell: {err}"));
                 }
                 self.mode = Mode::Normal;
             }
             KeyCode::Char('x') => self.close_tab_guarded(self.ws().active),
             KeyCode::Char('p') => self.toggle_pin(self.ws().active),
+            KeyCode::Char('m') => self.start_groups(),
+            KeyCode::Char('u') => self.remove_from_group(),
+            KeyCode::Char('z') => {
+                if let Some(id) = self.active_group() {
+                    self.toggle_group(id);
+                }
+            }
+            KeyCode::Char('e') => {
+                if let Some(id) = self.active_group() {
+                    self.start_group_rename(id);
+                }
+            }
             KeyCode::Char('w') => self.start_workspaces(String::new()),
             KeyCode::Char('b' | 's') => self.set_collapsed(!self.collapsed),
             KeyCode::Char('a') => self.toggle_activity_bar(),
@@ -150,6 +164,17 @@ impl App {
     pub(super) fn start_rename(&mut self) {
         let Some(tab) = self.active_tab() else { return };
         self.input = tab.custom_title.clone().unwrap_or_else(|| tab.title());
+        self.renaming_group = None;
+        if self.collapsed {
+            self.set_collapsed(false);
+        }
+        self.mode = Mode::Rename;
+    }
+
+    pub(super) fn start_group_rename(&mut self, id: GroupId) {
+        let Some(group) = self.ws().group(id) else { return };
+        self.input = group.name.clone();
+        self.renaming_group = Some(id);
         if self.collapsed {
             self.set_collapsed(false);
         }
@@ -158,6 +183,14 @@ impl App {
 
     pub(super) fn finish_rename(&mut self) {
         let name = self.input.trim().to_owned();
+        self.input.clear();
+        self.mode = Mode::Normal;
+        if let Some(id) = self.renaming_group.take() {
+            if let Some(group) = self.ws_mut().group_mut(id) {
+                group.name = name;
+            }
+            return;
+        }
         let mut pinned = false;
         if let Some(tab) = self.ws_mut().active_tab_mut() {
             // An empty name goes back to the automatic title.
@@ -167,8 +200,6 @@ impl App {
         if pinned {
             self.save();
         }
-        self.input.clear();
-        self.mode = Mode::Normal;
     }
 
     fn rename_key(&mut self, key: KeyEvent) {
@@ -176,7 +207,13 @@ impl App {
             KeyCode::Enter => self.finish_rename(),
             KeyCode::Esc => {
                 self.input.clear();
+                self.renaming_group = None;
                 self.mode = Mode::Normal;
+            }
+            KeyCode::Tab => {
+                if let Some(id) = self.renaming_group {
+                    self.cycle_group_color(id);
+                }
             }
             _ => edit_line(&mut self.input, &key),
         }
@@ -266,6 +303,43 @@ impl App {
                 edit_line(&mut self.input, &key);
                 self.picker_selected = 0;
                 self.confirm_remove = None;
+            }
+        }
+    }
+
+    fn start_groups(&mut self) {
+        self.input.clear();
+        self.picker_selected = 0;
+        self.mode = Mode::Groups;
+    }
+
+    fn groups_key(&mut self, key: KeyEvent) {
+        let entries = self.group_entries();
+        if self.move_picker_selection(&key, entries.len()) {
+            return;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let selected = entries.get(self.picker_selected).cloned();
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                match selected {
+                    Some(GroupEntry::New(name)) => self.new_group(name),
+                    Some(GroupEntry::Group(id)) => self.add_to_group(id),
+                    None => {}
+                }
+                self.input.clear();
+            }
+            KeyCode::Char('d') if ctrl => {
+                if let Some(GroupEntry::Group(id)) = selected {
+                    self.ungroup(id);
+                    self.picker_selected = self.picker_selected.min(self.group_entries().len().saturating_sub(1));
+                }
+            }
+            _ => {
+                edit_line(&mut self.input, &key);
+                self.picker_selected = 0;
             }
         }
     }

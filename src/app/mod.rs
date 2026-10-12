@@ -18,7 +18,7 @@ use crate::config::Config;
 use crate::layout::{self, Hit, Layout};
 use crate::store::{self, SavedTab, SavedWorkspace, State};
 use crate::tab::{Tab, TabId};
-use crate::workspace::{self, Workspace, WorkspaceId};
+use crate::workspace::{self, Group, GroupId, Workspace, WorkspaceId};
 use crate::{theme, ui};
 
 /// Minimum time between two frames (~120 fps).
@@ -50,13 +50,15 @@ pub enum Mode {
     Search,
     /// Switching, adding and removing workspaces (query in `App::input`).
     Workspaces,
+    /// Putting the active tab into a tab group (query in `App::input`).
+    Groups,
     Help,
     ConfirmQuit,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
-    Tab(usize),
+    Tab(TabId),
     Divider,
     Select,
 }
@@ -89,6 +91,14 @@ pub enum PickerEntry {
     AddFolder(PathBuf),
 }
 
+/// A row of the tab group picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupEntry {
+    /// Start a group with this name (which may be empty).
+    New(String),
+    Group(GroupId),
+}
+
 /// Activity of a workspace that isn't on screen, for its badge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
@@ -116,6 +126,9 @@ pub struct App {
     /// Time, position and count of the last click in the pane.
     last_click: Option<(Instant, (u16, u16), u8)>,
     last_tab_click: Option<(Instant, usize)>,
+    last_group_click: Option<(Instant, GroupId)>,
+    /// The group being renamed in rename mode (else it's the active tab).
+    pub(crate) renaming_group: Option<GroupId>,
     status: Option<(String, Instant)>,
     /// Workspace waiting for a second ^D before its tabs are closed.
     confirm_remove: Option<WorkspaceId>,
@@ -127,6 +140,7 @@ pub struct App {
     drag: Option<Drag>,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
+    next_group_id: GroupId,
     events_tx: Sender<AppEvent>,
     events: Receiver<AppEvent>,
     started: Instant,
@@ -151,6 +165,8 @@ impl App {
             activity_scroll: 0,
             last_click: None,
             last_tab_click: None,
+            last_group_click: None,
+            renaming_group: None,
             status: None,
             confirm_remove: None,
             confirm_close: None,
@@ -160,6 +176,7 @@ impl App {
             drag: None,
             next_tab_id: 0,
             next_workspace_id: 0,
+            next_group_id: 0,
             events_tx,
             events,
             started: Instant::now(),
@@ -295,6 +312,10 @@ impl App {
                 Some((if short { "TAB" } else { "TABS" }, p.accent)),
                 "j/k tabs · h/l spaces · p pin".to_owned(),
             ),
+            Mode::Rename if self.renaming_group.is_some() => (
+                Some((if short { "GRP" } else { "GROUP" }, p.green)),
+                "⏎ save · ⇥ colour · esc".to_owned(),
+            ),
             Mode::Rename => (
                 Some((if short { "REN" } else { "RENAME" }, p.green)),
                 "⏎ save · esc".to_owned(),
@@ -306,6 +327,10 @@ impl App {
             Mode::Workspaces => (
                 Some((if short { "WS" } else { "SPACES" }, p.orange)),
                 "⏎ open · ⇥ complete".to_owned(),
+            ),
+            Mode::Groups => (
+                Some((if short { "GRP" } else { "GROUP" }, p.cyan)),
+                "⏎ add tab · ^D ungroup".to_owned(),
             ),
             Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
             Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, p.red)), "y / n".to_owned()),
@@ -404,7 +429,7 @@ impl App {
         self.activity_scroll = self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), None);
         let (rows, cols) = self.pty_size();
         for ws in &mut self.workspaces {
-            ws.scroll = self.layout.clamp_scroll(ws.scroll, ws.tabs.len(), ws.pinned_count(), None);
+            ws.clamp_scroll(&self.layout, None);
             for tab in &mut ws.tabs {
                 tab.resize(rows, cols);
             }
@@ -633,19 +658,33 @@ impl App {
         Tab::spawn(id, self.pty_size(), Some(cwd), self.events_tx.clone())
     }
 
-    /// Opens a tab in the current workspace, in the active tab's folder if
-    /// that's inside the workspace, else in the workspace root.
+    /// Opens a tab at the end of the current workspace.
     fn new_tab(&mut self) -> Result<()> {
+        self.open_tab(None)
+    }
+
+    /// Opens a tab at the end of the active tab's group, or of the
+    /// workspace when it isn't in one.
+    fn new_tab_in_group(&mut self) -> Result<()> {
+        let group = self.active_tab().and_then(|t| t.group);
+        self.open_tab(group)
+    }
+
+    /// Opens a tab in the active tab's folder if that's inside the
+    /// workspace, else in the workspace root.
+    fn open_tab(&mut self, group: Option<GroupId>) -> Result<()> {
         let ws = self.ws();
         let cwd = ws
             .active_tab()
             .and_then(Tab::cwd)
             .filter(|cwd| cwd.starts_with(&ws.path))
             .map_or_else(|| ws.path.clone(), Path::to_path_buf);
-        let tab = self.spawn_tab(&cwd)?;
-        self.ws_mut().tabs.push(tab);
-        let last = self.ws().tabs.len() - 1;
-        self.activate(last);
+        let mut tab = self.spawn_tab(&cwd)?;
+        tab.group = group;
+        let ws = self.ws_mut();
+        let index = group.map_or(ws.tabs.len(), |id| ws.group_range(id).end);
+        ws.tabs.insert(index, tab);
+        self.activate(index);
         Ok(())
     }
 
@@ -663,7 +702,11 @@ impl App {
         let tab = &mut ws.tabs[index];
         tab.unseen = false;
         tab.bell = false;
-        ws.scroll = self.layout.clamp_scroll(ws.scroll, ws.tabs.len(), ws.pinned_count(), Some(index));
+        let (id, group) = (tab.id, tab.group);
+        if let Some(group) = group.and_then(|g| ws.group_mut(g)) {
+            group.last_active = Some(id);
+        }
+        ws.clamp_scroll(&self.layout, Some(index));
         self.selection = None;
     }
 
@@ -678,6 +721,7 @@ impl App {
         }
         // Dropping the tab hangs up its shell.
         let was_pinned = ws.tabs.remove(index).pinned;
+        ws.prune_groups();
         if index < ws.active || ws.active >= ws.tabs.len() {
             ws.active = ws.active.saturating_sub(1);
         }
@@ -695,20 +739,26 @@ impl App {
         }
     }
 
-    /// Activates the tab `delta` steps away, wrapping around.
+    /// Activates the tab `delta` steps away, wrapping around. A collapsed
+    /// group counts as one step.
     fn cycle(&mut self, delta: isize) {
-        let len = self.ws().tabs.len() as isize;
-        if len > 0 {
-            self.activate((self.ws().active as isize + delta).rem_euclid(len) as usize);
-        }
+        let stops = self.ws().stops();
+        let Some(position) = stops.iter().position(|&i| i == self.ws().active) else { return };
+        let next = (position as isize + delta).rem_euclid(stops.len() as isize) as usize;
+        self.activate(stops[next]);
     }
 
-    /// Chrome numbering: 1-8 pick a tab, 9 is always the last one.
+    /// Chrome numbering: 1-8 pick a tab, 9 is always the last one. A
+    /// collapsed group counts as one tab.
     fn jump(&mut self, digit: char) {
-        match digit {
-            '9' => self.activate(self.ws().tabs.len().saturating_sub(1)),
-            '1'..='8' => self.activate(digit as usize - '1' as usize),
-            _ => {}
+        let stops = self.ws().stops();
+        let stop = match digit {
+            '9' => stops.last(),
+            '1'..='8' => stops.get(digit as usize - '1' as usize),
+            _ => None,
+        };
+        if let Some(&index) = stop {
+            self.activate(index);
         }
     }
 
@@ -719,60 +769,110 @@ impl App {
         }
     }
 
-    /// Moves the active tab by `delta`, staying within its section
-    /// (pinned or not).
+    /// Moves the active tab one step, as Chrome does: through its group,
+    /// out of it at either end, into a group it meets, or past a collapsed
+    /// one. Keyboard moves never cross into or out of the pinned section.
     fn shift_active(&mut self, delta: isize) {
         let ws = self.ws();
+        let index = ws.active;
+        let Some(tab) = ws.tabs.get(index) else { return };
         let pinned = ws.pinned_count();
-        // Keyboard moves never cross into or out of the pinned section.
-        let section = if ws.active < pinned { 0..pinned } else { pinned..ws.tabs.len() };
-        let to = ws.active as isize + delta;
-        if to >= 0 && section.contains(&(to as usize)) {
-            self.move_tab(ws.active, to as usize);
+        let down = delta > 0;
+        let past = |range: std::ops::Range<usize>| if down { range.end - 1 } else { range.start };
+
+        if tab.pinned {
+            if let Some(to) = index.checked_add_signed(delta).filter(|&to| to < pinned) {
+                self.place_tab(index, to, true, None);
+            }
+        } else if let Some(id) = tab.group {
+            let range = ws.group_range(id);
+            let collapsed = ws.group(id).is_some_and(|g| g.collapsed);
+            let at_edge = if down { index + 1 == range.end } else { index == range.start };
+            if collapsed || at_edge {
+                self.place_tab(index, past(range), false, None);
+            } else {
+                self.place_tab(index, index.saturating_add_signed(delta), false, Some(id));
+            }
+        } else {
+            let Some(neighbour) = index.checked_add_signed(delta).filter(|&i| i >= pinned && i < ws.tabs.len())
+            else {
+                return;
+            };
+            match ws.tabs[neighbour].group {
+                Some(id) if ws.group(id).is_some_and(|g| g.collapsed) => {
+                    self.place_tab(index, past(ws.group_range(id)), false, None);
+                }
+                // Join the group at the near end.
+                Some(id) => self.place_tab(index, index, false, Some(id)),
+                None => self.place_tab(index, neighbour, false, None),
+            }
         }
     }
 
-    /// Moves a tab; landing inside the pinned section pins it and landing
-    /// below it unpins it, like dragging tabs in Chrome.
+    /// Drops tab `from` where tab `to` is, taking on that tab's place: in
+    /// the pinned section, in its group or in neither, like dragging tabs
+    /// in Chrome.
     fn move_tab(&mut self, from: usize, to: usize) {
+        let Some(target) = self.ws().tabs.get(to) else { return };
+        let (pinned, group) = (target.pinned, target.group);
+        self.place_tab(from, to, pinned, group);
+    }
+
+    /// Drops tab `from` on a group's header: from above it joins the group
+    /// (or skips past it when collapsed); from inside or below it ends up
+    /// above the group, outside it.
+    fn drop_on_group(&mut self, from: usize, id: GroupId) {
+        let ws = self.ws();
+        let Some(group) = ws.group(id) else { return };
+        let range = ws.group_range(id);
+        if from < range.start {
+            // Taking the tab out shifts the group up by one.
+            if group.collapsed {
+                self.place_tab(from, range.end - 1, false, None);
+            } else {
+                self.place_tab(from, range.start - 1, false, Some(id));
+            }
+        } else {
+            self.place_tab(from, range.start, false, None);
+        }
+    }
+
+    /// Takes tab `from` out and puts it back at index `to` (counted without
+    /// it), pinned, in `group`, or neither.
+    fn place_tab(&mut self, from: usize, to: usize, pinned: bool, group: Option<GroupId>) {
         let ws = &mut self.workspaces[self.current];
-        if from == to || from >= ws.tabs.len() || to >= ws.tabs.len() {
+        let Some(tab) = ws.tabs.get(from) else { return };
+        let group = if pinned { None } else { group };
+        // Pinned tabs stay above the others.
+        let pinned_rest = ws.pinned_count() - usize::from(tab.pinned);
+        let last = ws.tabs.len() - 1;
+        let to = if pinned { to.min(pinned_rest) } else { to.clamp(pinned_rest, last) };
+        if to == from && tab.pinned == pinned && tab.group == group {
             return;
         }
+        let affects_pins = tab.pinned || pinned;
         let active_id = ws.tabs[ws.active].id;
         let mut tab = ws.tabs.remove(from);
-        let was_pinned = tab.pinned;
-        let pinned = ws.pinned_count();
-        if to < pinned {
-            tab.pinned = true;
-        } else if to > pinned {
-            tab.pinned = false;
-        }
-        let affects_pins = was_pinned || tab.pinned;
+        tab.pinned = pinned;
+        tab.group = group;
         ws.tabs.insert(to, tab);
         ws.active = ws.tabs.iter().position(|t| t.id == active_id).unwrap_or(0);
-        ws.scroll = self.layout.clamp_scroll(ws.scroll, ws.tabs.len(), ws.pinned_count(), Some(to));
+        ws.prune_groups();
+        ws.clamp_scroll(&self.layout, Some(to));
         if affects_pins {
             self.save();
         }
     }
 
-    /// Pins a tab (to the end of the pinned section) or unpins it (to the
-    /// top of the regular tabs).
+    /// Pins a tab (to the end of the pinned section, out of its group) or
+    /// unpins it (to the top of the regular tabs).
     fn toggle_pin(&mut self, index: usize) {
-        let ws = &mut self.workspaces[self.current];
-        if index >= ws.tabs.len() {
-            return;
-        }
-        let active_id = ws.active_tab().map(|t| t.id);
-        let mut tab = ws.tabs.remove(index);
-        tab.pinned = !tab.pinned;
-        let message = format!("{} {}", if tab.pinned { "pinned" } else { "unpinned" }, tab.title());
-        let to = ws.pinned_count();
-        ws.tabs.insert(to, tab);
-        ws.active = ws.tabs.iter().position(|t| Some(t.id) == active_id).unwrap_or(0);
-        ws.scroll = self.layout.clamp_scroll(ws.scroll, ws.tabs.len(), ws.pinned_count(), Some(to));
-        self.save();
+        let ws = self.ws();
+        let Some(tab) = ws.tabs.get(index) else { return };
+        let pin = !tab.pinned;
+        let message = format!("{} {}", if pin { "pinned" } else { "unpinned" }, tab.title());
+        let to = ws.pinned_count() - usize::from(tab.pinned);
+        self.place_tab(index, to, pin, None);
         self.set_status(message);
     }
 
@@ -788,6 +888,111 @@ impl App {
         self.close_tab(index);
     }
 
+    // ── Tab groups ──────────────────────────────────────────────────────
+
+    /// Starts a group holding the active tab, in the first colour no other
+    /// group in the workspace has.
+    fn new_group(&mut self, name: String) {
+        let id = self.next_group_id;
+        self.next_group_id += 1;
+        let colors = theme::palette().group_colors().len();
+        let ws = self.ws_mut();
+        let color = (1..colors)
+            .chain([0])
+            .find(|c| !ws.groups.iter().any(|g| g.color == *c))
+            .unwrap_or(ws.groups.len() % colors);
+        ws.groups.push(Group { id, name, color, collapsed: false, last_active: None });
+        let index = ws.active;
+        let Some(tab) = ws.tabs.get(index) else { return };
+        // A pinned tab moves to the top of the regular tabs; one from another
+        // group moves out past the end of that group.
+        let to = match (tab.pinned, tab.group) {
+            (true, _) => ws.pinned_count() - 1,
+            (false, Some(old)) => ws.group_range(old).end - 1,
+            (false, None) => index,
+        };
+        self.place_tab(index, to, false, Some(id));
+    }
+
+    /// Moves the active tab to the end of group `id`.
+    fn add_to_group(&mut self, id: GroupId) {
+        let ws = self.ws();
+        let index = ws.active;
+        if ws.tabs.get(index).is_none_or(|t| t.group == Some(id)) {
+            return;
+        }
+        let range = ws.group_range(id);
+        let to = if index < range.start { range.end - 1 } else { range.end };
+        self.place_tab(index, to, false, Some(id));
+    }
+
+    /// Takes the active tab out of its group, at the group's nearer end.
+    fn remove_from_group(&mut self) {
+        let ws = self.ws();
+        let index = ws.active;
+        let Some(id) = ws.tabs.get(index).and_then(|t| t.group) else {
+            self.set_status("this tab isn't in a group");
+            return;
+        };
+        let range = ws.group_range(id);
+        let to = if index == range.start { index } else { range.end - 1 };
+        self.place_tab(index, to, false, None);
+    }
+
+    /// Dissolves a group; its tabs stay where they are.
+    fn ungroup(&mut self, id: GroupId) {
+        let ws = &mut self.workspaces[self.current];
+        for tab in ws.tabs.iter_mut().filter(|t| t.group == Some(id)) {
+            tab.group = None;
+        }
+        ws.prune_groups();
+        ws.clamp_scroll(&self.layout, None);
+    }
+
+    fn toggle_group(&mut self, id: GroupId) {
+        let ws = &mut self.workspaces[self.current];
+        if let Some(group) = ws.group_mut(id) {
+            group.collapsed = !group.collapsed;
+        }
+        let active = ws.active;
+        ws.clamp_scroll(&self.layout, Some(active));
+    }
+
+    fn cycle_group_color(&mut self, id: GroupId) {
+        let colors = theme::palette().group_colors().len();
+        if let Some(group) = self.ws_mut().group_mut(id) {
+            group.color = (group.color + 1) % colors;
+        }
+    }
+
+    /// The active tab's group, or a hint about how to make one.
+    fn active_group(&mut self) -> Option<GroupId> {
+        let group = self.active_tab().and_then(|t| t.group);
+        if group.is_none() {
+            let prefix = self.config.prefix.label();
+            self.set_status(format!("not in a group · {prefix} m adds it to one"));
+        }
+        group
+    }
+
+    /// Rows of the group picker: existing groups matching the query, and a
+    /// new group named after it (first when nothing is typed yet).
+    pub fn group_entries(&self) -> Vec<GroupEntry> {
+        let query = self.input.trim();
+        let lower = query.to_lowercase();
+        let groups = self.ws().groups_in_order();
+        let matching = groups.iter().filter(|g| g.name.to_lowercase().contains(&lower)).map(|g| GroupEntry::Group(g.id));
+        let new = GroupEntry::New(query.to_owned());
+        if query.is_empty() {
+            return std::iter::once(new).chain(matching).collect();
+        }
+        let mut entries: Vec<GroupEntry> = matching.collect();
+        if !groups.iter().any(|g| g.name.to_lowercase() == lower) {
+            entries.push(new);
+        }
+        entries
+    }
+
     /// Indices (workspace, tab) of the tabs matching the search query.
     pub fn search_results(&self) -> Vec<(usize, usize)> {
         let query = self.input.to_lowercase();
@@ -796,11 +1001,12 @@ impl App {
         for (w, ws) in self.workspaces.iter().enumerate() {
             for (t, tab) in ws.tabs.iter().enumerate() {
                 let haystack = format!(
-                    "{} {} {} {}",
+                    "{} {} {} {} {}",
                     tab.title(),
                     tab.process_name(),
                     tab.cwd().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
                     ws.name,
+                    tab.group.and_then(|id| ws.group(id)).map_or("", |g| g.name.as_str()),
                 )
                 .to_lowercase();
                 if terms.iter().all(|term| haystack.contains(term)) {
@@ -861,7 +1067,7 @@ impl App {
 
     fn paste(&mut self, text: &str) {
         match self.mode {
-            Mode::Rename | Mode::Search | Mode::Workspaces => {
+            Mode::Rename | Mode::Search | Mode::Workspaces | Mode::Groups => {
                 self.input.push_str(text.lines().next().unwrap_or_default());
                 return;
             }

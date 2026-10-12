@@ -4,6 +4,7 @@
 use ratatui::layout::{Position, Rect};
 
 use crate::app::App;
+use crate::workspace::GroupId;
 
 pub const ACTIVITY_WIDTH: u16 = 6;
 pub const DEFAULT_WIDTH: u16 = 30;
@@ -23,6 +24,8 @@ pub enum Hit {
     Tab(usize),
     /// The button on the right of a tab row: close, or unpin for pinned tabs.
     Close(usize),
+    /// A tab group's header.
+    Group(GroupId),
     NewTab,
     Divider,
     Pane,
@@ -32,24 +35,11 @@ pub enum Hit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListItem {
     Tab(usize),
+    /// A tab group's header, above its tabs.
+    Group(GroupId),
     /// The line between pinned and regular tabs.
     Separator,
     NewTab,
-}
-
-/// Rows of the tab list: pinned tabs, a separator, the other tabs, then "+".
-pub fn list_items(tabs: usize, pinned: usize) -> Vec<ListItem> {
-    let mut items: Vec<ListItem> = (0..pinned).map(ListItem::Tab).collect();
-    if pinned > 0 {
-        items.push(ListItem::Separator);
-    }
-    items.extend((pinned..tabs).map(ListItem::Tab));
-    items.push(ListItem::NewTab);
-    items
-}
-
-fn item_of_tab(tab: usize, pinned: usize) -> usize {
-    if tab < pinned { tab } else { tab + usize::from(pinned > 0) }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -113,12 +103,13 @@ impl Layout {
         (offset < self.list.height as usize).then(|| self.list.y + offset as u16)
     }
 
-    /// Tab-list scroll offset, clamped and moved to reveal tab `reveal`.
-    pub fn clamp_scroll(&self, scroll: usize, tabs: usize, pinned: usize, reveal: Option<usize>) -> usize {
+    /// Scroll offset of a tab list of `items` rows, clamped and moved to
+    /// reveal item `reveal`.
+    pub fn clamp_scroll(&self, scroll: usize, items: usize, reveal: Option<usize>) -> usize {
         let rows = (self.list.height as usize).max(1);
-        let max = list_items(tabs, pinned).len().saturating_sub(rows);
+        let max = items.saturating_sub(rows);
         let mut scroll = scroll.min(max);
-        if let Some(item) = reveal.map(|tab| item_of_tab(tab, pinned)) {
+        if let Some(item) = reveal {
             if item < scroll {
                 scroll = item;
             } else if item >= scroll + rows {
@@ -194,7 +185,7 @@ impl Layout {
             return None;
         }
         let ws = app.ws();
-        let items = list_items(ws.tabs.len(), ws.pinned_count());
+        let items = ws.list_items();
         match items.get(ws.scroll + (y - self.list.y) as usize)? {
             ListItem::Tab(index) => {
                 let pill = self.pill(y);
@@ -204,6 +195,7 @@ impl Layout {
                     Some(Hit::Tab(*index))
                 }
             }
+            ListItem::Group(id) => Some(Hit::Group(*id)),
             ListItem::NewTab => Some(Hit::NewTab),
             ListItem::Separator => None,
         }
