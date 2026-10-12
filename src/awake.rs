@@ -30,11 +30,11 @@ impl Drop for Awake {
     }
 }
 
-/// No idle, disk or system sleep (the display may still turn off); `-w`
-/// ends it when sasha does.
+/// No display, idle, disk or system sleep: the screen stays on (so it
+/// doesn't lock either) and nothing stops. `-w` ends it when sasha does.
 #[cfg(target_os = "macos")]
 fn command(pid: u32) -> (&'static str, Vec<String>) {
-    ("caffeinate", vec!["-ims".into(), "-w".into(), pid.to_string()])
+    ("caffeinate", vec!["-dims".into(), "-w".into(), pid.to_string()])
 }
 
 /// Holds an idle and sleep inhibitor while `tail` waits for sasha to exit.

@@ -153,7 +153,7 @@ pub fn render_tooltip(buf: &mut Buffer, app: &App) {
             let text = if app.awake.is_some() {
                 " keeping the computer awake · click to let it sleep "
             } else {
-                " keep the computer awake (no sleep, no hibernate) · ^B C "
+                " keep the computer awake, screen on (no sleep, no lock) · ^B C "
             };
             (layout.awake_button().y, text.to_owned())
         }
