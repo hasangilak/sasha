@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, GroupEntry, Mode, PickerEntry, Selection};
+use crate::links::Link;
 use crate::workspace::pretty_path;
 use crate::{activity, sidebar, theme};
 
@@ -18,7 +19,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let Some(tab) = app.active_tab() else { return };
     let screen = tab.screen();
     let selection = app.selection.as_ref().filter(|s| s.tab == tab.id);
-    render_screen(frame.buffer_mut(), pane, screen, selection);
+    let link = app.hover_link.as_ref().filter(|(id, _)| *id == tab.id).map(|(_, link)| link);
+    render_screen(frame.buffer_mut(), pane, screen, selection, link);
     if screen.scrollback() > 0 {
         render_scroll_badge(frame.buffer_mut(), pane, screen.scrollback());
     }
@@ -383,7 +385,13 @@ fn render_scroll_badge(buf: &mut Buffer, pane: Rect, offset: usize) {
 }
 
 /// Copies the emulator's visible cells into the ratatui buffer.
-fn render_screen(buf: &mut Buffer, area: Rect, screen: &vt100::Screen, selection: Option<&Selection>) {
+fn render_screen(
+    buf: &mut Buffer,
+    area: Rect,
+    screen: &vt100::Screen,
+    selection: Option<&Selection>,
+    link: Option<&Link>,
+) {
     let (rows, cols) = screen.size();
     for row in 0..rows.min(area.height) {
         for col in 0..cols.min(area.width) {
@@ -398,6 +406,10 @@ fn render_screen(buf: &mut Buffer, area: Rect, screen: &vt100::Screen, selection
             let mut style = cell_style(cell);
             if selection.is_some_and(|s| s.contains(row, col)) {
                 style.add_modifier.toggle(Modifier::REVERSED);
+            }
+            // The link under the mouse, ready to click.
+            if link.is_some_and(|l| l.contains(row, col)) {
+                style = style.add_modifier(Modifier::UNDERLINED);
             }
             target.set_symbol(if contents.is_empty() { " " } else { contents });
             target.set_style(style);

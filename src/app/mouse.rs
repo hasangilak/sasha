@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::{App, Drag, Mode, Selection};
-use crate::input;
 use crate::layout::{self, Hit};
+use crate::{input, links};
 
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 const WHEEL_LINES: usize = 3;
@@ -15,6 +15,9 @@ impl App {
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
         let hit = self.layout.hit(mouse.column, mouse.row, self);
         self.hover = hit.filter(|h| *h != Hit::Pane);
+        if hit != Some(Hit::Pane) {
+            self.hover_link = None;
+        }
         if self.handle_drag(&mouse, hit) {
             return;
         }
@@ -164,6 +167,10 @@ impl App {
     fn mouse_in_pane(&mut self, mouse: MouseEvent) {
         let pane = self.layout.pane;
         let (col, row) = (mouse.column - pane.x, mouse.row - pane.y);
+        // Scrolling moves the text out from under an underlined link.
+        if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+            self.hover_link = None;
+        }
         let Some(tab) = self.ws_mut().active_tab_mut() else { return };
         let screen = tab.screen();
         let mode = screen.mouse_protocol_mode();
@@ -180,6 +187,11 @@ impl App {
         }
 
         match mouse.kind {
+            // Underline the link under the mouse.
+            MouseEventKind::Moved => {
+                let link = links::at(screen, row, col).map(|link| (tab.id, link));
+                self.hover_link = link;
+            }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = mouse.kind == MouseEventKind::ScrollUp;
                 if screen.alternate_screen() {
@@ -199,6 +211,10 @@ impl App {
                     _ => 1,
                 };
                 self.last_click = Some((Instant::now(), (row, col), clicks));
+                // A second click selects; it doesn't open the link.
+                if clicks > 1 {
+                    self.pending_link = None;
+                }
                 let (anchor, head) = match clicks {
                     2 => match self.active_tab() {
                         Some(tab) => word_bounds(tab.screen(), row, col),
@@ -218,6 +234,15 @@ impl App {
         let Some(selection) = self.selection else { return };
         if selection.anchor == selection.head {
             self.selection = None;
+            // A plain click on a link opens it, unless a second click follows.
+            let single = self.last_click.is_some_and(|(_, _, clicks)| clicks == 1);
+            let (row, col) = selection.anchor;
+            if single
+                && let Some(tab) = self.active_tab().filter(|t| t.id == selection.tab)
+                && let Some(link) = links::at(tab.screen(), row, col)
+            {
+                self.pending_link = Some((link.url, Instant::now()));
+            }
             return;
         }
         let Some(tab) = self.active_tab().filter(|t| t.id == selection.tab) else { return };

@@ -15,6 +15,7 @@ use ratatui::style::Color;
 
 use crate::config::Config;
 use crate::layout::{self, Hit, Layout};
+use crate::links::{self, Link};
 use crate::protocol::{self, Hello};
 use crate::server::{self, Attached, ClientId};
 use crate::store::{self, SavedGroup, SavedLayout, SavedTab, SavedWorkspace, State};
@@ -30,6 +31,8 @@ const INFO_REFRESH: Duration = Duration::from_millis(500);
 const BUSY: Duration = Duration::from_millis(800);
 const SPINNER_STEP: Duration = Duration::from_millis(80);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+/// A click on a link opens it once this passes without a second click.
+const LINK_DELAY: Duration = Duration::from_millis(400);
 /// At most one notification per tab this often.
 const NOTIFY_GAP: Duration = Duration::from_secs(10);
 
@@ -147,6 +150,11 @@ pub struct App {
     pub(crate) layout: Layout,
     pub(crate) hover: Option<Hit>,
     pub(crate) selection: Option<Selection>,
+    /// The link under the mouse in a tab, underlined.
+    pub(crate) hover_link: Option<(TabId, Link)>,
+    /// A clicked link, opened once it's clear the click wasn't the start of
+    /// a double-click.
+    pending_link: Option<(String, Instant)>,
     /// Text being typed in rename / search / workspace mode.
     pub(crate) input: String,
     /// Highlighted row in the search results or workspace picker.
@@ -200,6 +208,8 @@ impl App {
             layout: Layout::default(),
             hover: None,
             selection: None,
+            hover_link: None,
+            pending_link: None,
             input: String::new(),
             picker_selected: 0,
             activity_scroll: 0,
@@ -375,6 +385,8 @@ impl App {
         self.hover = None;
         self.drag = None;
         self.selection = None;
+        self.hover_link = None;
+        self.pending_link = None;
     }
 
     fn resize_client(&mut self, size: Size) {
@@ -532,13 +544,16 @@ impl App {
             if server::stop_requested() {
                 break;
             }
-            let timeout = if dirty {
+            let mut timeout = if dirty {
                 FRAME.saturating_sub(last_draw.elapsed())
             } else if was_animating {
                 SPINNER_STEP
             } else {
                 INFO_REFRESH
             };
+            if let Some((_, at)) = &self.pending_link {
+                timeout = timeout.min(LINK_DELAY.saturating_sub(at.elapsed()));
+            }
             match self.events.recv_timeout(timeout) {
                 Ok(event) => {
                     self.handle(event);
@@ -554,6 +569,13 @@ impl App {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
 
+            if self.pending_link.as_ref().is_some_and(|(_, at)| at.elapsed() >= LINK_DELAY)
+                && let Some((url, _)) = self.pending_link.take()
+            {
+                links::open(&url);
+                self.set_status("opening link");
+                dirty = true;
+            }
             if last_refresh.elapsed() >= INFO_REFRESH {
                 last_refresh = Instant::now();
                 self.refresh_tabs();
@@ -924,6 +946,7 @@ impl App {
         }
         ws.clamp_scroll(&self.layout, Some(index));
         self.selection = None;
+        self.hover_link = None;
     }
 
     fn close_tab(&mut self, index: usize) {
