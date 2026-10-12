@@ -1,6 +1,6 @@
 # sasha
 
-A terminal with Chrome-style vertical tabs and VS Code-style workspaces, built with
+A terminal with Chrome-style vertical tabs, tab groups and VS Code-style workspaces, built with
 [ratatui](https://ratatui.rs).
 
 sasha runs inside your existing terminal app (Ghostty, iTerm2, Terminal.app …). Each
@@ -13,7 +13,9 @@ workspace is a folder with its own tabs, and each tab is a real PTY running your
           ✎ main.ts - NVIM        ⚲  │
   ~       ─────────────────────────  │
           ❯ web-dashboard         ×  │
-  +       ⠹ cargo · infra         •  │
+  +       api                     ▾  │
+        ▎ ⠹ cargo · infra         •  │
+        ▎ ❯ api                      │
                      +               │
   ?    ^B tab keys · ^B ? help       │
 ```
@@ -51,6 +53,31 @@ Pin a tab with `^B p` or a right-click. Pinned tabs:
 
 Dragging a tab across the separator pins or unpins it.
 
+## Tab groups
+
+Like Chrome's tab groups: a coloured header with a name, and a rail in the same colour beside
+the tabs in the group.
+
+- **Make one** with `^B m`: type a name and press Enter, and the tab moves into a new group. The
+  same picker lists the groups you already have (`↓` and Enter adds the tab to one). Unnamed
+  groups are fine too.
+- `^B t` in a grouped tab opens the new tab **inside the group**. The `+` button always opens
+  one at the bottom.
+- **Collapse** a group by clicking its header or with `^B z`. A collapsed group shows how many
+  tabs it hides and a dot or spinner when one of them prints something. `j` / `k` treat it as
+  one stop that brings back the tab you last used there. That tab stays visible while it's
+  active.
+- **Rename** with a double-click on the header or `^B e`. While renaming, `Tab` changes the
+  colour. A right-click on the header changes it too.
+- **Move tabs in and out** by dragging them onto the group's tabs or header, or with `J` / `K`:
+  at the group's edge the tab steps out, and next to a group it steps in (or jumps over a
+  collapsed one). `^B u` takes the tab out of its group.
+- `^D` in the `^B m` picker ungroups a whole group and leaves its tabs where they are. A group
+  disappears when its last tab closes.
+
+Pinned tabs can't be in a group (pinning a tab takes it out). Groups belong to their workspace
+and, like the tabs in them, last until sasha quits.
+
 ## The tab sidebar
 
 - **Titles** come from what's running: `sasha` (the folder) for an idle shell, `cargo · api`
@@ -81,12 +108,16 @@ the keys below work until you press `Esc`.
 | `Tab` / `Shift+Tab` | previous tab / previous workspace |
 | `g` `G` | first / last tab |
 | `J` `K` | move tab down / up |
-| `t` `n` `c` | new tab |
+| `t` `n` `c` | new tab (inside the tab's group) |
 | `x` | close tab (pinned tabs: press twice) |
 | `p` | pin / unpin tab |
+| `m` | add tab to a group, or type a name for a new one (`^D` ungroups) |
+| `u` | take tab out of its group |
+| `z` | collapse / expand the tab's group |
+| `e` | rename the tab's group (`Tab` changes its colour) |
 | `r` `,` | rename tab (empty name = automatic title) |
 | `w` | workspaces: switch, add a folder, `^D` to remove |
-| `/` `f` | search tabs in every workspace |
+| `/` `f` | search tabs in every workspace (also by group name) |
 | `[` `v` `PgUp` | scroll mode (`j` `k` `^u` `^d` `g` `G`, `q` exits) |
 | `b` `s` | collapse / expand the tab sidebar |
 | `a` | show / hide the workspace bar |
@@ -108,6 +139,9 @@ the keys below work until you press `Esc`.
 | workspace badge / `+` | switch workspace / add a folder |
 | click / drag a tab | switch / reorder (across the separator to pin or unpin) |
 | right-click a tab | pin / unpin |
+| click a group header | collapse / expand |
+| double- / right-click a group header | rename / change colour |
+| drag a tab onto a group | add it (drag it onto a plain tab or `+` to take it out) |
 | `×` or middle-click | close |
 | double-click a tab | rename |
 | `⌕` / `≡` | search / collapse |
