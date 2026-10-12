@@ -18,6 +18,9 @@ pub struct State {
     /// Tab groups, which can hold tabs from any workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<SavedGroup>,
+    /// Keeping the computer awake was on: it's switched on again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_awake: bool,
 }
 
 /// Sidebar and workspace bar sizes.

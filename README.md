@@ -61,7 +61,8 @@ link to open it, and drag any bar's edge to resize it.
 - **Ports**: a slim bar lists what the programs in your tabs listen on; click one to see which
   tab runs it, jump there, or force-kill it.
 - **Keep awake**: click ☾ at the top of the workspace bar (☀ while it's on) and the computer
-  won't sleep, hibernate or turn off and lock its screen, even with the window closed.
+  won't sleep, hibernate or turn off and lock its screen, even with the window closed. It stays
+  on across restarts until you switch it off.
 - **Your terminal's colours**, transparency included.
 
 Use another prefix with `sasha --prefix ctrl-a`. Turn notifications off with `SASHA_NOTIFY=0`.

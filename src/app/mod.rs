@@ -370,6 +370,10 @@ impl App {
         }
         self.prune_groups();
         self.current = state.current.min(self.workspaces.len().saturating_sub(1));
+        // Keeping the computer awake survives restarts (and updates).
+        if state.keep_awake {
+            self.toggle_awake();
+        }
     }
 
     /// Reopens a workspace's remaining saved tabs, the first time it's
@@ -725,6 +729,7 @@ impl App {
                 last_refresh = Instant::now();
                 self.refresh_tabs();
                 self.refresh_bars();
+                self.check_awake();
                 self.notify();
                 self.save();
                 dirty = true;
@@ -772,6 +777,7 @@ impl App {
                 .map(|g| SavedGroup { name: g.name.clone(), color: g.color, collapsed: g.collapsed })
                 .collect(),
             current: self.current,
+            keep_awake: self.awake.is_some(),
             layout: Some(SavedLayout {
                 sidebar_width: self.sidebar_width,
                 collapsed: self.collapsed,
@@ -1262,6 +1268,16 @@ impl App {
     fn clamp_bar_scroll(&mut self, reveal: bool) {
         let reveal = reveal.then_some(self.current);
         self.activity_scroll = self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), reveal);
+    }
+
+    /// Makes sure keeping the computer awake still holds while it's on.
+    fn check_awake(&mut self) {
+        if let Some(awake) = &mut self.awake
+            && let Err(err) = awake.check()
+        {
+            self.awake = None;
+            self.set_status(format!("stopped keeping the computer awake: {err:#}"));
+        }
     }
 
     /// Keeps the computer from sleeping, or lets it sleep again.
