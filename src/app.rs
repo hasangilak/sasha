@@ -43,6 +43,10 @@ pub enum Mode {
     Tab,
     /// Browsing the scrollback with vim-ish keys.
     Scroll,
+    /// Editing the active tab's name in the sidebar (text in `App::input`).
+    Rename,
+    /// Fuzzy-finding a tab by title or directory (query in `App::input`).
+    Search,
     Help,
     ConfirmQuit,
 }
@@ -86,8 +90,13 @@ pub struct App {
     pub(crate) scroll: usize,
     pub(crate) hover: Option<Hit>,
     pub(crate) selection: Option<Selection>,
+    /// Text being typed in rename / search mode.
+    pub(crate) input: String,
+    /// Highlighted row in the search results.
+    pub(crate) search_selected: usize,
     /// Time, position and count of the last click in the pane.
     last_click: Option<(Instant, (u16, u16), u8)>,
+    last_tab_click: Option<(Instant, usize)>,
     status: Option<(String, Instant)>,
     sidebar_width: u16,
     collapsed: bool,
@@ -113,7 +122,10 @@ impl App {
             scroll: 0,
             hover: None,
             selection: None,
+            input: String::new(),
+            search_selected: 0,
             last_click: None,
+            last_tab_click: None,
             status: None,
             sidebar_width: sidebar::DEFAULT_WIDTH,
             collapsed: false,
@@ -176,6 +188,14 @@ impl App {
             Mode::Tab => (
                 Some((if short { "TAB" } else { "TABS" }, theme::ACCENT)),
                 "j/k move · t new · x close · ? help".to_owned(),
+            ),
+            Mode::Rename => (
+                Some((if short { "REN" } else { "RENAME" }, theme::GREEN)),
+                "⏎ save · esc".to_owned(),
+            ),
+            Mode::Search => (
+                Some((if short { "/" } else { "SEARCH" }, theme::PURPLE)),
+                "↑↓ ⏎ go · esc".to_owned(),
             ),
             Mode::Help => (Some(("?", theme::ACCENT)), "any key to close".to_owned()),
             Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, theme::RED)), "y / n".to_owned()),
@@ -428,6 +448,8 @@ impl App {
             Mode::Normal => self.normal_key(key),
             Mode::Tab => self.tab_mode_key(key),
             Mode::Scroll => self.scroll_mode_key(key),
+            Mode::Rename => self.rename_key(key),
+            Mode::Search => self.search_key(key),
             Mode::Help => self.mode = Mode::Normal,
             Mode::ConfirmQuit => {
                 self.quit = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
@@ -496,6 +518,8 @@ impl App {
             KeyCode::Char('h' | '<') | KeyCode::Left => self.resize_sidebar(-2),
             KeyCode::Char('l' | '>') | KeyCode::Right => self.resize_sidebar(2),
             KeyCode::Char('[' | 'v') | KeyCode::PageUp => self.mode = Mode::Scroll,
+            KeyCode::Char('r' | ',') => self.start_rename(),
+            KeyCode::Char('/' | 'f') => self.start_search(),
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Char('q') => self.request_quit(),
             _ => self.mode = Mode::Normal,
@@ -531,6 +555,84 @@ impl App {
             _ => return,
         };
         self.scroll_active(delta);
+    }
+
+    fn start_rename(&mut self) {
+        let Some(tab) = self.active_tab() else { return };
+        self.input = tab.custom_title.clone().unwrap_or_else(|| tab.title());
+        if self.collapsed {
+            self.set_collapsed(false);
+        }
+        self.mode = Mode::Rename;
+    }
+
+    fn finish_rename(&mut self) {
+        let name = self.input.trim().to_owned();
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            // An empty name goes back to the automatic title.
+            tab.custom_title = (!name.is_empty()).then_some(name);
+        }
+        self.input.clear();
+        self.mode = Mode::Normal;
+    }
+
+    fn rename_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => self.finish_rename(),
+            KeyCode::Esc => {
+                self.input.clear();
+                self.mode = Mode::Normal;
+            }
+            _ => edit_line(&mut self.input, &key),
+        }
+    }
+
+    fn start_search(&mut self) {
+        self.input.clear();
+        self.search_selected = 0;
+        self.mode = Mode::Search;
+    }
+
+    /// Indices of the tabs matching the search query, in tab order.
+    pub fn search_results(&self) -> Vec<usize> {
+        let query = self.input.to_lowercase();
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        (0..self.tabs.len())
+            .filter(|&i| {
+                let tab = &self.tabs[i];
+                let haystack = format!(
+                    "{} {} {}",
+                    tab.title(),
+                    tab.process_name(),
+                    tab.cwd().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+                )
+                .to_lowercase();
+                terms.iter().all(|term| haystack.contains(term))
+            })
+            .collect()
+    }
+
+    fn search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let results = self.search_results();
+        let last = results.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Enter => {
+                if let Some(&index) = results.get(self.search_selected) {
+                    self.activate(index);
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up | KeyCode::BackTab => self.search_selected = self.search_selected.saturating_sub(1),
+            KeyCode::Char('p' | 'k') if ctrl => self.search_selected = self.search_selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => self.search_selected = (self.search_selected + 1).min(last),
+            KeyCode::Char('n' | 'j') if ctrl => self.search_selected = (self.search_selected + 1).min(last),
+            _ => {
+                edit_line(&mut self.input, &key);
+                self.search_selected = 0;
+            }
+        }
     }
 
     /// Moves the active tab's view `delta` lines into the scrollback
@@ -599,10 +701,12 @@ impl App {
 
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             match self.mode {
-                Mode::Help | Mode::ConfirmQuit => {
+                Mode::Help | Mode::ConfirmQuit | Mode::Search => {
                     self.mode = Mode::Normal;
                     return;
                 }
+                // Clicking away saves the name, like leaving a text field.
+                Mode::Rename => self.finish_rename(),
                 Mode::Tab if hit == Some(Hit::Pane) => self.mode = Mode::Normal,
                 _ => {}
             }
@@ -612,10 +716,19 @@ impl App {
             (_, Some(Hit::Pane)) => self.mouse_in_pane(mouse),
             (MouseEventKind::Down(MouseButton::Left), Some(hit)) => match hit {
                 Hit::Toggle => self.set_collapsed(!self.collapsed),
-                Hit::Search | Hit::Pane => {}
+                Hit::Search => self.start_search(),
+                Hit::Pane => {}
                 Hit::Tab(index) => {
+                    let double = self
+                        .last_tab_click
+                        .is_some_and(|(at, i)| i == index && at.elapsed() < MULTI_CLICK);
+                    self.last_tab_click = Some((Instant::now(), index));
                     self.activate(index);
-                    self.drag = Some(Drag::Tab(index));
+                    if double {
+                        self.start_rename();
+                    } else {
+                        self.drag = Some(Drag::Tab(index));
+                    }
                 }
                 Hit::Close(index) => self.close_tab(index),
                 Hit::NewTab => {
@@ -737,4 +850,22 @@ fn word_bounds(screen: &vt100::Screen, row: u16, col: u16) -> ((u16, u16), (u16,
         end += 1;
     }
     ((row, start), (row, end))
+}
+
+/// Minimal line editing for the rename / search inputs.
+fn edit_line(text: &mut String, key: &KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('u') if ctrl => text.clear(),
+        KeyCode::Char('w') if ctrl => {
+            let trimmed = text.trim_end().len();
+            let start = text[..trimmed].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+            text.truncate(start);
+        }
+        KeyCode::Backspace => {
+            text.pop();
+        }
+        KeyCode::Char(c) if !ctrl => text.push(c),
+        _ => {}
+    }
 }

@@ -5,7 +5,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::App;
+use crate::app::{App, Mode};
 use crate::theme::{self, ACCENT, ACTIVE_BG, BORDER, SIDEBAR_BG, TEXT, TEXT_DIM};
 
 pub const DEFAULT_WIDTH: u16 = 30;
@@ -129,17 +129,24 @@ impl Layout {
     }
 }
 
-pub fn render(buf: &mut Buffer, app: &App) {
+/// Draws the sidebar; returns where the text cursor goes while renaming.
+pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
     let layout = &app.layout;
     buf.set_style(layout.sidebar, Style::new().bg(SIDEBAR_BG).fg(TEXT));
     if layout.sidebar.width == 0 {
-        return;
+        return None;
     }
 
     render_header(buf, app);
+    let mut cursor = None;
     for (index, tab) in app.tabs.iter().enumerate() {
         if let Some(row) = layout.row_of(index, app.scroll) {
-            render_tab(buf, app, index, tab, layout.pill(row));
+            let pill = layout.pill(row);
+            if app.mode == Mode::Rename && index == app.active && !layout.collapsed {
+                cursor = Some(render_rename(buf, app, pill));
+            } else {
+                render_tab(buf, app, index, tab, pill);
+            }
         }
     }
     if let Some(row) = layout.row_of(app.tabs.len(), app.scroll) {
@@ -156,6 +163,31 @@ pub fn render(buf: &mut Buffer, app: &App) {
     for y in layout.divider.top()..layout.divider.bottom() {
         buf.set_string(layout.divider.x, y, "│", divider_style);
     }
+    cursor
+}
+
+/// The active tab's row turned into a text field.
+fn render_rename(buf: &mut Buffer, app: &App, pill: Rect) -> Position {
+    let style = Style::new().fg(TEXT).bg(ACTIVE_BG);
+    buf.set_style(pill, style);
+    buf.set_string(pill.x + 1, pill.y, "✎", Style::new().fg(theme::GREEN).bg(ACTIVE_BG));
+    // Show the end of the text when it's longer than the row.
+    let room = pill.width.saturating_sub(5) as usize;
+    let mut width = 0;
+    let tail: String = {
+        let mut chars: Vec<char> = Vec::new();
+        for c in app.input.chars().rev() {
+            let w = c.width().unwrap_or(0);
+            if width + w > room {
+                break;
+            }
+            width += w;
+            chars.push(c);
+        }
+        chars.into_iter().rev().collect()
+    };
+    buf.set_string(pill.x + 3, pill.y, &tail, style.add_modifier(Modifier::UNDERLINED));
+    Position::new(pill.x + 3 + width as u16, pill.y)
 }
 
 fn render_header(buf: &mut Buffer, app: &App) {

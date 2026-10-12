@@ -6,11 +6,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
 use crate::app::{App, Mode, Selection};
-use crate::sidebar;
+use crate::{sidebar, theme};
 use crate::theme::{ACCENT, BORDER, ON_ACCENT, SIDEBAR_BG, TEXT, TEXT_DIM, YELLOW};
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    sidebar::render(frame.buffer_mut(), app);
+    let rename_cursor = sidebar::render(frame.buffer_mut(), app);
 
     let pane = app.layout.pane;
     let Some(tab) = app.active_tab() else { return };
@@ -25,6 +25,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Help => render_help(frame, app),
         Mode::ConfirmQuit => render_confirm_quit(frame, app),
         Mode::Scroll => {}
+        Mode::Rename => {
+            if let Some(cursor) = rename_cursor {
+                frame.set_cursor_position(cursor);
+            }
+        }
+        Mode::Search => render_search(frame, app),
         Mode::Normal | Mode::Tab => {
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
@@ -45,6 +51,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("g G", "first / last tab"),
         ("J K", "move tab down / up"),
         ("t c", "new tab"),
+        ("r ,", "rename tab (empty name = automatic)"),
+        ("/ f", "search tabs"),
         ("[ v PgUp", "scroll mode (j k ^u ^d g G, q exits)"),
         ("x w", "close tab"),
         ("b s", "collapse / expand sidebar"),
@@ -61,6 +69,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("Mouse", &[
         ("click / drag", "switch / reorder tabs"),
+        ("double-click tab", "rename it"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
         ("⇧ drag", "select even when an app uses the mouse"),
         ("middle-click ×", "close tab"),
@@ -90,6 +99,67 @@ fn render_help(frame: &mut Frame, app: &App) {
     let block = popup_block(" sasha keys ");
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Chrome's tab search: a dropdown next to the sidebar's ⌕ button.
+fn render_search(frame: &mut Frame, app: &App) {
+    let results = app.search_results();
+    let pane = app.layout.pane;
+    let visible = results.len().clamp(1, 12);
+    let width = pane.width.saturating_sub(2).min(64);
+    let height = (visible as u16 + 4).min(pane.height);
+    let area = Rect::new(pane.x + 1, pane.y, width, height);
+    if area.width < 12 || area.height < 5 {
+        return;
+    }
+    frame.render_widget(Clear, area);
+    let block = popup_block(" search tabs ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let buf = frame.buffer_mut();
+    buf.set_string(inner.x, inner.y, "⌕ ", Style::new().fg(theme::PURPLE).bg(SIDEBAR_BG));
+    let query_x = inner.x + 2;
+    let (end, _) = buf.set_stringn(query_x, inner.y, &app.input, inner.width.saturating_sub(3) as usize, Style::new().fg(TEXT).bg(SIDEBAR_BG));
+    if app.input.is_empty() {
+        buf.set_string(query_x, inner.y, "title, program or folder", Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
+    }
+    let separator = "─".repeat(inner.width as usize);
+    buf.set_string(inner.x, inner.y + 1, &separator, Style::new().fg(BORDER).bg(SIDEBAR_BG));
+
+    let list_y = inner.y + 2;
+    if results.is_empty() {
+        buf.set_string(inner.x, list_y, "no matching tabs", Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
+    }
+    // Keep the highlighted row in view.
+    let first = app.search_selected.saturating_sub(visible - 1);
+    for (row, &index) in results.iter().enumerate().skip(first).take(visible) {
+        let tab = &app.tabs[index];
+        let y = list_y + (row - first) as u16;
+        let bg = if row == app.search_selected { theme::ACTIVE_BG } else { SIDEBAR_BG };
+        buf.set_style(Rect::new(inner.x, y, inner.width, 1), Style::new().bg(bg));
+        let (icon, color) = theme::process_icon(tab.process_name());
+        buf.set_string(inner.x + 1, y, icon, Style::new().fg(color).bg(bg));
+
+        let dir = tab.cwd().map(pretty_path).unwrap_or_default();
+        let dir_width = (dir.chars().count() as u16).min(inner.width / 2);
+        let title_room = inner.width.saturating_sub(dir_width + 5) as usize;
+        buf.set_stringn(inner.x + 3, y, tab.title(), title_room, Style::new().fg(TEXT).bg(bg));
+        if dir_width > 0 {
+            let dir: String = dir.chars().rev().take(dir_width as usize).collect::<Vec<_>>().into_iter().rev().collect();
+            buf.set_string(inner.right() - dir_width - 1, y, dir, Style::new().fg(TEXT_DIM).bg(bg));
+        }
+    }
+    frame.set_cursor_position(Position::new(end, inner.y));
+}
+
+/// A path with the home directory shown as `~`.
+fn pretty_path(path: &std::path::Path) -> String {
+    match std::env::home_dir().and_then(|home| path.strip_prefix(home).ok().map(ToOwned::to_owned)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 fn render_confirm_quit(frame: &mut Frame, app: &App) {
