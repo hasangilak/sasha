@@ -6,7 +6,13 @@ use ratatui::layout::{Position, Rect};
 use crate::app::App;
 use crate::workspace::GroupId;
 
-pub const ACTIVITY_WIDTH: u16 = 6;
+/// The workspace bar with badges only: margin, badge, activity dot, edge.
+pub const ACTIVITY_COMPACT: u16 = 7;
+/// From this width on, the workspace bar shows names; narrower snaps back
+/// to badges only.
+pub const ACTIVITY_WIDE_MIN: u16 = 12;
+pub const ACTIVITY_WIDE_DEFAULT: u16 = 24;
+pub const ACTIVITY_MAX: u16 = 40;
 pub const DEFAULT_WIDTH: u16 = 30;
 pub const MIN_WIDTH: u16 = 16;
 pub const COLLAPSED_WIDTH: u16 = 6;
@@ -19,6 +25,10 @@ pub enum Hit {
     Workspace(usize),
     AddWorkspace,
     HelpButton,
+    /// The workspace bar's right edge, dragged to resize it.
+    ActivityDivider,
+    /// The current workspace's name, at the top of the tab sidebar.
+    WorkspaceName,
     Toggle,
     Search,
     Tab(usize),
@@ -46,6 +56,8 @@ pub enum ListItem {
 pub struct Layout {
     pub area: Rect,
     pub activity: Rect,
+    /// The last column of `activity`.
+    pub activity_divider: Rect,
     pub sidebar: Rect,
     pub header: Rect,
     pub list: Rect,
@@ -56,9 +68,14 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn new(area: Rect, show_activity: bool, width: u16, collapsed: bool) -> Self {
-        let activity_width = if show_activity { ACTIVITY_WIDTH.min(area.width) } else { 0 };
+    /// `activity_width` 0 hides the workspace bar.
+    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool) -> Self {
+        // Wide workspace bars give way to the sidebar and terminal first.
+        let activity_width = activity_width
+            .min(area.width.saturating_sub(26).max(ACTIVITY_COMPACT))
+            .min(area.width);
         let activity = Rect { width: activity_width, ..area };
+        let activity_divider = Rect { x: activity.right().saturating_sub(1), width: activity_width.min(1), ..area };
         let rest = Rect { x: area.x + activity_width, width: area.width - activity_width, ..area };
 
         let width = if collapsed { COLLAPSED_WIDTH } else { width };
@@ -78,11 +95,21 @@ impl Layout {
             height: inner.height - header.height - footer_height,
             ..inner
         };
-        Self { area, activity, sidebar, header, list, footer, divider, pane, collapsed }
+        Self { area, activity, activity_divider, sidebar, header, list, footer, divider, pane, collapsed }
     }
 
     pub fn toggle_button(&self) -> Rect {
         Rect::new(self.header.x + 1, self.header.y, 3.min(self.header.width), self.header.height.min(1))
+    }
+
+    /// Where the workspace's name sits in the header, between the buttons.
+    pub fn workspace_name(&self) -> Rect {
+        let search = self.search_button();
+        if search.is_empty() {
+            return Rect::default();
+        }
+        let x = self.toggle_button().right() + 1;
+        Rect::new(x, self.header.y, search.x.saturating_sub(x + 1), 1)
     }
 
     pub fn search_button(&self) -> Rect {
@@ -139,7 +166,26 @@ impl Layout {
     }
 
     pub fn badge(&self, row: u16) -> Rect {
-        Rect::new(self.activity.x + 1, row, self.activity.width.saturating_sub(2).min(4), 1)
+        Rect::new(self.activity.x + 1, row, self.activity.width.saturating_sub(3).min(4), 1)
+    }
+
+    /// Whether the workspace bar is wide enough to show names.
+    pub fn activity_wide(&self) -> bool {
+        self.activity.width >= ACTIVITY_WIDE_MIN
+    }
+
+    /// Room for a name next to the badge on `row`, before the activity dot.
+    pub fn activity_label(&self, row: u16) -> Rect {
+        if !self.activity_wide() {
+            return Rect::default();
+        }
+        let x = self.badge(row).right() + 1;
+        Rect::new(x, row, self.activity_marker_x().saturating_sub(x + 1), 1)
+    }
+
+    /// Column of the dot or spinner showing what a workspace is up to.
+    pub fn activity_marker_x(&self) -> u16 {
+        if self.activity_wide() { self.activity_divider.x - 2 } else { self.activity.x + 5 }
     }
 
     pub fn help_button(&self) -> Rect {
@@ -169,6 +215,9 @@ impl Layout {
         if self.pane.contains(pos) {
             return Some(Hit::Pane);
         }
+        if self.activity_divider.contains(pos) {
+            return Some(Hit::ActivityDivider);
+        }
         if self.activity.contains(pos) {
             return self.hit_activity(pos, app);
         }
@@ -180,6 +229,9 @@ impl Layout {
         }
         if self.search_button().contains(pos) {
             return Some(Hit::Search);
+        }
+        if self.workspace_name().contains(pos) {
+            return Some(Hit::WorkspaceName);
         }
         if !self.list.contains(pos) {
             return None;

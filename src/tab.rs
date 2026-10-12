@@ -82,8 +82,8 @@ pub struct Tab {
     input: Sender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
     shell_pid: Option<i32>,
-    /// Name given by the user; overrides every automatic title.
-    pub custom_title: Option<String>,
+    /// The prefix the user gave the tab, in place of its folder name.
+    pub custom_prefix: Option<String>,
     /// Pinned tabs sit at the top of their workspace and are restored on startup.
     pub pinned: bool,
     /// The tab group this tab belongs to (never set on pinned tabs).
@@ -173,7 +173,7 @@ impl Tab {
             input,
             child,
             shell_pid,
-            custom_title: None,
+            custom_prefix: None,
             pinned: false,
             group: None,
             fg_name: String::new(),
@@ -271,24 +271,39 @@ impl Tab {
         matches!(self.child.try_wait(), Ok(Some(_)))
     }
 
+    /// "prefix · what's running", or just the prefix while the shell is idle.
     pub fn title(&self) -> String {
-        if let Some(title) = &self.custom_title {
-            return title.clone();
+        let prefix = self.prefix();
+        match self.running() {
+            Some(running) => format!("{prefix} · {running}"),
+            None => prefix,
         }
-        // Programs like vim or ssh set meaningful titles; only trust one while
-        // the program that set it is still in the foreground.
-        if let Some(title) = &self.parser.callbacks().title
-            && self.is_running_command()
-            && self.title_owner == self.fg_pgid
-        {
-            return title.clone();
+    }
+
+    /// The name the user gave the tab, else the folder it's in.
+    pub fn prefix(&self) -> String {
+        if let Some(prefix) = &self.custom_prefix {
+            return prefix.clone();
         }
-        let dir = self.cwd.as_deref().map(short_dir);
-        match (self.is_running_command(), dir) {
-            (true, Some(dir)) => format!("{} · {dir}", self.fg_name),
-            (false, Some(dir)) => dir,
-            (_, None) if !self.fg_name.is_empty() => self.fg_name.clone(),
-            _ => "shell".to_owned(),
+        match &self.cwd {
+            Some(cwd) => short_dir(cwd),
+            None if !self.fg_name.is_empty() => self.fg_name.clone(),
+            None => "shell".to_owned(),
+        }
+    }
+
+    /// The program in the foreground, when it isn't the shell: its own title
+    /// (vim, ssh and claude set good ones) or else its name.
+    fn running(&self) -> Option<String> {
+        if !self.is_running_command() {
+            return None;
+        }
+        // Only trust a title while the program that set it is still in the
+        // foreground.
+        let title = self.parser.callbacks().title.as_ref();
+        match title.filter(|t| !t.trim().is_empty() && self.title_owner == self.fg_pgid) {
+            Some(title) => Some(title.clone()),
+            None => Some(self.fg_name.clone()),
         }
     }
 }

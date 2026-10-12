@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{App, GroupEntry, Mode, PickerEntry};
+use super::{App, GroupEntry, Mode, PickerEntry, Renaming};
 use crate::workspace::GroupId;
 use crate::input;
 use crate::workspace;
@@ -111,8 +111,9 @@ impl App {
                 }
             }
             KeyCode::Char('w') => self.start_workspaces(String::new()),
+            KeyCode::Char('W') => self.start_workspace_rename(),
             KeyCode::Char('b' | 's') => self.set_collapsed(!self.collapsed),
-            KeyCode::Char('a') => self.toggle_activity_bar(),
+            KeyCode::Char('a') => self.cycle_activity_bar(),
             KeyCode::Char('<') => self.resize_sidebar(-2),
             KeyCode::Char('>') => self.resize_sidebar(2),
             KeyCode::Char('[' | 'v') | KeyCode::PageUp => self.mode = Mode::Scroll,
@@ -168,8 +169,8 @@ impl App {
 
     pub(super) fn start_rename(&mut self) {
         let Some(tab) = self.active_tab() else { return };
-        self.input = tab.custom_title.clone().unwrap_or_else(|| tab.title());
-        self.renaming_group = None;
+        self.input = tab.prefix();
+        self.renaming = Renaming::Tab;
         if self.collapsed {
             self.set_collapsed(false);
         }
@@ -179,7 +180,16 @@ impl App {
     pub(super) fn start_group_rename(&mut self, id: GroupId) {
         let Some(group) = self.ws().group(id) else { return };
         self.input = group.name.clone();
-        self.renaming_group = Some(id);
+        self.renaming = Renaming::Group(id);
+        if self.collapsed {
+            self.set_collapsed(false);
+        }
+        self.mode = Mode::Rename;
+    }
+
+    pub(super) fn start_workspace_rename(&mut self) {
+        self.input = self.ws().name.clone();
+        self.renaming = Renaming::Workspace;
         if self.collapsed {
             self.set_collapsed(false);
         }
@@ -190,16 +200,24 @@ impl App {
         let name = self.input.trim().to_owned();
         self.input.clear();
         self.mode = Mode::Normal;
-        if let Some(id) = self.renaming_group.take() {
-            if let Some(group) = self.ws_mut().group_mut(id) {
-                group.name = name;
+        match std::mem::replace(&mut self.renaming, Renaming::Tab) {
+            Renaming::Group(id) => {
+                if let Some(group) = self.ws_mut().group_mut(id) {
+                    group.name = name;
+                }
+                return;
             }
-            return;
+            Renaming::Workspace => {
+                self.ws_mut().rename(Some(name));
+                self.save();
+                return;
+            }
+            Renaming::Tab => {}
         }
         let mut pinned = false;
         if let Some(tab) = self.ws_mut().active_tab_mut() {
             // An empty name goes back to the automatic title.
-            tab.custom_title = (!name.is_empty()).then_some(name);
+            tab.custom_prefix = (!name.is_empty()).then_some(name);
             pinned = tab.pinned;
         }
         if pinned {
@@ -212,11 +230,11 @@ impl App {
             KeyCode::Enter => self.finish_rename(),
             KeyCode::Esc => {
                 self.input.clear();
-                self.renaming_group = None;
+                self.renaming = Renaming::Tab;
                 self.mode = Mode::Normal;
             }
             KeyCode::Tab => {
-                if let Some(id) = self.renaming_group {
+                if let Renaming::Group(id) = self.renaming {
                     self.cycle_group_color(id);
                 }
             }

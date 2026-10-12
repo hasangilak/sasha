@@ -15,6 +15,9 @@ pub struct State {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedWorkspace {
     pub path: PathBuf,
+    /// The name the user gave it, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned: Vec<SavedTab>,
 }
@@ -23,6 +26,7 @@ pub struct SavedWorkspace {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedTab {
     pub cwd: PathBuf,
+    /// The prefix the user gave the tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }

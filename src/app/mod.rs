@@ -68,6 +68,7 @@ pub enum Mode {
 enum Drag {
     Tab(TabId),
     Divider,
+    ActivityDivider,
     Select,
 }
 
@@ -97,6 +98,16 @@ pub enum PickerEntry {
     Workspace(usize),
     /// A folder that isn't a workspace yet.
     AddFolder(PathBuf),
+}
+
+/// What rename mode is renaming.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Renaming {
+    /// The active tab's prefix.
+    Tab,
+    Group(GroupId),
+    /// The current workspace.
+    Workspace,
 }
 
 /// A row of the tab group picker.
@@ -141,8 +152,9 @@ pub struct App {
     last_click: Option<(Instant, (u16, u16), u8)>,
     last_tab_click: Option<(Instant, usize)>,
     last_group_click: Option<(Instant, GroupId)>,
-    /// The group being renamed in rename mode (else it's the active tab).
-    pub(crate) renaming_group: Option<GroupId>,
+    last_workspace_click: Option<(Instant, usize)>,
+    last_name_click: Option<Instant>,
+    pub(crate) renaming: Renaming,
     status: Option<(String, Instant)>,
     /// Workspace waiting for a second ^D before its tabs are closed.
     confirm_remove: Option<WorkspaceId>,
@@ -150,7 +162,10 @@ pub struct App {
     confirm_close: Option<TabId>,
     sidebar_width: u16,
     collapsed: bool,
-    show_activity: bool,
+    /// Width of the workspace bar; 0 hides it.
+    activity_width: u16,
+    /// The width it goes back to when it shows names again.
+    wide_activity_width: u16,
     drag: Option<Drag>,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
@@ -184,13 +199,16 @@ impl App {
             last_click: None,
             last_tab_click: None,
             last_group_click: None,
-            renaming_group: None,
+            last_workspace_click: None,
+            last_name_click: None,
+            renaming: Renaming::Tab,
             status: None,
             confirm_remove: None,
             confirm_close: None,
             sidebar_width: layout::DEFAULT_WIDTH,
             collapsed: false,
-            show_activity: true,
+            activity_width: layout::ACTIVITY_COMPACT,
+            wide_activity_width: layout::ACTIVITY_WIDE_DEFAULT,
             drag: None,
             next_tab_id: 0,
             next_workspace_id: 0,
@@ -206,11 +224,12 @@ impl App {
         let (state, warning) = store::load();
         for saved in state.workspaces {
             let index = app.add_workspace(saved.path);
+            app.workspaces[index].rename(saved.name);
             for pinned in saved.pinned {
                 match app.spawn_tab(&pinned.cwd) {
                     Ok(mut tab) => {
                         tab.pinned = true;
-                        tab.custom_title = pinned.title;
+                        tab.custom_prefix = pinned.title;
                         app.workspaces[index].tabs.push(tab);
                     }
                     Err(err) => app.set_status(format!("can't restore a pinned tab: {err}")),
@@ -311,7 +330,7 @@ impl App {
     fn reset_modes(&mut self) {
         self.mode = Mode::Normal;
         self.input.clear();
-        self.renaming_group = None;
+        self.renaming = Renaming::Tab;
         self.hover = None;
         self.drag = None;
         self.selection = None;
@@ -398,6 +417,10 @@ impl App {
         self.drag == Some(Drag::Divider)
     }
 
+    pub fn dragging_activity_divider(&self) -> bool {
+        self.drag == Some(Drag::ActivityDivider)
+    }
+
     /// Paint the active tab in the accent colour while keys drive the tabs.
     pub fn highlight_active(&self) -> bool {
         self.mode == Mode::Tab
@@ -429,9 +452,13 @@ impl App {
                 Some((if short { "TAB" } else { "TABS" }, p.accent)),
                 "j/k tabs · h/l spaces · p pin".to_owned(),
             ),
-            Mode::Rename if self.renaming_group.is_some() => (
+            Mode::Rename if matches!(self.renaming, Renaming::Group(_)) => (
                 Some((if short { "GRP" } else { "GROUP" }, p.green)),
                 "⏎ save · ⇥ colour · esc".to_owned(),
+            ),
+            Mode::Rename if self.renaming == Renaming::Workspace => (
+                Some((if short { "WS" } else { "SPACE" }, p.green)),
+                "⏎ save · empty = folder".to_owned(),
             ),
             Mode::Rename => (
                 Some((if short { "REN" } else { "RENAME" }, p.green)),
@@ -524,13 +551,14 @@ impl App {
                 .iter()
                 .map(|ws| SavedWorkspace {
                     path: ws.path.clone(),
+                    name: ws.custom_name.clone(),
                     pinned: ws
                         .tabs
                         .iter()
                         .filter(|tab| tab.pinned)
                         .map(|tab| SavedTab {
                             cwd: tab.cwd().map_or_else(|| ws.path.clone(), Path::to_path_buf),
-                            title: tab.custom_title.clone(),
+                            title: tab.custom_prefix.clone(),
                         })
                         .collect(),
                 })
@@ -544,7 +572,7 @@ impl App {
     /// Recomputes the layout and keeps every pty sized to the pane.
     fn relayout(&mut self, size: Size) {
         let area = Rect::new(0, 0, size.width, size.height);
-        self.layout = Layout::new(area, self.show_activity, self.sidebar_width, self.collapsed);
+        self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed);
         self.activity_scroll = self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), None);
         let (rows, cols) = self.pty_size();
         for ws in &mut self.workspaces {
@@ -589,9 +617,28 @@ impl App {
         self.relayout_now();
     }
 
-    fn toggle_activity_bar(&mut self) {
-        self.show_activity = !self.show_activity;
+    /// Badges only → badges and names → hidden → badges only.
+    fn cycle_activity_bar(&mut self) {
+        self.activity_width = match self.activity_width {
+            0 => layout::ACTIVITY_COMPACT,
+            width if width < layout::ACTIVITY_WIDE_MIN => self.wide_activity_width,
+            _ => 0,
+        };
         self.relayout_now();
+    }
+
+    /// Sets the workspace bar's width while its edge is dragged; too narrow
+    /// for names snaps back to badges only.
+    fn resize_activity_bar(&mut self, width: u16) {
+        self.activity_width = if width < layout::ACTIVITY_WIDE_MIN {
+            layout::ACTIVITY_COMPACT
+        } else {
+            width.min(layout::ACTIVITY_MAX)
+        };
+        self.relayout_now();
+        if self.layout.activity_wide() {
+            self.wide_activity_width = self.layout.activity.width;
+        }
     }
 
     fn resize_sidebar(&mut self, delta: i16) {

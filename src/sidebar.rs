@@ -5,7 +5,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, Renaming};
 use crate::layout::{Hit, ListItem};
 use crate::tab::Tab;
 use crate::workspace::GroupId;
@@ -22,9 +22,8 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
         return None;
     }
 
-    render_header(buf, app);
+    let mut cursor = render_header(buf, app);
     let ws = app.ws();
-    let mut cursor = None;
     let renaming = app.mode == Mode::Rename && !layout.collapsed;
     for (item_index, item) in ws.list_items().into_iter().enumerate() {
         let Some(row) = layout.row_of(item_index, ws.scroll) else { continue };
@@ -36,11 +35,11 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
             buf.set_string(layout.list.x, row, "▎", Style::new().fg(group.color()).bg(BG));
         }
         match item {
-            ListItem::Tab(index) if renaming && app.renaming_group.is_none() && index == ws.active => {
+            ListItem::Tab(index) if renaming && app.renaming == Renaming::Tab && index == ws.active => {
                 cursor = Some(render_rename(buf, app, pill));
             }
             ListItem::Tab(index) => render_tab(buf, app, index, &ws.tabs[index], pill),
-            ListItem::Group(id) if renaming && app.renaming_group == Some(id) => {
+            ListItem::Group(id) if renaming && app.renaming == Renaming::Group(id) => {
                 cursor = Some(render_group_rename(buf, app, id, pill));
             }
             ListItem::Group(id) => render_group(buf, app, id, pill),
@@ -66,7 +65,9 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
     cursor
 }
 
-fn render_header(buf: &mut Buffer, app: &App) {
+/// Draws the buttons and the workspace's name; returns where the cursor
+/// goes while the name is being edited.
+fn render_header(buf: &mut Buffer, app: &App) -> Option<Position> {
     let p = theme::palette();
     let layout = &app.layout;
     let button = |buf: &mut Buffer, rect: Rect, glyph: &str, hit: Hit, base: Color| {
@@ -82,15 +83,6 @@ fn render_header(buf: &mut Buffer, app: &App) {
     button(buf, toggle, "≡", Hit::Toggle, BG);
     button(buf, search, "⌕", Hit::Search, p.button_bg);
 
-    // The workspace name, between the two buttons.
-    if !search.is_empty() {
-        let x = toggle.right() + 1;
-        let room = search.x.saturating_sub(x + 1) as usize;
-        let name = &app.ws().name;
-        let style = Style::new().fg(p.text).bg(BG).add_modifier(Modifier::BOLD);
-        render_faded(buf, x, layout.header.y, name, room, style, BG);
-    }
-
     if layout.header.height > 1 {
         let y = layout.header.y + 1;
         let style = Style::new().fg(p.border).bg(BG);
@@ -98,6 +90,23 @@ fn render_header(buf: &mut Buffer, app: &App) {
             buf.set_string(x, y, "─", style);
         }
     }
+
+    // The workspace name, between the two buttons.
+    let name = layout.workspace_name();
+    if name.is_empty() {
+        return None;
+    }
+    let style = Style::new().fg(p.text).bg(BG).add_modifier(Modifier::BOLD);
+    if app.mode == Mode::Rename && app.renaming == Renaming::Workspace {
+        let field = Style::new().fg(p.text).bg(p.active_bg).add_modifier(Modifier::BOLD);
+        buf.set_style(name, field);
+        let (tail, width) = input_tail(&app.input, name.width.saturating_sub(1) as usize);
+        buf.set_string(name.x, name.y, &tail, field.add_modifier(Modifier::UNDERLINED));
+        return Some(Position::new(name.x + width as u16, name.y));
+    }
+    let style = if app.hover == Some(Hit::WorkspaceName) { style.fg(p.accent) } else { style };
+    render_faded(buf, name.x, name.y, &app.ws().name, name.width as usize, style, BG);
+    None
 }
 
 fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) {

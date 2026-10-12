@@ -35,7 +35,9 @@ impl Group {
 
 pub struct Workspace {
     pub id: WorkspaceId,
+    /// The name the user gave it, else the folder's name.
     pub name: String,
+    pub custom_name: Option<String>,
     pub path: PathBuf,
     /// Pinned tabs always come first, and the tabs of a group are always
     /// next to each other.
@@ -54,6 +56,7 @@ impl Workspace {
         Self {
             id,
             name: display_name(&path),
+            custom_name: None,
             path,
             tabs: Vec::new(),
             groups: Vec::new(),
@@ -61,6 +64,13 @@ impl Workspace {
             previous: None,
             scroll: 0,
         }
+    }
+
+    /// Names the workspace; `None` (or an empty name) goes back to the
+    /// folder's name.
+    pub fn rename(&mut self, name: Option<String>) {
+        self.custom_name = name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
+        self.name = self.custom_name.clone().unwrap_or_else(|| display_name(&self.path));
     }
 
     pub fn active_tab(&self) -> Option<&Tab> {
@@ -151,7 +161,7 @@ impl Workspace {
     /// Up to two letters for the activity bar badge: the initials of the
     /// folder name ("web-dashboard" → "WD", "sasha" → "SA").
     pub fn initials(&self) -> String {
-        if is_home(&self.path) {
+        if self.custom_name.is_none() && is_home(&self.path) {
             return "~".to_owned();
         }
         let words: Vec<&str> = self

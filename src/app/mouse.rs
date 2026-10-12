@@ -50,7 +50,7 @@ impl App {
             (MouseEventKind::Down(MouseButton::Right), Some(Hit::Group(id))) => self.cycle_group_color(id),
             (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(hit)) => {
                 let down = mouse.kind == MouseEventKind::ScrollDown;
-                if matches!(hit, Hit::Workspace(_) | Hit::AddWorkspace | Hit::HelpButton) {
+                if matches!(hit, Hit::Workspace(_) | Hit::AddWorkspace | Hit::HelpButton | Hit::ActivityDivider) {
                     let scroll = if down { self.activity_scroll + 1 } else { self.activity_scroll.saturating_sub(1) };
                     self.activity_scroll = self.layout.clamp_activity_scroll(scroll, self.workspaces.len(), None);
                 } else {
@@ -65,7 +65,23 @@ impl App {
 
     fn click(&mut self, hit: Hit) {
         match hit {
-            Hit::Workspace(index) => self.switch_workspace(index),
+            // A double-click renames the workspace.
+            Hit::Workspace(index) => {
+                let double = self.last_workspace_click.is_some_and(|(at, i)| i == index && at.elapsed() < MULTI_CLICK);
+                self.last_workspace_click = if double { None } else { Some((Instant::now(), index)) };
+                self.switch_workspace(index);
+                if double {
+                    self.start_workspace_rename();
+                }
+            }
+            Hit::WorkspaceName => {
+                let double = self.last_name_click.is_some_and(|at| at.elapsed() < MULTI_CLICK);
+                self.last_name_click = if double { None } else { Some(Instant::now()) };
+                if double {
+                    self.start_workspace_rename();
+                }
+            }
+            Hit::ActivityDivider => self.drag = Some(Drag::ActivityDivider),
             Hit::AddWorkspace => self.start_workspaces("~/".to_owned()),
             Hit::HelpButton => self.mode = Mode::Help,
             Hit::Toggle => self.set_collapsed(!self.collapsed),
@@ -108,6 +124,9 @@ impl App {
     /// Continues or ends a drag; returns true when the event was consumed.
     fn handle_drag(&mut self, mouse: &MouseEvent, hit: Option<Hit>) -> bool {
         match (mouse.kind, self.drag) {
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::ActivityDivider)) => {
+                self.resize_activity_bar(mouse.column.saturating_sub(self.layout.activity.x) + 1);
+            }
             (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Divider)) => {
                 let width = mouse.column.saturating_sub(self.layout.sidebar.x) + 1;
                 self.sidebar_width = width.max(layout::MIN_WIDTH);
