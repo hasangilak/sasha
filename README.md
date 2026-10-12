@@ -5,6 +5,8 @@ A terminal with Chrome-style vertical tabs, tab groups and VS Code-style workspa
 
 sasha runs inside your existing terminal app (Ghostty, iTerm2, Terminal.app …). Each
 workspace is a folder with its own tabs, and each tab is a real PTY running your login shell.
+Like tmux, the tabs live in a background server: close the window and they keep running, and
+run `sasha` again to get them back.
 
 ```
 ▎ WD    ≡  web-dashboard          ⌕  │➜  web-dashboard git:(dev) yarn dev
@@ -28,6 +30,28 @@ cargo run --release
 cargo install --path .
 sasha
 ```
+
+## Your tabs keep running
+
+`sasha` starts a background server the first time you run it. The server owns every shell; the
+`sasha` in your window only shows them.
+
+- **Close the window**, or press `^B d` to **detach**, and everything keeps running: dev servers,
+  ssh sessions, vim, builds.
+- **Run `sasha` again**, in any window, and it's all back as you left it, output included. Opening
+  sasha in a second window moves it there, and the first window says so.
+- Started from a project folder, sasha switches to that folder's workspace (adding it if it's
+  new). Started from your home folder, where new terminal windows open, it carries on where you
+  left off.
+- `^B q` closes every tab and stops the server, and so does `sasha --kill-server`. The server
+  also stops when its last tab closes.
+- Logging out or restarting the Mac stops the server. Next time, your workspaces and pinned tabs
+  come back as fresh shells, as before.
+- After you rebuild sasha, the running server is still the old build, and the footer tells you.
+  Quit with `^B q` and start sasha again to run the new one.
+
+The server listens on `/tmp/sasha-<your uid>/default`, in a folder only you can open (set
+`SASHA_SOCKET` to use another path). Its log sits next to it as `default.log`.
 
 ## Workspaces
 
@@ -124,7 +148,8 @@ the keys below work until you press `Esc`.
 | `<` `>` | narrower / wider sidebar |
 | prefix again | send the prefix to the shell |
 | `?` | help |
-| `q` | quit |
+| `d` | detach: the tabs keep running, `sasha` brings them back |
+| `q` | quit: close every tab and stop the server |
 | `Esc` `Enter` | back to the terminal |
 
 | Anywhere | |
@@ -166,6 +191,9 @@ shell. They don't re-run the command that was running before.
 
 | File | |
 |---|---|
+| `src/client.rs` | the `sasha` you run: starts the server, forwards input, prints what it draws |
+| `src/server.rs` | the background server: owns the tabs, draws them for the attached client |
+| `src/protocol.rs` | the messages between them, over a Unix socket |
 | `src/tab.rs` | a shell in a PTY (`portable-pty`) mirrored by a `vt100` emulator; answers terminal queries |
 | `src/workspace.rs` | a folder plus its tabs; badge initials and colour |
 | `src/store.rs` | loading / saving workspaces and pinned tabs |
@@ -186,4 +214,6 @@ Shells see `TERM=xterm-256color` and `TERM_PROGRAM=sasha`.
 
 - Text doesn't reflow when the window is resized (a `vt100` crate limitation).
 - No inline images (kitty / sixel), ligatures or kitty keyboard protocol.
-- Tabs live as long as sasha does; there's no detach / reattach like tmux.
+- One window at a time shows the tabs. Opening sasha in another window moves them there, where
+  tmux could show them in both.
+- Only workspaces and pinned tabs survive a logout or restart, as fresh shells.
