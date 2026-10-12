@@ -1,5 +1,7 @@
 # sasha
 
+[![CI](https://github.com/hasangilak/sasha/actions/workflows/ci.yml/badge.svg)](https://github.com/hasangilak/sasha/actions/workflows/ci.yml)
+
 A terminal with Chrome-style vertical tabs, tab groups and VS Code-style workspaces, built with
 [ratatui](https://ratatui.rs).
 
@@ -22,13 +24,21 @@ run `sasha` again to get them back.
   ?    ^B tab keys · ^B ? help       │
 ```
 
-## Run it
+## Install
+
+sasha runs on macOS and Linux and needs [Rust](https://rustup.rs) to build.
 
 ```sh
-cargo run --release
-# or install it on your PATH
-cargo install --path .
+cargo install --git https://github.com/hasangilak/sasha
 sasha
+```
+
+Or from a clone:
+
+```sh
+git clone https://github.com/hasangilak/sasha
+cd sasha
+cargo run --release      # or: cargo install --path .
 ```
 
 ## Your tabs keep running
