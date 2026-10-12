@@ -6,9 +6,10 @@ use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, Mode, Renaming};
-use crate::layout::{Hit, ListItem};
+use crate::app::Activity;
+use crate::layout::{Hit, ListItem, Row};
 use crate::tab::Tab;
-use crate::workspace::GroupId;
+use crate::workspace::{GroupId, Workspace};
 use crate::theme::{self, BG};
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -23,11 +24,20 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
     }
 
     let mut cursor = render_header(buf, app);
-    let ws = app.ws();
     let renaming = app.mode == Mode::Rename && !layout.collapsed;
-    for (item_index, item) in ws.list_items().into_iter().enumerate() {
-        let Some(row) = layout.row_of(item_index, ws.scroll) else { continue };
+    for (row_index, item) in app.sidebar_rows().into_iter().enumerate() {
+        let Some(row) = layout.row_of(row_index, app.list_scroll) else { continue };
         let pill = layout.pill(row);
+        let (w, item) = match item {
+            Row::Workspace(w) => {
+                render_heading(buf, app, w, pill);
+                continue;
+            }
+            Row::Gap => continue,
+            Row::Item(w, item) => (w, item),
+        };
+        let ws = &app.workspaces[w];
+        let current = w == app.current;
         // Tabs in a group hang off a rail in the group's colour.
         if let ListItem::Tab(index) = item
             && let Some(group) = ws.group_of(index)
@@ -35,14 +45,31 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
             buf.set_string(layout.list.x, row, "▎", Style::new().fg(group.color()).bg(BG));
         }
         match item {
-            ListItem::Tab(index) if renaming && app.renaming == Renaming::Tab && index == ws.active => {
+            ListItem::Tab(index) if current && renaming && app.renaming == Renaming::Tab && index == ws.active => {
                 cursor = Some(render_rename(buf, app, pill));
             }
-            ListItem::Tab(index) => render_tab(buf, app, index, &ws.tabs[index], pill),
-            ListItem::Group(id) if renaming && app.renaming == Renaming::Group(id) => {
+            ListItem::Tab(index) if current => {
+                let state = TabState {
+                    active: index == ws.active,
+                    hovered: matches!(app.hover, Some(Hit::Tab(i) | Hit::Close(i)) if i == index),
+                    button_hot: app.hover == Some(Hit::Close(index)),
+                    closable: true,
+                };
+                render_tab(buf, app, &ws.tabs[index], pill, state);
+            }
+            // Another workspace's tab: click to go there.
+            ListItem::Tab(index) => {
+                let hovered = app.hover == Some(Hit::OtherTab(w, index));
+                let state = TabState { active: false, hovered, button_hot: false, closable: false };
+                render_tab(buf, app, &ws.tabs[index], pill, state);
+            }
+            ListItem::Group(id) if current && renaming && app.renaming == Renaming::Group(id) => {
                 cursor = Some(render_group_rename(buf, app, id, pill));
             }
-            ListItem::Group(id) => render_group(buf, app, id, pill),
+            ListItem::Group(id) => {
+                let hit = if current { Hit::Group(id) } else { Hit::OtherGroup(w, id) };
+                render_group(buf, app, ws, id, pill, app.hover == Some(hit));
+            }
             ListItem::Separator => {
                 let line = "─".repeat(pill.width.saturating_sub(2) as usize);
                 buf.set_string(pill.x + 1, row, line, Style::new().fg(p.border).bg(BG));
@@ -109,10 +136,57 @@ fn render_header(buf: &mut Buffer, app: &App) -> Option<Position> {
     None
 }
 
-fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) {
+/// How a tab row looks.
+struct TabState {
+    /// The tab on screen.
+    active: bool,
+    hovered: bool,
+    /// The mouse is on its close (or unpin) button.
+    button_hot: bool,
+    /// Shows a close button when active or hovered.
+    closable: bool,
+}
+
+/// The heading of a workspace's section when the sidebar stacks them: its
+/// badge and name, and what its tabs are up to.
+fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
     let p = theme::palette();
-    let active = index == app.ws().active;
-    let hovered = matches!(app.hover, Some(Hit::Tab(i) | Hit::Close(i)) if i == index);
+    let ws = &app.workspaces[w];
+    let current = w == app.current;
+    let hovered = app.hover == Some(Hit::Workspace(w));
+    let bg = if hovered { p.hover_bg } else { BG };
+    buf.set_style(pill, Style::new().bg(bg));
+    let mut badge = Style::new().fg(p.on_accent).bg(ws.color());
+    if current {
+        badge = badge.add_modifier(Modifier::BOLD);
+    }
+    let initials = format!("{:^4}", ws.initials());
+    buf.set_stringn(pill.x, pill.y, &initials, pill.width as usize, badge);
+    if app.layout.collapsed || pill.width < 8 {
+        return;
+    }
+    let mut style = Style::new().fg(if current || hovered { p.text } else { p.text_dim }).bg(bg);
+    if current {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    let room = pill.width.saturating_sub(8) as usize;
+    render_faded(buf, pill.x + 5, pill.y, &ws.name, room, style, bg);
+    if !current {
+        let marker = match app.workspace_activity(w) {
+            Some(Activity::Busy) => Some((SPINNER[app.spinner_frame() % SPINNER.len()], p.accent)),
+            Some(Activity::Bell) => Some(("•", p.yellow)),
+            Some(Activity::Unseen) => Some(("•", p.accent)),
+            None => None,
+        };
+        if let Some((glyph, color)) = marker {
+            buf.set_string(pill.right() - 2, pill.y, glyph, Style::new().fg(color).bg(bg));
+        }
+    }
+}
+
+fn render_tab(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, state: TabState) {
+    let p = theme::palette();
+    let TabState { active, hovered, button_hot, closable } = state;
     let highlight = app.highlight_active();
     let (bg, fg) = match (active, hovered) {
         (true, _) if highlight => (p.accent, p.on_accent),
@@ -140,11 +214,10 @@ fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) 
 
     // Right edge: the pin, a close button on the active / hovered tab, or
     // status dots.
-    let button_hot = app.hover == Some(Hit::Close(index));
     let marker = if tab.pinned && (active || hovered || !(tab.bell || tab.unseen)) {
         let color = if button_hot || active || hovered { fg } else { p.text_dim };
         Some(("⚲", color))
-    } else if active || hovered {
+    } else if closable && (active || hovered) {
         Some(("×", if button_hot { p.red } else { fg }))
     } else if tab.bell {
         Some(("•", p.yellow))
@@ -169,11 +242,9 @@ fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) 
 /// A group's header: a chip with its name in its colour, like Chrome's.
 /// A collapsed group also shows how many tabs it hides and whether any of
 /// them is busy or has news.
-fn render_group(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect) {
+fn render_group(buf: &mut Buffer, app: &App, ws: &Workspace, id: GroupId, pill: Rect, hovered: bool) {
     let p = theme::palette();
-    let ws = app.ws();
     let Some(group) = ws.group(id) else { return };
-    let hovered = app.hover == Some(Hit::Group(id));
     let bg = if hovered { p.hover_bg } else { BG };
     buf.set_style(pill, Style::new().bg(bg));
     let chip = Style::new().fg(p.on_accent).bg(group.color()).add_modifier(Modifier::BOLD);

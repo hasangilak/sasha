@@ -24,6 +24,9 @@ pub struct SavedLayout {
     pub collapsed: bool,
     pub activity_width: u16,
     pub wide_activity_width: u16,
+    /// The sidebar shows only the current workspace's tabs.
+    #[serde(default)]
+    pub current_only: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

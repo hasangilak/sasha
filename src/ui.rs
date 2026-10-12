@@ -52,7 +52,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 /// Every binding, grouped; `{p}` is replaced by the prefix label.
 const HELP: &[(&str, &[(&str, &str)])] = &[
     ("Tab mode — press {p}, then", &[
-        ("j k  ↓ ↑", "next / previous tab"),
+        ("j k  ↓ ↑", "next / previous tab, through every workspace"),
         ("h l  ← →", "previous / next workspace"),
         ("1 … 9", "go to tab (9 = last)"),
         ("Tab  ⇧Tab", "previous tab / previous workspace"),
@@ -72,6 +72,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("[ v PgUp", "scroll mode (j k ^u ^d g G, q exits)"),
         ("b s", "collapse / expand the tab sidebar"),
         ("a", "workspace bar: badges → names → hidden"),
+        ("o", "sidebar: every workspace's tabs / just this one's"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
         ("d", "detach: tabs keep running, sasha brings them back"),
@@ -85,7 +86,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("⇧PgUp ⇧PgDn", "scroll back / forward"),
     ]),
     ("Mouse", &[
-        ("click / drag", "switch / reorder tabs"),
+        ("click / drag", "switch / reorder tabs (any workspace's)"),
         ("double-click tab", "rename it"),
         ("middle-click ×", "close tab"),
         ("right-click tab", "pin / unpin (click ⚲ to unpin)"),

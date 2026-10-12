@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::style::Color;
 
-use crate::layout::{Layout, ListItem};
+use crate::layout::ListItem;
 use crate::tab::{Tab, TabId};
 use crate::theme;
 
@@ -47,8 +47,6 @@ pub struct Workspace {
     pub active: usize,
     /// The tab that was active before the current one.
     pub previous: Option<TabId>,
-    /// First visible row of the tab list.
-    pub scroll: usize,
 }
 
 impl Workspace {
@@ -62,7 +60,6 @@ impl Workspace {
             groups: Vec::new(),
             active: 0,
             previous: None,
-            scroll: 0,
         }
     }
 
@@ -144,18 +141,6 @@ impl Workspace {
                 ListItem::Separator | ListItem::NewTab => None,
             })
             .collect()
-    }
-
-    /// Keeps the tab list's scroll position in range, showing tab `reveal`
-    /// (or its group's header, when the group hides it).
-    pub fn clamp_scroll(&mut self, layout: &Layout, reveal: Option<usize>) {
-        let items = self.list_items();
-        let reveal = reveal.and_then(|tab| {
-            let header = self.tabs.get(tab)?.group.map(ListItem::Group);
-            let position = |item| items.iter().position(|i| Some(*i) == item);
-            position(Some(ListItem::Tab(tab))).or_else(|| position(header))
-        });
-        self.scroll = layout.clamp_scroll(self.scroll, items.len(), reveal);
     }
 
     /// Up to two letters for the activity bar badge: the initials of the

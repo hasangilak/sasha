@@ -38,6 +38,13 @@ impl App {
         match (mouse.kind, hit) {
             (_, Some(Hit::Pane)) => self.mouse_in_pane(mouse),
             (MouseEventKind::Down(MouseButton::Left), Some(hit)) => self.click(hit),
+            (MouseEventKind::Down(MouseButton::Middle), Some(Hit::OtherTab(w, t))) => {
+                if self.workspaces[w].tabs[t].pinned {
+                    self.set_status("pinned tab · unpin it first, or ^B x x");
+                } else {
+                    self.remove_tab(w, t);
+                }
+            }
             // Middle-click closes, like in a browser (pinned tabs excepted).
             (MouseEventKind::Down(MouseButton::Middle), Some(Hit::Tab(index) | Hit::Close(index))) => {
                 if self.ws().tabs[index].pinned {
@@ -51,15 +58,15 @@ impl App {
                 self.toggle_pin(index);
             }
             (MouseEventKind::Down(MouseButton::Right), Some(Hit::Group(id))) => self.cycle_group_color(id),
-            (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(hit)) => {
+            (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(_)) => {
                 let down = mouse.kind == MouseEventKind::ScrollDown;
-                if matches!(hit, Hit::Workspace(_) | Hit::AddWorkspace | Hit::HelpButton | Hit::ActivityDivider) {
-                    let scroll = if down { self.activity_scroll + 1 } else { self.activity_scroll.saturating_sub(1) };
-                    self.activity_scroll = self.layout.clamp_activity_scroll(scroll, self.workspaces.len(), None);
+                let step = |scroll: usize| if down { scroll + 1 } else { scroll.saturating_sub(1) };
+                if self.layout.activity.contains(ratatui::layout::Position::new(mouse.column, mouse.row)) {
+                    self.activity_scroll = step(self.activity_scroll);
+                    self.clamp_bar_scroll(false);
                 } else {
-                    let ws = &mut self.workspaces[self.current];
-                    ws.scroll = if down { ws.scroll + 1 } else { ws.scroll.saturating_sub(1) };
-                    ws.clamp_scroll(&self.layout, None);
+                    self.list_scroll = step(self.list_scroll);
+                    self.clamp_list_scroll(false);
                 }
             }
             _ => {}
@@ -85,6 +92,14 @@ impl App {
                 }
             }
             Hit::ActivityDivider => self.drag = Some(Drag::ActivityDivider),
+            // Another workspace's tab or group, stacked in the sidebar.
+            Hit::OtherTab(w, t) => {
+                if w != self.current {
+                    self.switch_workspace(w);
+                }
+                self.activate(t);
+            }
+            Hit::OtherGroup(w, id) => self.toggle_group_in(w, id),
             Hit::AddWorkspace => self.start_workspaces("~/".to_owned()),
             Hit::HelpButton => self.mode = Mode::Help,
             Hit::Toggle => self.set_collapsed(!self.collapsed),

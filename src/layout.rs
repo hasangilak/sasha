@@ -29,6 +29,10 @@ pub enum Hit {
     ActivityDivider,
     /// The current workspace's name, at the top of the tab sidebar.
     WorkspaceName,
+    /// A tab (workspace, tab) of another workspace, in the tab sidebar.
+    OtherTab(usize, usize),
+    /// A group's header (workspace, group) of another workspace.
+    OtherGroup(usize, GroupId),
     Toggle,
     Search,
     Tab(usize),
@@ -50,6 +54,15 @@ pub enum ListItem {
     /// The line between pinned and regular tabs.
     Separator,
     NewTab,
+}
+
+/// A row of the tab sidebar, which stacks every workspace's tabs: a
+/// workspace's heading, one of its list items, or the gap before the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    Workspace(usize),
+    Item(usize, ListItem),
+    Gap,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -236,20 +249,22 @@ impl Layout {
         if !self.list.contains(pos) {
             return None;
         }
-        let ws = app.ws();
-        let items = ws.list_items();
-        match items.get(ws.scroll + (y - self.list.y) as usize)? {
-            ListItem::Tab(index) => {
+        let current = app.current;
+        match *app.sidebar_rows().get(app.list_scroll + (y - self.list.y) as usize)? {
+            Row::Workspace(w) => Some(Hit::Workspace(w)),
+            Row::Item(w, ListItem::Tab(index)) if w == current => {
                 let pill = self.pill(y);
                 if !self.collapsed && x + 4 >= pill.right() && x < pill.right() {
-                    Some(Hit::Close(*index))
+                    Some(Hit::Close(index))
                 } else {
-                    Some(Hit::Tab(*index))
+                    Some(Hit::Tab(index))
                 }
             }
-            ListItem::Group(id) => Some(Hit::Group(*id)),
-            ListItem::NewTab => Some(Hit::NewTab),
-            ListItem::Separator => None,
+            Row::Item(w, ListItem::Tab(index)) => Some(Hit::OtherTab(w, index)),
+            Row::Item(w, ListItem::Group(id)) if w == current => Some(Hit::Group(id)),
+            Row::Item(w, ListItem::Group(id)) => Some(Hit::OtherGroup(w, id)),
+            Row::Item(_, ListItem::NewTab) => Some(Hit::NewTab),
+            Row::Item(_, ListItem::Separator) | Row::Gap => None,
         }
     }
 

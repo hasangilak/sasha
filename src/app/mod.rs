@@ -14,7 +14,7 @@ use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
 use crate::config::Config;
-use crate::layout::{self, Hit, Layout};
+use crate::layout::{self, Hit, Layout, ListItem, Row};
 use crate::links::{self, Link};
 use crate::protocol::{self, Hello};
 use crate::server::{self, Attached, ClientId};
@@ -161,6 +161,11 @@ pub struct App {
     pub(crate) picker_selected: usize,
     /// First visible item of the activity bar.
     pub(crate) activity_scroll: usize,
+    /// First visible row of the tab sidebar.
+    pub(crate) list_scroll: usize,
+    /// Show only the current workspace's tabs, rather than every
+    /// workspace's stacked.
+    current_only: bool,
     /// Time, position and count of the last click in the pane.
     last_click: Option<(Instant, (u16, u16), u8)>,
     last_tab_click: Option<(Instant, usize)>,
@@ -213,6 +218,8 @@ impl App {
             input: String::new(),
             picker_selected: 0,
             activity_scroll: 0,
+            list_scroll: 0,
+            current_only: false,
             last_click: None,
             last_tab_click: None,
             last_group_click: None,
@@ -254,6 +261,7 @@ impl App {
             self.collapsed = layout.collapsed;
             self.activity_width = layout.activity_width.min(layout::ACTIVITY_MAX);
             self.wide_activity_width = layout.wide_activity_width.clamp(layout::ACTIVITY_WIDE_MIN, layout::ACTIVITY_MAX);
+            self.current_only = layout.current_only;
             self.relayout_now();
         }
         for mut saved in state.workspaces {
@@ -626,6 +634,7 @@ impl App {
                 collapsed: self.collapsed,
                 activity_width: self.activity_width,
                 wide_activity_width: self.wide_activity_width,
+                current_only: self.current_only,
             }),
         };
         let result = store::encode(&state).and_then(|json| {
@@ -645,10 +654,10 @@ impl App {
     fn relayout(&mut self, size: Size) {
         let area = Rect::new(0, 0, size.width, size.height);
         self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed);
-        self.activity_scroll = self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), None);
+        self.clamp_bar_scroll(false);
+        self.clamp_list_scroll(false);
         let (rows, cols) = self.pty_size();
         for ws in &mut self.workspaces {
-            ws.clamp_scroll(&self.layout, None);
             for tab in &mut ws.tabs {
                 tab.resize(rows, cols);
             }
@@ -779,8 +788,7 @@ impl App {
         }
         self.current = index;
         self.selection = None;
-        self.activity_scroll =
-            self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), Some(index));
+        self.clamp_bar_scroll(true);
         // A workspace never shows an empty pane.
         if self.ws().tabs.is_empty() {
             if let Err(err) = self.new_tab() {
@@ -944,9 +952,9 @@ impl App {
         if let Some(group) = group.and_then(|g| ws.group_mut(g)) {
             group.last_active = Some(id);
         }
-        ws.clamp_scroll(&self.layout, Some(index));
         self.selection = None;
         self.hover_link = None;
+        self.clamp_list_scroll(true);
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -978,9 +986,73 @@ impl App {
         }
     }
 
+    /// Whether the tab sidebar stacks every workspace's tabs.
+    fn stacked(&self) -> bool {
+        !self.current_only && self.workspaces.len() > 1
+    }
+
+    /// Rows of the tab sidebar: every workspace's heading and tabs, stacked
+    /// (only the current workspace has a "+"), or just the current one's.
+    pub fn sidebar_rows(&self) -> Vec<Row> {
+        let section = |w: usize| {
+            let items = self.workspaces[w].list_items().into_iter();
+            items.filter(move |item| w == self.current || *item != ListItem::NewTab).map(move |item| Row::Item(w, item))
+        };
+        if !self.stacked() {
+            return self.workspaces.get(self.current).map_or_else(Vec::new, |_| section(self.current).collect());
+        }
+        let mut rows = Vec::new();
+        for w in 0..self.workspaces.len() {
+            if w > 0 {
+                rows.push(Row::Gap);
+            }
+            rows.push(Row::Workspace(w));
+            rows.extend(section(w));
+        }
+        rows
+    }
+
+    /// Keeps the tab sidebar scrolled into range; with `reveal`, it shows
+    /// the tab on screen.
+    fn clamp_list_scroll(&mut self, reveal: bool) {
+        let Some(ws) = self.workspaces.get(self.current) else { return };
+        let rows = self.sidebar_rows();
+        let target = Row::Item(self.current, ListItem::Tab(ws.active));
+        let row = reveal.then(|| rows.iter().position(|r| *r == target)).flatten();
+        self.list_scroll = self.layout.clamp_scroll(self.list_scroll, rows.len(), row);
+    }
+
+    /// Keeps the workspace bar scrolled into range, showing the current
+    /// workspace with `reveal`.
+    fn clamp_bar_scroll(&mut self, reveal: bool) {
+        let reveal = reveal.then_some(self.current);
+        self.activity_scroll = self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), reveal);
+    }
+
+    /// Every workspace's tabs, stacked, or only the current workspace's.
+    fn toggle_stacked(&mut self) {
+        self.current_only = !self.current_only;
+        self.clamp_list_scroll(true);
+        self.set_status(if self.current_only { "showing this workspace's tabs" } else { "showing every workspace's tabs" });
+    }
+
     /// Activates the tab `delta` steps away, wrapping around. A collapsed
-    /// group counts as one step.
+    /// group counts as one step. While the sidebar stacks every workspace,
+    /// the steps go through all of their tabs, top to bottom.
     fn cycle(&mut self, delta: isize) {
+        if self.stacked() {
+            let all: Vec<(usize, usize)> = (self.workspaces.iter().enumerate())
+                .flat_map(|(w, ws)| ws.stops().into_iter().map(move |t| (w, t)))
+                .collect();
+            let here = (self.current, self.ws().active);
+            let Some(position) = all.iter().position(|&stop| stop == here) else { return };
+            let (w, t) = all[(position as isize + delta).rem_euclid(all.len() as isize) as usize];
+            if w != self.current {
+                self.switch_workspace(w);
+            }
+            self.activate(t);
+            return;
+        }
         let stops = self.ws().stops();
         let Some(position) = stops.iter().position(|&i| i == self.ws().active) else { return };
         let next = (position as isize + delta).rem_euclid(stops.len() as isize) as usize;
@@ -1097,7 +1169,7 @@ impl App {
         ws.tabs.insert(to, tab);
         ws.active = ws.tabs.iter().position(|t| t.id == active_id).unwrap_or(0);
         ws.prune_groups();
-        ws.clamp_scroll(&self.layout, Some(to));
+        self.clamp_list_scroll(true);
         if affects_pins {
             self.save();
         }
@@ -1204,16 +1276,19 @@ impl App {
             tab.group = None;
         }
         ws.prune_groups();
-        ws.clamp_scroll(&self.layout, None);
+        self.clamp_list_scroll(false);
     }
 
     fn toggle_group(&mut self, id: GroupId) {
-        let ws = &mut self.workspaces[self.current];
+        self.toggle_group_in(self.current, id);
+    }
+
+    fn toggle_group_in(&mut self, ws_index: usize, id: GroupId) {
+        let Some(ws) = self.workspaces.get_mut(ws_index) else { return };
         if let Some(group) = ws.group_mut(id) {
             group.collapsed = !group.collapsed;
         }
-        let active = ws.active;
-        ws.clamp_scroll(&self.layout, Some(active));
+        self.clamp_list_scroll(false);
     }
 
     fn cycle_group_color(&mut self, id: GroupId) {

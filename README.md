@@ -87,6 +87,10 @@ keeps its own tabs, and new tabs open inside its folder.
   the folder's name. Names are saved.
 - **Widen** the bar to see names next to the badges: drag its right edge, or press `^B a`, which
   goes badges → names → hidden. Dragging it too narrow for names snaps back to badges.
+- The tab sidebar **stacks every workspace's tabs and groups** under its name, so you can see
+  them all at once. Click any tab to go to it, wherever it is; `^B j` / `^B k` walk through all of
+  them, top to bottom. Clicking a workspace's name switches to it, and middle-clicking another
+  workspace's tab closes it. `^B o` switches between this and only the current workspace's tabs.
 - When you start sasha, it opens the workspace that contains the current folder, or adds that
   folder as a new workspace.
 - A spinner or dot next to a badge means a tab in that workspace is printing, or printed
@@ -152,7 +156,7 @@ the keys below work until you press `Esc`.
 
 | Tab mode | |
 |---|---|
-| `j` `k` / `↓` `↑` | next / previous tab |
+| `j` `k` / `↓` `↑` | next / previous tab, through every workspace's |
 | `h` `l` / `←` `→` | previous / next workspace |
 | `1` … `9` | go to tab (`9` = last) |
 | `Tab` / `Shift+Tab` | previous tab / previous workspace |
@@ -172,6 +176,7 @@ the keys below work until you press `Esc`.
 | `[` `v` `PgUp` | scroll mode (`j` `k` `^u` `^d` `g` `G`, `q` exits) |
 | `b` `s` | collapse / expand the tab sidebar |
 | `a` | workspace bar: badges → names → hidden |
+| `o` | sidebar: every workspace's tabs, or just this one's |
 | `<` `>` | narrower / wider sidebar |
 | prefix again | send the prefix to the shell |
 | `?` | help |
@@ -191,7 +196,7 @@ the keys below work until you press `Esc`.
 | workspace badge / `+` | switch workspace / add a folder |
 | double-click a workspace (or its name up top) | rename it |
 | drag the workspace bar's edge | widen it to show names |
-| click / drag a tab | switch / reorder (across the separator to pin or unpin) |
+| click / drag a tab | switch / reorder (across the separator to pin or unpin); any workspace's tab |
 | right-click a tab | pin / unpin |
 | click a link in a tab | open it in the browser |
 | click a group header | collapse / expand |
