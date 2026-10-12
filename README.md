@@ -28,11 +28,20 @@ run `sasha` again to get them back.
 
 ## Install
 
-sasha runs on macOS and Linux and needs [Rust](https://rustup.rs) to build.
+sasha runs on macOS and Linux. Download it from the
+[latest release](https://github.com/hasangilak/sasha/releases/latest), for example:
+
+```sh
+# Apple Silicon Mac; for others use sasha-macos-x86_64 or sasha-linux-x86_64
+curl -fsSL https://github.com/hasangilak/sasha/releases/latest/download/sasha-macos-arm64.tar.gz | tar -xz
+sudo mv sasha /usr/local/bin/
+sasha
+```
+
+Or build it with [Rust](https://rustup.rs):
 
 ```sh
 cargo install --git https://github.com/hasangilak/sasha
-sasha
 ```
 
 Or from a clone:
@@ -55,12 +64,11 @@ cargo run --release      # or: cargo install --path .
 - Started from a project folder, sasha switches to that folder's workspace (adding it if it's
   new). Started from your home folder, where new terminal windows open, it carries on where you
   left off.
-- `^B q` closes every tab and stops the server, and so does `sasha --kill-server`. The server
-  also stops when its last tab closes.
-- Logging out or restarting the Mac stops the server. Next time, your workspaces and pinned tabs
-  come back as fresh shells, as before.
-- After you rebuild sasha, the running server is still the old build, and the footer tells you.
-  Quit with `^B q` and start sasha again to run the new one.
+- `^B q` stops the server and everything running in the tabs, and so does `sasha --kill-server`.
+  So do logging out and restarting the Mac. Next time, every tab and group comes back, in the
+  folder it was in, as a fresh shell. The server also stops when its last tab closes.
+- After you update sasha, the running server is still the old version, and the footer tells you.
+  Quit with `^B q` and start sasha again to run the new one; your tabs come back.
 
 The server listens on `/tmp/sasha-<your uid>/default`, in a folder only you can open (set
 `SASHA_SOCKET` to use another path). Its log sits next to it as `default.log`.
@@ -90,7 +98,6 @@ Pin a tab with `^B p` or a right-click. Pinned tabs:
 
 - sit at the top of their workspace, above a separator, marked with `⚲` (click it to unpin)
 - need `x` pressed twice to close, and ignore middle-click
-- **come back when sasha restarts**, in the folder they were last in and with their custom name
 
 Dragging a tab across the separator pins or unpins it.
 
@@ -117,7 +124,7 @@ the tabs in the group.
   disappears when its last tab closes.
 
 Pinned tabs can't be in a group (pinning a tab takes it out). Groups belong to their workspace
-and, like the tabs in them, last until sasha quits.
+and come back with their tabs when sasha restarts.
 
 ## The tab sidebar
 
@@ -169,7 +176,7 @@ the keys below work until you press `Esc`.
 | prefix again | send the prefix to the shell |
 | `?` | help |
 | `d` | detach: the tabs keep running, `sasha` brings them back |
-| `q` | quit: close every tab and stop the server |
+| `q` | quit: stop everything; the tabs reopen next time |
 | `Esc` `Enter` | back to the terminal |
 
 | Anywhere | |
@@ -186,6 +193,7 @@ the keys below work until you press `Esc`.
 | drag the workspace bar's edge | widen it to show names |
 | click / drag a tab | switch / reorder (across the separator to pin or unpin) |
 | right-click a tab | pin / unpin |
+| click a link in a tab | open it in the browser |
 | click a group header | collapse / expand |
 | double- / right-click a group header | rename / change colour |
 | drag a tab onto a group | add it (drag it onto a plain tab or `+` to take it out) |
@@ -203,11 +211,30 @@ On macOS, `Alt+…` shortcuts only work when your terminal sends Option as Alt
 (Ghostty: `macos-option-as-alt = true`; iTerm2: Profiles → Keys → Left Option = Esc+).
 The prefix keys work everywhere.
 
+## Notifications
+
+A tab you aren't looking at posts a desktop notification when it needs you:
+
+- it rings the bell, or the program sends a notification itself (`OSC 9` / `OSC 777`)
+- a command that ran for 10 seconds or more finishes
+- it goes quiet after 15 seconds or more of output, which is how Claude finishing its turn
+  looks
+
+While the sasha window is in the background, the tab on screen counts too. Each tab notifies at
+most every 10 seconds. On macOS the notifications come through `osascript`; if none show up,
+allow notifications for Script Editor in System Settings → Notifications. Set `SASHA_NOTIFY=0`
+before starting sasha to turn them off.
+
+## Links
+
+Hover over a web link in a tab and it's underlined; click it to open it in your browser.
+Double-clicking a link still selects and copies it.
+
 ## Saved state
 
-Workspaces and pinned tabs live in `~/.config/sasha/state.json` (or under `$XDG_CONFIG_HOME`).
-Set `SASHA_STATE=/some/file.json` to use a different file. Restored pinned tabs start a fresh
-shell. They don't re-run the command that was running before.
+`~/.config/sasha/state.json` (or under `$XDG_CONFIG_HOME`) keeps your workspaces, tabs, groups
+and the sidebar sizes, saved as they change. Tabs come back as fresh shells: they don't re-run
+the command that was running before. Set `SASHA_STATE=/some/file.json` to use a different file.
 
 ## How it works
 
@@ -228,6 +255,8 @@ shell. They don't re-run the command that was running before.
 | `src/procinfo.rs` | foreground process name and working directory (macOS, Linux) |
 | `src/theme.rs` | the palette, derived from the terminal's colours; icons for programs |
 | `src/termcolors.rs` | asks the terminal for its colours at startup |
+| `src/notify.rs` | desktop notifications |
+| `src/links.rs` | finding and opening web links in a tab |
 | `src/clipboard.rs` | `pbcopy` / `wl-copy` / `xclip`, with OSC 52 as a fallback |
 
 Shells see `TERM=xterm-256color` and `TERM_PROGRAM=sasha`.
@@ -238,7 +267,7 @@ Shells see `TERM=xterm-256color` and `TERM_PROGRAM=sasha`.
 - No inline images (kitty / sixel), ligatures or kitty keyboard protocol.
 - One window at a time shows the tabs. Opening sasha in another window moves them there, where
   tmux could show them in both.
-- Only workspaces and pinned tabs survive a logout or restart, as fresh shells.
+- After a logout or restart, tabs come back as fresh shells; what ran in them has stopped.
 
 ## License
 
