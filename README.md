@@ -20,7 +20,7 @@ run `sasha` again to get them back.
   ~       ─────────────────────────  │
           ❯ web-dashboard         ×  │
   +       api                     ▾  │
-        ▎ ⠹ cargo · infra         •  │
+        ▎ ⠹ infra · cargo         •  │
         ▎ ❯ api                      │
                      +               │
   ?    ^B tab keys · ^B ? help       │
@@ -74,6 +74,11 @@ keeps its own tabs, and new tabs open inside its folder.
 - **Add** one with `+` in the bar or `^B w`, then type a path (`~/Work/…`). `Tab` completes
   folder names. `^B w` also offers the folder you're currently in.
 - **Remove** one in `^B w` with `^D`. If it has open tabs, you press it twice.
+- **Rename** one with a double-click on its badge (or on its name at the top of the tab
+  sidebar), or `^B W`. The badge's initials follow the new name; an empty name goes back to
+  the folder's name. Names are saved.
+- **Widen** the bar to see names next to the badges: drag its right edge, or press `^B a`, which
+  goes badges → names → hidden. Dragging it too narrow for names snaps back to badges.
 - When you start sasha, it opens the workspace that contains the current folder, or adds that
   folder as a new workspace.
 - A spinner or dot next to a badge means a tab in that workspace is printing, or printed
@@ -116,8 +121,10 @@ and, like the tabs in them, last until sasha quits.
 
 ## The tab sidebar
 
-- **Titles** come from what's running: `sasha` (the folder) for an idle shell, `cargo · api`
-  while a command runs, or the program's own title (vim, ssh). Rename a tab to fix its name.
+- **Titles** start with a prefix, the tab's folder by default, followed by what's running: `api`
+  for an idle shell, `api · cargo` while a command runs, or the program's own title, as in
+  `api · main.ts - NVIM`. Renaming a tab (`^B r`, or a double-click) sets the prefix and keeps
+  the rest live; an empty name goes back to the folder.
 - **Icons** stand in for favicons: `❯` shell, `✎` editor, `±` git, `⇄` ssh, `▸` build/runtime …
 - A **spinner** means a background tab is printing output right now. A **blue dot** means it
   printed something you haven't seen, and a **yellow dot** means it rang the bell.
@@ -151,12 +158,13 @@ the keys below work until you press `Esc`.
 | `u` | take tab out of its group |
 | `z` | collapse / expand the tab's group |
 | `e` | rename the tab's group (`Tab` changes its colour) |
-| `r` `,` | rename tab (empty name = automatic title) |
+| `r` `,` | set the tab's prefix (empty = its folder) |
 | `w` | workspaces: switch, add a folder, `^D` to remove |
+| `W` | rename the workspace (empty = its folder) |
 | `/` `f` | search tabs in every workspace (also by group name) |
 | `[` `v` `PgUp` | scroll mode (`j` `k` `^u` `^d` `g` `G`, `q` exits) |
 | `b` `s` | collapse / expand the tab sidebar |
-| `a` | show / hide the workspace bar |
+| `a` | workspace bar: badges → names → hidden |
 | `<` `>` | narrower / wider sidebar |
 | prefix again | send the prefix to the shell |
 | `?` | help |
@@ -174,13 +182,15 @@ the keys below work until you press `Esc`.
 | Mouse | |
 |---|---|
 | workspace badge / `+` | switch workspace / add a folder |
+| double-click a workspace (or its name up top) | rename it |
+| drag the workspace bar's edge | widen it to show names |
 | click / drag a tab | switch / reorder (across the separator to pin or unpin) |
 | right-click a tab | pin / unpin |
 | click a group header | collapse / expand |
 | double- / right-click a group header | rename / change colour |
 | drag a tab onto a group | add it (drag it onto a plain tab or `+` to take it out) |
 | `×` or middle-click | close |
-| double-click a tab | rename |
+| double-click a tab | set its prefix |
 | `⌕` / `≡` | search / collapse |
 | drag the divider | resize the sidebar |
 | wheel | scroll back through output |
