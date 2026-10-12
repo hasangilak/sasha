@@ -60,6 +60,14 @@ Dragging a tab across the separator pins or unpins it.
   printed something you haven't seen, and a **yellow dot** means it rang the bell.
 - Long titles fade out, like they do in Chrome.
 
+## Colours
+
+sasha uses your terminal's own background, so its colour, transparency, blur or background
+image shows through the sidebars just like it does in the terminal pane. At startup sasha asks
+the terminal for its foreground and background colours (OSC 10 / 11). The tab pills, buttons,
+popups and text are mixed from those, and light themes get darker accent colours. If the
+terminal doesn't answer, sasha falls back to Chrome's dark colours.
+
 ## Keys
 
 Press the **prefix** (`Ctrl+B` by default) to enter **tab mode**. The active tab turns blue and
@@ -134,6 +142,8 @@ shell. They don't re-run the command that was running before.
 | `src/app/` | event loop and state (`mod.rs`), keyboard (`keys.rs`), mouse (`mouse.rs`) |
 | `src/input.rs` | turns key and mouse events back into xterm byte sequences |
 | `src/procinfo.rs` | foreground process name and working directory (macOS, Linux) |
+| `src/theme.rs` | the palette, derived from the terminal's colours; icons for programs |
+| `src/termcolors.rs` | asks the terminal for its colours at startup |
 | `src/clipboard.rs` | `pbcopy` / `wl-copy` / `xclip`, with OSC 52 as a fallback |
 
 Shells see `TERM=xterm-256color` and `TERM_PROGRAM=sasha`.
