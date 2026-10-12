@@ -13,10 +13,15 @@ pub const ACTIVITY_COMPACT: u16 = 7;
 pub const ACTIVITY_WIDE_MIN: u16 = 12;
 pub const ACTIVITY_WIDE_DEFAULT: u16 = 24;
 pub const ACTIVITY_MAX: u16 = 40;
-/// The ports bar, with its edge.
+/// The ports bar, with its edge: as it starts, and how far it can be
+/// dragged.
 pub const PORTS_WIDTH: u16 = 9;
+pub const PORTS_MIN: u16 = 7;
+pub const PORTS_MAX: u16 = 40;
 /// The pull request bar, with its edge.
 pub const PRS_WIDTH: u16 = 32;
+pub const PRS_MIN: u16 = 16;
+pub const PRS_MAX: u16 = 100;
 /// Narrower windows leave out the ports bar, and then the pull request bar.
 const PORTS_MIN_AREA: u16 = 80;
 const PRS_MIN_AREA: u16 = 120;
@@ -40,6 +45,10 @@ pub enum Hit {
     Awake,
     /// A port (by position) in the ports bar.
     Port(usize),
+    /// The ports bar's right edge, dragged to resize it.
+    PortsDivider,
+    /// The pull request bar's left edge, dragged to resize it.
+    PrsDivider,
     /// A pull request (by position) in the pull request bar.
     Pr(usize),
     /// The pull request bar's heading: refreshes the list.
@@ -98,8 +107,9 @@ pub struct Layout {
 
 impl Layout {
     /// `activity_width` 0 hides the workspace bar.
-    /// `side_bars` adds the ports and pull request bars where there's room.
-    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool, side_bars: bool) -> Self {
+    /// `bars` are the widths of the ports and pull request bars (0 hides
+    /// one); they're left out where there isn't room.
+    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool, bars: (u16, u16)) -> Self {
         // Wide workspace bars give way to the sidebar and terminal first.
         let activity_width = activity_width
             .min(area.width.saturating_sub(26).max(ACTIVITY_COMPACT))
@@ -107,9 +117,9 @@ impl Layout {
         let activity = Rect { width: activity_width, ..area };
         let activity_divider = Rect { x: activity.right().saturating_sub(1), width: activity_width.min(1), ..area };
         let rest = Rect { x: area.x + activity_width, width: area.width - activity_width, ..area };
-        let ports_width = if side_bars && area.width >= PORTS_MIN_AREA { PORTS_WIDTH } else { 0 };
+        let ports_width = if area.width >= PORTS_MIN_AREA { bars.0.min(rest.width / 4) } else { 0 };
         let ports_bar = Rect { width: ports_width, ..rest };
-        let prs_width = if side_bars && area.width >= PRS_MIN_AREA { PRS_WIDTH } else { 0 };
+        let prs_width = if area.width >= PRS_MIN_AREA { bars.1.min(rest.width / 2) } else { 0 };
         let rest = Rect { x: rest.x + ports_width, width: rest.width - ports_width - prs_width, ..rest };
         let pr_bar = Rect { x: rest.right(), width: prs_width, ..rest };
 
@@ -274,6 +284,12 @@ impl Layout {
         }
         if self.activity_divider.contains(pos) {
             return Some(Hit::ActivityDivider);
+        }
+        if self.ports_bar.width > 0 && x == self.ports_bar.right() - 1 {
+            return Some(Hit::PortsDivider);
+        }
+        if self.pr_bar.width > 0 && x == self.pr_bar.x && y > self.pr_bar.y {
+            return Some(Hit::PrsDivider);
         }
         if self.ports_bar.contains(pos) {
             let index = (y.checked_sub(self.ports_bar.y + 2)?) as usize;

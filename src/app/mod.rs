@@ -86,6 +86,8 @@ enum Drag {
     Tab(TabId),
     Divider,
     ActivityDivider,
+    PortsDivider,
+    PrsDivider,
     Select,
 }
 
@@ -153,6 +155,8 @@ pub struct App {
     pub(crate) panel: Option<Panel>,
     /// Show the ports and pull request bars (where there's room).
     side_bars: bool,
+    ports_width: u16,
+    prs_width: u16,
     /// The ports programs in the tabs listen on, as last checked.
     pub(crate) ports: Loadable<Vec<Port>>,
     ports_checking: bool,
@@ -233,6 +237,8 @@ impl App {
             awake: None,
             panel: None,
             side_bars: true,
+            ports_width: layout::PORTS_WIDTH,
+            prs_width: layout::PRS_WIDTH,
             ports: Loadable::Loading,
             ports_checking: false,
             ports_checked: None,
@@ -300,6 +306,12 @@ impl App {
             self.wide_activity_width = layout.wide_activity_width.clamp(layout::ACTIVITY_WIDE_MIN, layout::ACTIVITY_MAX);
             self.current_only = layout.current_only;
             self.side_bars = !layout.hide_side_bars;
+            if layout.ports_width > 0 {
+                self.ports_width = layout.ports_width.clamp(layout::PORTS_MIN, layout::PORTS_MAX);
+            }
+            if layout.prs_width > 0 {
+                self.prs_width = layout.prs_width.clamp(layout::PRS_MIN, layout::PRS_MAX);
+            }
             self.relayout_now();
         }
         let mut group_ids = Vec::new();
@@ -569,6 +581,16 @@ impl App {
         self.drag == Some(Drag::ActivityDivider)
     }
 
+    /// Whether a bar's edge is hovered or being dragged, to light it up.
+    pub fn edge_hot(&self, edge: Hit) -> bool {
+        let dragging = match edge {
+            Hit::PortsDivider => self.drag == Some(Drag::PortsDivider),
+            Hit::PrsDivider => self.drag == Some(Drag::PrsDivider),
+            _ => false,
+        };
+        dragging || self.hover == Some(edge)
+    }
+
     /// Paint the active tab in the accent colour while keys drive the tabs.
     pub fn highlight_active(&self) -> bool {
         self.mode == Mode::Tab
@@ -733,6 +755,8 @@ impl App {
                 wide_activity_width: self.wide_activity_width,
                 current_only: self.current_only,
                 hide_side_bars: !self.side_bars,
+                ports_width: self.ports_width,
+                prs_width: self.prs_width,
             }),
         };
         let result = store::encode(&state).and_then(|json| {
@@ -751,7 +775,8 @@ impl App {
     /// Recomputes the layout and keeps every pty sized to the pane.
     fn relayout(&mut self, size: Size) {
         let area = Rect::new(0, 0, size.width, size.height);
-        self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed, self.side_bars);
+        let bars = if self.side_bars { (self.ports_width, self.prs_width) } else { (0, 0) };
+        self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed, bars);
         self.clamp_bar_scroll(false);
         self.clamp_list_scroll(false);
         let (rows, cols) = self.pty_size();

@@ -33,6 +33,11 @@ pub struct SavedLayout {
     /// The ports and pull request bars are hidden.
     #[serde(default)]
     pub hide_side_bars: bool,
+    /// Their widths (0: as they start).
+    #[serde(default)]
+    pub ports_width: u16,
+    #[serde(default)]
+    pub prs_width: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

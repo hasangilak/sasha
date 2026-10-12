@@ -19,7 +19,10 @@ impl App {
         if self.mode == Mode::Panel {
             match mouse.kind {
                 MouseEventKind::ScrollDown | MouseEventKind::ScrollUp if hit == Some(Hit::Pane) => {
-                    self.panel_wheel(mouse.kind == MouseEventKind::ScrollDown);
+                    self.panel_wheel(mouse.kind == MouseEventKind::ScrollDown, mouse.column, mouse.row);
+                }
+                MouseEventKind::Down(MouseButton::Left) if hit == Some(Hit::Pane) => {
+                    self.panel_click(mouse.column, mouse.row);
                 }
                 MouseEventKind::Down(_) if hit != Some(Hit::Pane) => {
                     self.panel = None;
@@ -107,6 +110,8 @@ impl App {
                 }
             }
             Hit::ActivityDivider => self.drag = Some(Drag::ActivityDivider),
+            Hit::PortsDivider => self.drag = Some(Drag::PortsDivider),
+            Hit::PrsDivider => self.drag = Some(Drag::PrsDivider),
             // Another workspace's tab or group, stacked in the sidebar.
             Hit::OtherTab(w, t) => self.go_to(w, t),
             Hit::AddWorkspace => self.start_workspaces("~/".to_owned()),
@@ -155,6 +160,16 @@ impl App {
     /// Continues or ends a drag; returns true when the event was consumed.
     fn handle_drag(&mut self, mouse: &MouseEvent, hit: Option<Hit>) -> bool {
         match (mouse.kind, self.drag) {
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::PortsDivider)) => {
+                let width = mouse.column.saturating_sub(self.layout.ports_bar.x) + 1;
+                self.ports_width = width.clamp(layout::PORTS_MIN, layout::PORTS_MAX);
+                self.relayout_now();
+            }
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::PrsDivider)) => {
+                let width = self.layout.pr_bar.right().saturating_sub(mouse.column);
+                self.prs_width = width.clamp(layout::PRS_MIN, layout::PRS_MAX);
+                self.relayout_now();
+            }
             (MouseEventKind::Drag(MouseButton::Left), Some(Drag::ActivityDivider)) => {
                 self.resize_activity_bar(mouse.column.saturating_sub(self.layout.activity.x) + 1);
             }

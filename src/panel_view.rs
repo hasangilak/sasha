@@ -33,7 +33,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(block, area);
 
     let buf = frame.buffer_mut();
-    let body = Rect { height: inner.height.saturating_sub(2), ..inner };
+    let body = body(area);
     let hint_y = inner.bottom().saturating_sub(1);
     let p = theme::palette();
     let (hint, hint_color) = match panel {
@@ -70,8 +70,23 @@ fn ready_or_say<'a, T>(buf: &mut Buffer, area: Rect, data: &'a Loadable<Vec<T>>,
     None
 }
 
+/// Where a panel covering `pane` lists things: inside its border, above
+/// the hint line.
+pub fn body(pane: Rect) -> Rect {
+    let inner = popup_block("").inner(pane);
+    Rect { height: inner.height.saturating_sub(2), ..inner }
+}
+
+/// A pull request's file list and diff, side by side in `body`.
+pub fn split(body: Rect) -> (Rect, Rect) {
+    let list_width = (body.width / 3).clamp(20, 48).min(body.width.saturating_sub(10));
+    let list = Rect { width: list_width, ..body };
+    let diff = Rect { x: body.x + list_width + 1, width: body.width.saturating_sub(list_width + 1), ..body };
+    (list, diff)
+}
+
 /// The first item to show so that `selected` is in view.
-fn first_shown(selected: usize, rows: u16) -> usize {
+pub fn first_shown(selected: usize, rows: u16) -> usize {
     selected.saturating_sub(usize::from(rows).saturating_sub(1))
 }
 
@@ -117,11 +132,9 @@ fn render_prs(buf: &mut Buffer, area: Rect, app: &App, panel: &PrPanel) {
 fn render_files(buf: &mut Buffer, area: Rect, open: &OpenPr) {
     let p = theme::palette();
     let Some(files) = ready_or_say(buf, area, &open.files, "loading the changes…", "no changes") else { return };
-    let list_width = (area.width / 3).clamp(20, 48).min(area.width.saturating_sub(10));
-    let list = Rect { width: list_width, ..area };
-    let diff = Rect { x: area.x + list_width + 1, width: area.width.saturating_sub(list_width + 1), ..area };
+    let (list, diff) = split(area);
     for y in area.top()..area.bottom() {
-        buf.set_string(area.x + list_width, y, "│", Style::new().fg(p.border).bg(p.popup_bg));
+        buf.set_string(list.right(), y, "│", Style::new().fg(p.border).bg(p.popup_bg));
     }
 
     let first = first_shown(open.selected, list.height);

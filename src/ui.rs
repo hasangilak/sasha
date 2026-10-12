@@ -103,7 +103,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("drag tab to group", "add it / take it out"),
         ("workspace bar", "switch workspace, + adds a folder"),
         ("2×-click badge", "rename the workspace (or 2× its name)"),
-        ("drag bar's edge", "widen the workspace bar to show names"),
+        ("drag an edge", "resize that bar (wide workspace bar: names)"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
         ("⇧ drag", "select even when an app uses the mouse"),
         ("drag the divider", "resize the sidebar"),

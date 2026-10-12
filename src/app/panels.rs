@@ -7,9 +7,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Position;
 
 use super::{App, AppEvent, Mode};
 use crate::github::{self, FileDiff, Pr};
+use crate::panel_view;
 use crate::ports::{self, Port};
 use crate::tab::{Tab, TabId};
 
@@ -254,12 +256,65 @@ impl App {
         }
     }
 
-    /// The mouse wheel over a panel: scrolls a diff, else moves the
+    /// A click in a panel: picks a pull request (and opens it), a file, or a
+    /// port.
+    pub(super) fn panel_click(&mut self, x: u16, y: u16) {
+        let body = panel_view::body(self.layout.pane);
+        let pos = Position::new(x, y);
+        if !body.contains(pos) {
+            return;
+        }
+        let row = usize::from(y - body.y);
+        let ports = self.port_count();
+        let mut load = None;
+        match &mut self.panel {
+            Some(Panel::Prs(PrPanel { open: Some(open), .. })) => {
+                let (list, _) = panel_view::split(body);
+                let count = open.files.ready().map_or(0, Vec::len);
+                let index = panel_view::first_shown(open.selected, list.height) + row;
+                if list.contains(pos) && index < count {
+                    open.selected = index;
+                    open.scroll = 0;
+                }
+            }
+            Some(Panel::Prs(panel)) => {
+                let prs = self.prs.get(&panel.dir).and_then(|l| l.prs.ready());
+                let index = panel_view::first_shown(panel.selected, body.height) + row;
+                if let Some(pr) = prs.and_then(|prs| prs.get(index)) {
+                    panel.selected = index;
+                    let (number, title) = (pr.number, pr.title.clone());
+                    panel.open = Some(OpenPr { number, title, files: Loadable::Loading, selected: 0, scroll: 0 });
+                    load = Some((panel.dir.clone(), number));
+                }
+            }
+            Some(Panel::Ports(panel)) => {
+                let index = panel_view::first_shown(panel.selected, body.height) + row;
+                if index < ports {
+                    panel.selected = index;
+                    panel.confirm = None;
+                }
+            }
+            None => {}
+        }
+        if let Some((dir, number)) = load {
+            self.load_files(dir, number);
+        }
+    }
+
+    /// The mouse wheel over a panel: over a pull request's files it moves
+    /// through them, over its diff it scrolls; elsewhere it moves the
     /// highlight.
-    pub(super) fn panel_wheel(&mut self, down: bool) {
+    pub(super) fn panel_wheel(&mut self, down: bool, x: u16, y: u16) {
         let step: isize = if down { 3 } else { -3 };
         let ports = self.port_count();
+        let (list, _) = panel_view::split(panel_view::body(self.layout.pane));
+        let over_files = list.contains(Position::new(x, y));
         match &mut self.panel {
+            Some(Panel::Prs(PrPanel { open: Some(open), .. })) if over_files => {
+                let count = open.files.ready().map_or(0, Vec::len);
+                open.selected = step_in(open.selected, step.signum(), count);
+                open.scroll = 0;
+            }
             Some(Panel::Prs(PrPanel { open: Some(open), .. })) => scroll_diff(open, step),
             Some(Panel::Prs(panel)) => {
                 let count = self.prs.get(&panel.dir).and_then(|l| l.prs.ready()).map_or(0, Vec::len);

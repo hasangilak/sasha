@@ -69,16 +69,23 @@ fn render_ports(buf: &mut Buffer, app: &App) {
                 let hovered = app.hover == Some(Hit::Port(i));
                 let bg = if hovered { p.hover_bg } else { BG };
                 buf.set_style(Rect::new(area.x, y, width + 1, 1), Style::new().bg(bg));
-                let style = Style::new().fg(p.accent).bg(bg);
-                buf.set_stringn(area.x + 1, y, format!(":{}", port.port), width as usize, style);
+                let number = format!(":{}", port.port);
+                buf.set_stringn(area.x + 1, y, &number, width as usize, Style::new().fg(p.accent).bg(bg));
+                // Wide enough: the program too.
+                let room = (width as usize).saturating_sub(number.len() + 1);
+                if room > 2 {
+                    let x = area.x + 2 + number.len() as u16;
+                    render_faded(buf, x, y, &port.command, room, Style::new().fg(p.text_dim).bg(bg), bg);
+                }
             }
         }
         Loadable::Loading => say(buf, area, area.x + 1, first, width, "…", p.text_dim),
         Loadable::Failed(_) => say(buf, area, area.x + 1, first, width, "lsof?", p.red),
     }
-    // The edge between it and the tab sidebar.
+    // The edge between it and the tab sidebar, which drags to resize.
+    let edge = if app.edge_hot(Hit::PortsDivider) { p.accent } else { p.border };
     for y in area.top()..area.bottom() {
-        buf.set_string(area.right() - 1, y, "│", Style::new().fg(p.border).bg(BG));
+        buf.set_string(area.right() - 1, y, "│", Style::new().fg(edge).bg(BG));
     }
 }
 
@@ -89,8 +96,9 @@ fn render_prs(buf: &mut Buffer, app: &App) {
     }
     let p = theme::palette();
     buf.set_style(area, Style::new().bg(BG).fg(p.text));
+    let edge = if app.edge_hot(Hit::PrsDivider) { p.accent } else { p.border };
     for y in area.top()..area.bottom() {
-        buf.set_string(area.x, y, "│", Style::new().fg(p.border).bg(BG));
+        buf.set_string(area.x, y, "│", Style::new().fg(edge).bg(BG));
     }
     let x = area.x + 2;
     let width = area.width.saturating_sub(3);

@@ -43,7 +43,7 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `?` | every key |
 
 The mouse works too: click and drag tabs, double-click to rename, right-click to pin, click a
-link to open it.
+link to open it, and drag any bar's edge to resize it.
 
 ## What it does
 
