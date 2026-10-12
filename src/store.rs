@@ -1,5 +1,5 @@
-//! What sasha remembers between runs: the workspaces (and later their
-//! pinned tabs), stored as JSON in ~/.config/sasha/state.json.
+//! What sasha remembers between runs: the workspaces and their pinned
+//! tabs, stored as JSON in ~/.config/sasha/state.json.
 
 use std::path::PathBuf;
 
@@ -15,6 +15,16 @@ pub struct State {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedWorkspace {
     pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned: Vec<SavedTab>,
+}
+
+/// A pinned tab: reopened as a fresh shell in `cwd` on startup.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SavedTab {
+    pub cwd: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// `$SASHA_STATE`, else `$XDG_CONFIG_HOME/sasha/state.json`, else

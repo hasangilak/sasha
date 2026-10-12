@@ -93,7 +93,9 @@ pub struct Tab {
     cwd: Option<PathBuf>,
     /// Last time the tab produced output that wasn't just a resize redraw.
     pub last_activity: Instant,
-    resized_at: Instant,
+    /// Until then, output is the shell starting up or redrawing after a
+    /// resize rather than news.
+    settle_until: Instant,
     /// Output arrived while the tab was in the background.
     pub unseen: bool,
     pub bell: bool,
@@ -171,7 +173,7 @@ impl Tab {
             title_owner: None,
             cwd: cwd.map(Path::to_path_buf),
             last_activity: Instant::now(),
-            resized_at: Instant::now(),
+            settle_until: Instant::now() + Duration::from_secs(2),
             unseen: false,
             bell: false,
         };
@@ -197,12 +199,12 @@ impl Tab {
         }
         self.parser.screen_mut().set_size(rows, cols);
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-        self.resized_at = Instant::now();
+        self.settle_until = self.settle_until.max(Instant::now() + Duration::from_millis(500));
     }
 
-    /// Output right after a resize is usually just the program redrawing.
-    pub fn recently_resized(&self) -> bool {
-        self.resized_at.elapsed() < Duration::from_millis(500)
+    /// Output right after startup or a resize is just the program drawing.
+    pub fn settling(&self) -> bool {
+        Instant::now() < self.settle_until
     }
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {

@@ -57,6 +57,10 @@ impl App {
             return;
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        // A pending "press x again" only survives an immediate second x.
+        if key.code != KeyCode::Char('x') {
+            self.confirm_close = None;
+        }
         match key.code {
             KeyCode::Char('J') => self.shift_active(1),
             KeyCode::Char('K') => self.shift_active(-1),
@@ -86,7 +90,8 @@ impl App {
                 }
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char('x') => self.close_tab(self.ws().active),
+            KeyCode::Char('x') => self.close_tab_guarded(self.ws().active),
+            KeyCode::Char('p') => self.toggle_pin(self.ws().active),
             KeyCode::Char('w') => self.start_workspaces(String::new()),
             KeyCode::Char('b' | 's') => self.set_collapsed(!self.collapsed),
             KeyCode::Char('a') => self.toggle_activity_bar(),
@@ -153,9 +158,14 @@ impl App {
 
     pub(super) fn finish_rename(&mut self) {
         let name = self.input.trim().to_owned();
+        let mut pinned = false;
         if let Some(tab) = self.ws_mut().active_tab_mut() {
             // An empty name goes back to the automatic title.
             tab.custom_title = (!name.is_empty()).then_some(name);
+            pinned = tab.pinned;
+        }
+        if pinned {
+            self.save();
         }
         self.input.clear();
         self.mode = Mode::Normal;

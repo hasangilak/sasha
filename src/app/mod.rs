@@ -16,7 +16,7 @@ use ratatui::style::Color;
 use crate::clipboard;
 use crate::config::Config;
 use crate::layout::{self, Hit, Layout};
-use crate::store::{self, SavedWorkspace, State};
+use crate::store::{self, SavedTab, SavedWorkspace, State};
 use crate::tab::{Tab, TabId};
 use crate::workspace::{self, Workspace, WorkspaceId};
 use crate::{theme, ui};
@@ -119,6 +119,8 @@ pub struct App {
     status: Option<(String, Instant)>,
     /// Workspace waiting for a second ^D before its tabs are closed.
     confirm_remove: Option<WorkspaceId>,
+    /// Pinned tab waiting for a second `x` before it's closed.
+    confirm_close: Option<TabId>,
     sidebar_width: u16,
     collapsed: bool,
     show_activity: bool,
@@ -151,6 +153,7 @@ impl App {
             last_tab_click: None,
             status: None,
             confirm_remove: None,
+            confirm_close: None,
             sidebar_width: layout::DEFAULT_WIDTH,
             collapsed: false,
             show_activity: true,
@@ -167,7 +170,17 @@ impl App {
 
         let (state, warning) = store::load();
         for saved in state.workspaces {
-            app.add_workspace(saved.path);
+            let index = app.add_workspace(saved.path);
+            for pinned in saved.pinned {
+                match app.spawn_tab(&pinned.cwd) {
+                    Ok(mut tab) => {
+                        tab.pinned = true;
+                        tab.custom_title = pinned.title;
+                        app.workspaces[index].tabs.push(tab);
+                    }
+                    Err(err) => app.set_status(format!("can't restore a pinned tab: {err}")),
+                }
+            }
         }
         if let Some(warning) = warning {
             app.set_status(warning);
@@ -279,7 +292,7 @@ impl App {
             ),
             Mode::Tab => (
                 Some((if short { "TAB" } else { "TABS" }, theme::ACCENT)),
-                "j/k tabs · h/l spaces · ? help".to_owned(),
+                "j/k tabs · h/l spaces · p pin".to_owned(),
             ),
             Mode::Rename => (
                 Some((if short { "REN" } else { "RENAME" }, theme::GREEN)),
@@ -357,10 +370,26 @@ impl App {
         Ok(())
     }
 
-    /// Writes the workspaces to disk; failures show up in the footer.
+    /// Writes the workspaces and pinned tabs to disk; failures show up in
+    /// the footer.
     fn save(&mut self) {
         let state = State {
-            workspaces: self.workspaces.iter().map(|ws| SavedWorkspace { path: ws.path.clone() }).collect(),
+            workspaces: self
+                .workspaces
+                .iter()
+                .map(|ws| SavedWorkspace {
+                    path: ws.path.clone(),
+                    pinned: ws
+                        .tabs
+                        .iter()
+                        .filter(|tab| tab.pinned)
+                        .map(|tab| SavedTab {
+                            cwd: tab.cwd().map_or_else(|| ws.path.clone(), Path::to_path_buf),
+                            title: tab.custom_title.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
         };
         if let Err(err) = store::save(&state) {
             self.set_status(format!("couldn't save workspaces: {err:#}"));
@@ -647,9 +676,12 @@ impl App {
             return;
         }
         // Dropping the tab hangs up its shell.
-        ws.tabs.remove(index);
+        let was_pinned = ws.tabs.remove(index).pinned;
         if index < ws.active || ws.active >= ws.tabs.len() {
             ws.active = ws.active.saturating_sub(1);
+        }
+        if was_pinned {
+            self.save();
         }
         if ws_index != self.current {
             return;
@@ -691,6 +723,7 @@ impl App {
     fn shift_active(&mut self, delta: isize) {
         let ws = self.ws();
         let pinned = ws.pinned_count();
+        // Keyboard moves never cross into or out of the pinned section.
         let section = if ws.active < pinned { 0..pinned } else { pinned..ws.tabs.len() };
         let to = ws.active as isize + delta;
         if to >= 0 && section.contains(&(to as usize)) {
@@ -698,16 +731,60 @@ impl App {
         }
     }
 
+    /// Moves a tab; landing inside the pinned section pins it and landing
+    /// below it unpins it, like dragging tabs in Chrome.
     fn move_tab(&mut self, from: usize, to: usize) {
         let ws = &mut self.workspaces[self.current];
         if from == to || from >= ws.tabs.len() || to >= ws.tabs.len() {
             return;
         }
         let active_id = ws.tabs[ws.active].id;
-        let tab = ws.tabs.remove(from);
+        let mut tab = ws.tabs.remove(from);
+        let was_pinned = tab.pinned;
+        let pinned = ws.pinned_count();
+        if to < pinned {
+            tab.pinned = true;
+        } else if to > pinned {
+            tab.pinned = false;
+        }
+        let affects_pins = was_pinned || tab.pinned;
         ws.tabs.insert(to, tab);
         ws.active = ws.tabs.iter().position(|t| t.id == active_id).unwrap_or(0);
         ws.scroll = self.layout.clamp_scroll(ws.scroll, ws.tabs.len(), ws.pinned_count(), Some(to));
+        if affects_pins {
+            self.save();
+        }
+    }
+
+    /// Pins a tab (to the end of the pinned section) or unpins it (to the
+    /// top of the regular tabs).
+    fn toggle_pin(&mut self, index: usize) {
+        let ws = &mut self.workspaces[self.current];
+        if index >= ws.tabs.len() {
+            return;
+        }
+        let active_id = ws.active_tab().map(|t| t.id);
+        let mut tab = ws.tabs.remove(index);
+        tab.pinned = !tab.pinned;
+        let message = format!("{} {}", if tab.pinned { "pinned" } else { "unpinned" }, tab.title());
+        let to = ws.pinned_count();
+        ws.tabs.insert(to, tab);
+        ws.active = ws.tabs.iter().position(|t| Some(t.id) == active_id).unwrap_or(0);
+        ws.scroll = self.layout.clamp_scroll(ws.scroll, ws.tabs.len(), ws.pinned_count(), Some(to));
+        self.save();
+        self.set_status(message);
+    }
+
+    /// Closes a tab, except that pinned tabs need a second press.
+    fn close_tab_guarded(&mut self, index: usize) {
+        let Some(tab) = self.ws().tabs.get(index) else { return };
+        if tab.pinned && self.confirm_close != Some(tab.id) {
+            self.confirm_close = Some(tab.id);
+            self.set_status("pinned tab · press x again to close");
+            return;
+        }
+        self.confirm_close = None;
+        self.close_tab(index);
     }
 
     /// Indices (workspace, tab) of the tabs matching the search query.
@@ -772,8 +849,8 @@ impl App {
         if let Some(data) = tab.process(bytes) {
             clipboard::copy_base64(&data);
         }
-        // Shells redraw their prompt after a resize; that isn't news.
-        if !tab.recently_resized() {
+        // A shell starting up or redrawing after a resize isn't news.
+        if !tab.settling() {
             tab.last_activity = Instant::now();
             if !on_screen {
                 tab.unseen = true;

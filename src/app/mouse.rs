@@ -36,9 +36,17 @@ impl App {
         match (mouse.kind, hit) {
             (_, Some(Hit::Pane)) => self.mouse_in_pane(mouse),
             (MouseEventKind::Down(MouseButton::Left), Some(hit)) => self.click(hit),
-            // Middle-click closes, like in a browser.
+            // Middle-click closes, like in a browser (pinned tabs excepted).
             (MouseEventKind::Down(MouseButton::Middle), Some(Hit::Tab(index) | Hit::Close(index))) => {
-                self.close_tab(index);
+                if self.ws().tabs[index].pinned {
+                    self.set_status("pinned tab · unpin it first, or ^B x x");
+                } else {
+                    self.close_tab(index);
+                }
+            }
+            // Right-click pins and unpins.
+            (MouseEventKind::Down(MouseButton::Right), Some(Hit::Tab(index) | Hit::Close(index))) => {
+                self.toggle_pin(index);
             }
             (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(hit)) => {
                 let down = mouse.kind == MouseEventKind::ScrollDown;
@@ -75,6 +83,8 @@ impl App {
                     self.drag = Some(Drag::Tab(index));
                 }
             }
+            // On a pinned tab the button is the pin itself.
+            Hit::Close(index) if self.ws().tabs[index].pinned => self.toggle_pin(index),
             Hit::Close(index) => self.close_tab(index),
             Hit::NewTab => {
                 if let Err(err) = self.new_tab() {

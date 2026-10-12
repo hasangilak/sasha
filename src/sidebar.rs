@@ -114,10 +114,14 @@ fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) 
         return;
     }
 
-    // Right edge: close button on the active / hovered tab, otherwise status dots.
-    let marker = if active || hovered {
-        let close_hot = app.hover == Some(Hit::Close(index));
-        Some(("×", if close_hot { theme::RED } else { fg }))
+    // Right edge: the pin, a close button on the active / hovered tab, or
+    // status dots.
+    let button_hot = app.hover == Some(Hit::Close(index));
+    let marker = if tab.pinned && (active || hovered || !(tab.bell || tab.unseen)) {
+        let color = if button_hot || active || hovered { fg } else { TEXT_DIM };
+        Some(("⚲", color))
+    } else if active || hovered {
+        Some(("×", if button_hot { theme::RED } else { fg }))
     } else if tab.bell {
         Some(("•", theme::YELLOW))
     } else if tab.unseen {
