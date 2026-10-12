@@ -1,21 +1,23 @@
 mod keys;
 mod mouse;
 
+use std::io;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{Event, KeyEventKind};
-use ratatui::DefaultTerminal;
 use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
 use crate::clipboard;
 use crate::config::Config;
 use crate::layout::{self, Hit, Layout};
+use crate::protocol::{self, Hello};
+use crate::server::{Attached, ClientId};
 use crate::store::{self, SavedTab, SavedWorkspace, State};
 use crate::tab::{Tab, TabId};
 use crate::workspace::{self, Group, GroupId, Workspace, WorkspaceId};
@@ -31,9 +33,15 @@ const SPINNER_STEP: Duration = Duration::from_millis(80);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub enum AppEvent {
-    Input(Event),
     Output(TabId, Vec<u8>),
     Exited(TabId),
+    /// A client wants to show the tabs.
+    Attach(ClientId, Box<Hello>, UnixStream),
+    Input(ClientId, Event),
+    /// A client's connection closed.
+    Gone(ClientId),
+    /// `sasha --kill-server`.
+    Kill,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +117,12 @@ pub enum Activity {
 
 pub struct App {
     pub(crate) config: Config,
+    /// The client showing the tabs, if any.
+    client: Option<Attached>,
+    /// This server's `protocol::build_id`.
+    build: u64,
+    /// Whether a client has attached before (the first one opens a tab).
+    attached_before: bool,
     pub(crate) mode: Mode,
     pub(crate) workspaces: Vec<Workspace>,
     /// Index of the workspace on screen.
@@ -149,10 +163,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Config, size: Size) -> Result<Self> {
-        let (events_tx, events) = mpsc::channel();
+    /// Restores the saved workspaces and pinned tabs; the first `attach`
+    /// opens a tab where sasha was started.
+    pub fn new(config: Config, size: Size, events_tx: Sender<AppEvent>, events: Receiver<AppEvent>) -> Self {
         let mut app = Self {
             config,
+            client: None,
+            build: protocol::build_id(),
+            attached_before: false,
             mode: Mode::Normal,
             workspaces: Vec::new(),
             current: 0,
@@ -202,27 +220,126 @@ impl App {
         if let Some(warning) = warning {
             app.set_status(warning);
         }
+        app
+    }
 
-        // Open a terminal where sasha was started, in the workspace that
-        // contains that folder (or a new one for it).
-        let launch = std::env::current_dir()
-            .ok()
-            .or_else(std::env::home_dir)
-            .unwrap_or_else(|| PathBuf::from("/"));
-        let index = match app.workspace_for(&launch) {
+    // ── Clients ─────────────────────────────────────────────────────────
+
+    /// Shows the tabs on a client's terminal. One client at a time: a new
+    /// one takes over from the last, like `tmux attach -d`.
+    pub fn attach(&mut self, id: ClientId, hello: Hello, mut stream: UnixStream) {
+        if hello.version != protocol::VERSION {
+            let message = "[this sasha doesn't match the one running · stop it with sasha --kill-server]";
+            let _ = protocol::write_frame(&mut stream, protocol::EXIT, message.as_bytes());
+            return;
+        }
+        let size = Size::new(hello.size.0, hello.size.1);
+        let fallback = stream.try_clone();
+        let client = match Attached::new(id, stream, size) {
+            Ok(client) => client,
+            Err(err) => {
+                if let Ok(mut stream) = fallback {
+                    let message = format!("[can't draw for this window: {err}]");
+                    let _ = protocol::write_frame(&mut stream, protocol::EXIT, message.as_bytes());
+                }
+                // Nothing to keep running for if this was the first client.
+                self.quit = self.tab_count() == 0;
+                return;
+            }
+        };
+        if let Some(old) = self.client.replace(client) {
+            old.exit("[sasha opened in another window]");
+        }
+        self.reset_modes();
+        theme::init(hello.colors.0, hello.colors.1);
+        self.config = hello.config;
+        // A fresh terminal has the default cursor.
+        self.cursor_style = 0;
+        self.relayout(size);
+        if let Err(err) = self.open_launch_folder(&hello.cwd) {
+            if let Some(client) = self.client.take() {
+                client.exit(&format!("can't start a shell: {err}"));
+            }
+            self.quit = self.tab_count() == 0;
+            return;
+        }
+        if hello.build != self.build {
+            let prefix = self.config.prefix.label();
+            self.set_status(format!("sasha was rebuilt · {prefix} q and reopen to update"));
+        }
+    }
+
+    /// The first time, opens a tab in the folder sasha was started in. Later
+    /// it shows that folder's workspace, unless sasha was started in the home
+    /// folder, where every new terminal window starts: then it carries on
+    /// where you left off.
+    fn open_launch_folder(&mut self, launch: &Path) -> Result<()> {
+        let first = !self.attached_before;
+        self.attached_before = true;
+        if !first && std::env::home_dir().is_some_and(|home| home == launch) {
+            return Ok(());
+        }
+        let index = match self.workspace_for(launch) {
             Some(index) => index,
             None => {
-                let index = app.add_workspace(launch.clone());
-                app.save();
+                let index = self.add_workspace(launch.to_path_buf());
+                self.save();
                 index
             }
         };
-        app.current = index;
-        let tab = app.spawn_tab(&launch)?;
-        app.workspaces[index].tabs.push(tab);
-        let last = app.ws().tabs.len() - 1;
-        app.activate(last);
-        Ok(app)
+        if first {
+            self.current = index;
+            let tab = self.spawn_tab(launch)?;
+            self.ws_mut().tabs.push(tab);
+            let last = self.ws().tabs.len() - 1;
+            self.activate(last);
+        } else if index != self.current {
+            self.switch_workspace(index);
+        }
+        Ok(())
+    }
+
+    /// Lets the client go; the tabs keep running.
+    fn detach(&mut self) {
+        if let Some(client) = self.client.take() {
+            client.exit("[detached · run sasha to come back]");
+        }
+        self.reset_modes();
+    }
+
+    /// Leaves half-done interactions behind when a client goes.
+    fn reset_modes(&mut self) {
+        self.mode = Mode::Normal;
+        self.input.clear();
+        self.renaming_group = None;
+        self.hover = None;
+        self.drag = None;
+        self.selection = None;
+    }
+
+    fn resize_client(&mut self, size: Size) {
+        let Some(client) = &mut self.client else { return };
+        if client.resize(size).is_err() {
+            self.detach();
+            return;
+        }
+        self.relayout(size);
+    }
+
+    /// Bytes for the client's terminal itself (cursor shape, clipboard).
+    fn send_to_terminal(&mut self, bytes: &[u8]) {
+        if let Some(client) = &mut self.client
+            && client.send(bytes).is_err()
+        {
+            self.detach();
+        }
+    }
+
+    /// Copies to the clipboard, through the client's terminal if need be.
+    fn copy_to_clipboard(&mut self, text: &str) {
+        if let Some(osc) = clipboard::copy(text) {
+            self.send_to_terminal(osc.as_bytes());
+        }
     }
 
     /// The workspace on screen.
@@ -337,16 +454,7 @@ impl App {
         }
     }
 
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let input_tx = self.events_tx.clone();
-        thread::spawn(move || {
-            while let Ok(event) = crossterm::event::read() {
-                if input_tx.send(AppEvent::Input(event)).is_err() {
-                    break;
-                }
-            }
-        });
-
+    pub fn run(&mut self) -> Result<()> {
         let mut dirty = true;
         let mut last_draw = Instant::now();
         let mut last_refresh = Instant::now();
@@ -385,15 +493,26 @@ impl App {
             was_animating = animating;
 
             if dirty && last_draw.elapsed() >= FRAME && !self.quit {
-                self.relayout(terminal.size()?);
-                terminal.draw(|frame| ui::draw(frame, self))?;
-                self.sync_cursor_style()?;
+                self.draw();
                 last_draw = Instant::now();
                 dirty = false;
             }
         }
+        if let Some(client) = self.client.take() {
+            client.exit("");
+        }
         self.save();
         Ok(())
+    }
+
+    fn draw(&mut self) {
+        let Some(mut client) = self.client.take() else { return };
+        let drawn = client.terminal.draw(|frame| ui::draw(frame, self)).map(|_| ());
+        self.client = Some(client);
+        // A client that can't be written to has gone.
+        if drawn.and_then(|()| self.sync_cursor_style()).is_err() {
+            self.detach();
+        }
     }
 
     /// Writes the workspaces and pinned tabs to disk; failures show up in
@@ -442,8 +561,9 @@ impl App {
     }
 
     /// Mirrors the active program's cursor shape (e.g. vim's insert bar).
-    fn sync_cursor_style(&mut self) -> Result<()> {
+    fn sync_cursor_style(&mut self) -> io::Result<()> {
         let style = self.active_tab().map_or(0, Tab::cursor_style);
+        let Some(client) = &mut self.client else { return Ok(()) };
         if style == self.cursor_style {
             return Ok(());
         }
@@ -457,8 +577,7 @@ impl App {
             6 => SetCursorStyle::SteadyBar,
             _ => SetCursorStyle::DefaultUserShape,
         };
-        crossterm::execute!(std::io::stdout(), style)?;
-        Ok(())
+        crossterm::execute!(client.terminal.backend_mut(), style)
     }
 
     fn pty_size(&self) -> (u16, u16) {
@@ -1036,10 +1155,23 @@ impl App {
 
     fn handle(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Input(Event::Key(key)) if key.kind != KeyEventKind::Release => self.handle_key(key),
-            AppEvent::Input(Event::Mouse(mouse)) => self.handle_mouse(mouse),
-            AppEvent::Input(Event::Paste(text)) => self.paste(&text),
-            AppEvent::Input(_) => {}
+            AppEvent::Attach(id, hello, stream) => self.attach(id, *hello, stream),
+            // Input from a client that has since been replaced is dropped.
+            AppEvent::Input(id, event) if self.client.as_ref().is_some_and(|c| c.id == id) => match event {
+                Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
+                Event::Mouse(mouse) => self.handle_mouse(mouse),
+                Event::Paste(text) => self.paste(&text),
+                Event::Resize(cols, rows) => self.resize_client(Size::new(cols, rows)),
+                _ => {}
+            },
+            AppEvent::Input(..) => {}
+            AppEvent::Gone(id) => {
+                if self.client.as_ref().is_some_and(|c| c.id == id) {
+                    self.client = None;
+                    self.reset_modes();
+                }
+            }
+            AppEvent::Kill => self.quit = true,
             AppEvent::Output(id, bytes) => self.handle_output(id, &bytes),
             AppEvent::Exited(id) => {
                 if let Some((w, t)) = self.find_tab(id) {
@@ -1053,15 +1185,16 @@ impl App {
         let Some((w, t)) = self.find_tab(id) else { return };
         let on_screen = w == self.current && t == self.ws().active;
         let tab = &mut self.workspaces[w].tabs[t];
-        if let Some(data) = tab.process(bytes) {
-            clipboard::copy_base64(&data);
-        }
+        let clipboard = tab.process(bytes).and_then(|data| clipboard::copy_base64(&data));
         // A shell starting up or redrawing after a resize isn't news.
         if !tab.settling() {
             tab.last_activity = Instant::now();
             if !on_screen {
                 tab.unseen = true;
             }
+        }
+        if let Some(osc) = clipboard {
+            self.send_to_terminal(osc.as_bytes());
         }
     }
 

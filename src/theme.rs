@@ -7,7 +7,7 @@
 //! terminal's real foreground and background colours, which `termcolors`
 //! asks for at startup.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, RwLock};
 
 use ratatui::style::Color;
 
@@ -41,15 +41,37 @@ pub struct Palette {
     pub pink: Color,
 }
 
-static PALETTE: OnceLock<Palette> = OnceLock::new();
+/// A terminal's foreground and background, where it reported them.
+type TermColors = (Option<Rgb>, Option<Rgb>);
 
-/// Sets the palette from the terminal's colours, where it reported them.
+static PALETTE: RwLock<Option<&'static Palette>> = RwLock::new(None);
+/// Every palette made so far, by the colours it was made from. Each client
+/// terminal can have its own colours; there are only ever a few.
+static MADE: Mutex<Vec<(TermColors, &'static Palette)>> = Mutex::new(Vec::new());
+
+/// Switches to the palette for a terminal with these colours (`None`
+/// where it didn't report them).
 pub fn init(fg: Option<Rgb>, bg: Option<Rgb>) {
-    let _ = PALETTE.set(Palette::new(fg, bg));
+    let palette = {
+        let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+        match made.iter().find(|(colors, _)| *colors == (fg, bg)) {
+            Some((_, palette)) => *palette,
+            None => {
+                let palette: &'static Palette = Box::leak(Box::new(Palette::new(fg, bg)));
+                made.push(((fg, bg), palette));
+                palette
+            }
+        }
+    };
+    *PALETTE.write().unwrap_or_else(|e| e.into_inner()) = Some(palette);
 }
 
 pub fn palette() -> &'static Palette {
-    PALETTE.get_or_init(|| Palette::new(None, None))
+    if let Some(palette) = *PALETTE.read().unwrap_or_else(|e| e.into_inner()) {
+        return palette;
+    }
+    init(None, None);
+    palette()
 }
 
 impl Palette {

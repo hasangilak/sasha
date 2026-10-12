@@ -123,6 +123,10 @@ impl Tab {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "sasha");
+        // Lets sasha refuse to attach from inside itself.
+        if let Ok(socket) = crate::protocol::socket_path() {
+            cmd.env("SASHA", socket);
+        }
         for var in ["TERM_PROGRAM_VERSION", "TERMINFO", "TERMCAP"] {
             cmd.env_remove(var);
         }

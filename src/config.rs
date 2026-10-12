@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde::{Deserialize, Serialize};
 
 use crate::input;
 
@@ -9,14 +10,29 @@ sasha — a terminal with Chrome-style vertical tabs
 USAGE:
     sasha [--prefix KEY]
 
+Your tabs live in a background server: closing the window (or detaching
+with the prefix, then d) leaves them running, and running sasha again
+brings them back.
+
 OPTIONS:
     -p, --prefix KEY   Key that enters tab mode, e.g. ctrl-b (default), ctrl-a, ctrl-space.
                        Also read from $SASHA_PREFIX.
+        --kill-server  Close every tab and stop the background server.
     -h, --help         Show this help.
     -V, --version      Show the version.
 
 Press the prefix, then ? inside sasha to see every key binding.";
 
+/// What this run of sasha does.
+pub enum Command {
+    /// Show the tabs, starting the server first if it isn't running.
+    Attach(Config),
+    /// Be the server (clients start it).
+    Server,
+    KillServer,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub prefix: Prefix,
 }
@@ -24,11 +40,13 @@ pub struct Config {
 impl Config {
     /// Parses the command line. Returns `None` when sasha should exit
     /// right away (after printing help or the version).
-    pub fn from_args() -> Result<Option<Self>> {
+    pub fn from_args() -> Result<Option<Command>> {
         let mut prefix = std::env::var("SASHA_PREFIX").ok();
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--server" => return Ok(Some(Command::Server)),
+                "--kill-server" => return Ok(Some(Command::KillServer)),
                 "-h" | "--help" => {
                     println!("{USAGE}");
                     return Ok(None);
@@ -51,12 +69,12 @@ impl Config {
             Some(spec) => Prefix::parse(&spec)?,
             None => Prefix('b'),
         };
-        Ok(Some(Self { prefix }))
+        Ok(Some(Command::Attach(Self { prefix })))
     }
 }
 
 /// A Ctrl+<key> chord.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prefix(char);
 
 impl Prefix {

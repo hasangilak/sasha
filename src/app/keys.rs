@@ -19,8 +19,12 @@ impl App {
             Mode::Groups => self.groups_key(key),
             Mode::Help => self.mode = Mode::Normal,
             Mode::ConfirmQuit => {
-                self.quit = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
                 self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.quit = true,
+                    KeyCode::Char('d' | 'D') => self.detach(),
+                    _ => {}
+                }
             }
         }
     }
@@ -115,6 +119,7 @@ impl App {
             KeyCode::Char('r' | ',') => self.start_rename(),
             KeyCode::Char('/' | 'f') => self.start_search(),
             KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('d') => self.detach(),
             KeyCode::Char('q') => self.request_quit(),
             _ => self.mode = Mode::Normal,
         }

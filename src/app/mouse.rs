@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::{App, Drag, Mode, Selection};
-use crate::clipboard;
 use crate::input;
 use crate::layout::{self, Hit};
 
@@ -208,7 +207,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        clipboard::copy(&text);
+        self.copy_to_clipboard(&text);
         let count = text.chars().count();
         self.set_status(format!("copied {count} character{}", if count == 1 { "" } else { "s" }));
     }

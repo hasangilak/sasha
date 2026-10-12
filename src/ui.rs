@@ -71,7 +71,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("a", "show / hide the workspace bar"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
-        ("q", "quit"),
+        ("d", "detach: tabs keep running, sasha brings them back"),
+        ("q", "quit: close every tab"),
         ("Esc ⏎", "back to the terminal"),
     ]),
     ("Anywhere", &[
@@ -328,17 +329,21 @@ fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
 fn render_confirm_quit(frame: &mut Frame, app: &App) {
     let p = theme::palette();
     let count = app.tab_count();
+    let key = |label, bg| Span::styled(label, Style::new().fg(p.on_accent).bg(bg).add_modifier(Modifier::BOLD));
     let lines = vec![
         Line::styled(format!("Close {count} tabs and quit?"), Style::new().fg(p.text)),
+        Line::styled("Detaching keeps them running.", Style::new().fg(p.text_dim)),
         Line::default(),
         Line::from(vec![
-            Span::styled(" y ", Style::new().fg(p.on_accent).bg(p.accent).add_modifier(Modifier::BOLD)),
-            Span::styled(" quit    ", Style::new().fg(p.text_dim)),
+            key(" y ", p.red),
+            Span::styled(" quit  ", Style::new().fg(p.text_dim)),
+            key(" d ", p.accent),
+            Span::styled(" detach  ", Style::new().fg(p.text_dim)),
             Span::styled(" n ", Style::new().fg(p.text).bg(p.border).add_modifier(Modifier::BOLD)),
             Span::styled(" cancel", Style::new().fg(p.text_dim)),
         ]),
     ];
-    let area = popup_area(frame.area(), 34, lines.len() as u16 + 2);
+    let area = popup_area(frame.area(), 40, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(popup_block(" quit ")), area);
 }

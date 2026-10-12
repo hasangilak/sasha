@@ -11,23 +11,23 @@ const TOOLS: &[(&str, &[&str])] = &[
     ("xsel", &["--clipboard", "--input"]),
 ];
 
-pub fn copy(text: &str) {
+/// Copies `text`; returns an OSC 52 sequence to send to the terminal sasha
+/// runs in when no clipboard tool is around to do it.
+#[must_use]
+pub fn copy(text: &str) -> Option<String> {
     for (program, args) in TOOLS {
         if pipe_to(program, args, text) {
-            return;
+            return None;
         }
     }
-    // Ask the terminal sasha runs in to do it.
-    let mut out = std::io::stdout();
-    let _ = write!(out, "\x1b]52;c;{}\x07", encode_base64(text.as_bytes()));
-    let _ = out.flush();
+    Some(format!("\x1b]52;c;{}\x07", encode_base64(text.as_bytes())))
 }
 
 /// Handles an OSC 52 request from a program (payload already base64).
-pub fn copy_base64(data: &[u8]) {
-    if let Some(text) = decode_base64(data).and_then(|bytes| String::from_utf8(bytes).ok()) {
-        copy(&text);
-    }
+#[must_use]
+pub fn copy_base64(data: &[u8]) -> Option<String> {
+    let text = decode_base64(data).and_then(|bytes| String::from_utf8(bytes).ok())?;
+    copy(&text)
 }
 
 fn pipe_to(program: &str, args: &[&str], text: &str) -> bool {
