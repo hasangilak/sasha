@@ -11,6 +11,7 @@ use ratatui::DefaultTerminal;
 use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
+use crate::clipboard;
 use crate::config::Config;
 use crate::input;
 use crate::sidebar::{self, Hit, Layout};
@@ -24,6 +25,9 @@ const INFO_REFRESH: Duration = Duration::from_millis(500);
 /// A background tab counts as busy (spinner) this long after its last output.
 const BUSY: Duration = Duration::from_millis(800);
 const SPINNER_STEP: Duration = Duration::from_millis(80);
+const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+const MULTI_CLICK: Duration = Duration::from_millis(400);
+const WHEEL_LINES: usize = 3;
 
 pub enum AppEvent {
     Input(Event),
@@ -37,6 +41,8 @@ pub enum Mode {
     Normal,
     /// Entered with the prefix key: single keys manage tabs.
     Tab,
+    /// Browsing the scrollback with vim-ish keys.
+    Scroll,
     Help,
     ConfirmQuit,
 }
@@ -45,6 +51,27 @@ pub enum Mode {
 enum Drag {
     Tab(usize),
     Divider,
+    Select,
+}
+
+/// A mouse selection in screen coordinates (row, col) of one tab.
+#[derive(Clone, Copy, Debug)]
+pub struct Selection {
+    pub tab: TabId,
+    anchor: (u16, u16),
+    head: (u16, u16),
+}
+
+impl Selection {
+    /// Start and end (inclusive) in reading order.
+    fn ordered(&self) -> ((u16, u16), (u16, u16)) {
+        if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) }
+    }
+
+    pub fn contains(&self, row: u16, col: u16) -> bool {
+        let (start, end) = self.ordered();
+        (start..=end).contains(&(row, col))
+    }
 }
 
 pub struct App {
@@ -58,6 +85,10 @@ pub struct App {
     /// First visible row of the tab list.
     pub(crate) scroll: usize,
     pub(crate) hover: Option<Hit>,
+    pub(crate) selection: Option<Selection>,
+    /// Time, position and count of the last click in the pane.
+    last_click: Option<(Instant, (u16, u16), u8)>,
+    status: Option<(String, Instant)>,
     sidebar_width: u16,
     collapsed: bool,
     drag: Option<Drag>,
@@ -81,6 +112,9 @@ impl App {
             layout: Layout::default(),
             scroll: 0,
             hover: None,
+            selection: None,
+            last_click: None,
+            status: None,
             sidebar_width: sidebar::DEFAULT_WIDTH,
             collapsed: false,
             drag: None,
@@ -131,7 +165,14 @@ impl App {
         let short = self.layout.collapsed;
         let prefix = self.config.prefix.label();
         match self.mode {
-            Mode::Normal => (None, format!("{prefix} tab keys · {prefix} ? help")),
+            Mode::Normal => match &self.status {
+                Some((message, at)) if at.elapsed() < STATUS_TIMEOUT => (None, message.clone()),
+                _ => (None, format!("{prefix} tab keys · {prefix} ? help")),
+            },
+            Mode::Scroll => (
+                Some((if short { "SCR" } else { "SCROLL" }, theme::YELLOW)),
+                "j/k ^u/^d g/G · q exit".to_owned(),
+            ),
             Mode::Tab => (
                 Some((if short { "TAB" } else { "TABS" }, theme::ACCENT)),
                 "j/k move · t new · x close · ? help".to_owned(),
@@ -263,6 +304,7 @@ impl App {
             self.previous = Some(current.id);
         }
         self.active = index;
+        self.selection = None;
         let tab = &mut self.tabs[index];
         tab.unseen = false;
         tab.bell = false;
@@ -369,7 +411,9 @@ impl App {
     fn handle_output(&mut self, id: TabId, bytes: &[u8]) {
         let active_id = self.active_tab().map(|t| t.id);
         let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else { return };
-        let _clipboard = tab.process(bytes);
+        if let Some(data) = tab.process(bytes) {
+            clipboard::copy_base64(&data);
+        }
         // Shells redraw their prompt after a resize; that isn't news.
         if !tab.recently_resized() {
             tab.last_activity = Instant::now();
@@ -383,6 +427,7 @@ impl App {
         match self.mode {
             Mode::Normal => self.normal_key(key),
             Mode::Tab => self.tab_mode_key(key),
+            Mode::Scroll => self.scroll_mode_key(key),
             Mode::Help => self.mode = Mode::Normal,
             Mode::ConfirmQuit => {
                 self.quit = matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter);
@@ -399,8 +444,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let page = self.layout.pane.height as isize;
+        let full_screen = self.active_tab().is_some_and(|t| t.screen().alternate_screen());
         // Browser-style shortcuts that don't need the prefix.
         match key.code {
+            KeyCode::PageUp if shift && !ctrl && !full_screen => self.scroll_active(page),
+            KeyCode::PageDown if shift && !ctrl && !full_screen => self.scroll_active(-page),
             KeyCode::PageDown if ctrl && shift => self.shift_active(1),
             KeyCode::PageUp if ctrl && shift => self.shift_active(-1),
             KeyCode::PageDown if ctrl => self.cycle(1),
@@ -446,14 +495,59 @@ impl App {
             KeyCode::Char('b' | 's') => self.set_collapsed(!self.collapsed),
             KeyCode::Char('h' | '<') | KeyCode::Left => self.resize_sidebar(-2),
             KeyCode::Char('l' | '>') | KeyCode::Right => self.resize_sidebar(2),
+            KeyCode::Char('[' | 'v') | KeyCode::PageUp => self.mode = Mode::Scroll,
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Char('q') => self.request_quit(),
             _ => self.mode = Mode::Normal,
         }
     }
 
+    fn scroll_mode_key(&mut self, key: KeyEvent) {
+        if self.config.prefix.matches(&key) {
+            self.scroll_active(isize::MIN);
+            self.mode = Mode::Tab;
+            return;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let page = self.layout.pane.height as isize;
+        let delta = match key.code {
+            KeyCode::Char('k') | KeyCode::Up => 1,
+            KeyCode::Char('j') | KeyCode::Down => -1,
+            KeyCode::Char('y') if ctrl => 1,
+            KeyCode::Char('e') if ctrl => -1,
+            KeyCode::Char('u') if ctrl => page / 2,
+            KeyCode::Char('d') if ctrl => -page / 2,
+            KeyCode::Char('b') if ctrl => page,
+            KeyCode::Char('f') if ctrl => -page,
+            KeyCode::PageUp => page,
+            KeyCode::PageDown | KeyCode::Char(' ') => -page,
+            KeyCode::Char('g') | KeyCode::Home => isize::MAX,
+            KeyCode::Char('G') | KeyCode::End => isize::MIN,
+            KeyCode::Char('q' | 'i') | KeyCode::Esc | KeyCode::Enter => {
+                self.scroll_active(isize::MIN);
+                self.mode = Mode::Normal;
+                return;
+            }
+            _ => return,
+        };
+        self.scroll_active(delta);
+    }
+
+    /// Moves the active tab's view `delta` lines into the scrollback
+    /// (negative goes back towards the live screen).
+    fn scroll_active(&mut self, delta: isize) {
+        self.selection = None;
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            let offset = tab.screen().scrollback().saturating_add_signed(delta);
+            tab.screen_mut().set_scrollback(offset);
+        }
+    }
+
     fn send_key(&mut self, key: KeyEvent) {
-        let Some(tab) = self.active_tab_mut() else { return };
+        self.selection = None;
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        // Typing always jumps back to the live screen.
+        tab.screen_mut().set_scrollback(0);
         let bytes = input::encode_key(&key, tab.screen().application_cursor());
         if !bytes.is_empty() {
             tab.write(bytes);
@@ -480,6 +574,20 @@ impl App {
                     self.move_tab(from, to);
                     self.drag = Some(Drag::Tab(to));
                 }
+                return;
+            }
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Select)) => {
+                let pane = self.layout.pane;
+                let col = mouse.column.clamp(pane.left(), pane.right().saturating_sub(1)) - pane.x;
+                let row = mouse.row.clamp(pane.top(), pane.bottom().saturating_sub(1)) - pane.y;
+                if let Some(selection) = &mut self.selection {
+                    selection.head = (row, col);
+                }
+                return;
+            }
+            (MouseEventKind::Up(_), Some(Drag::Select)) => {
+                self.drag = None;
+                self.copy_selection();
                 return;
             }
             (MouseEventKind::Up(_), Some(_)) => {
@@ -532,16 +640,68 @@ impl App {
     fn mouse_in_pane(&mut self, mouse: MouseEvent) {
         let pane = self.layout.pane;
         let (col, row) = (mouse.column - pane.x, mouse.row - pane.y);
-        let Some(tab) = self.active_tab_mut() else { return };
+        let Some(tab) = self.tabs.get_mut(self.active) else { return };
         let screen = tab.screen();
         let mode = screen.mouse_protocol_mode();
         // Shift bypasses the program's mouse handling, as in xterm.
-        if mode != vt100::MouseProtocolMode::None && !mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        if mode != vt100::MouseProtocolMode::None
+            && !mouse.modifiers.contains(KeyModifiers::SHIFT)
+            && screen.scrollback() == 0
+        {
             let encoding = screen.mouse_protocol_encoding();
             if let Some(bytes) = input::encode_mouse(&mouse, col, row, mode, encoding) {
                 tab.write(bytes);
             }
+            return;
         }
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = mouse.kind == MouseEventKind::ScrollUp;
+                if screen.alternate_screen() {
+                    // Full-screen apps without mouse support (less, man) get arrow keys.
+                    let key = KeyEvent::from(if up { KeyCode::Up } else { KeyCode::Down });
+                    let bytes = input::encode_key(&key, screen.application_cursor()).repeat(WHEEL_LINES);
+                    tab.write(bytes);
+                } else {
+                    let lines = WHEEL_LINES as isize;
+                    self.scroll_active(if up { lines } else { -lines });
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let tab_id = tab.id;
+                let clicks = match self.last_click {
+                    Some((at, pos, n)) if pos == (row, col) && at.elapsed() < MULTI_CLICK => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((Instant::now(), (row, col), clicks));
+                let (anchor, head) = match clicks {
+                    2 => word_bounds(self.tabs[self.active].screen(), row, col),
+                    3 => ((row, 0), (row, pane.width.saturating_sub(1))),
+                    _ => ((row, col), (row, col)),
+                };
+                self.selection = Some(Selection { tab: tab_id, anchor, head });
+                self.drag = Some(Drag::Select);
+            }
+            _ => {}
+        }
+    }
+
+    fn copy_selection(&mut self) {
+        let Some(selection) = self.selection else { return };
+        if selection.anchor == selection.head {
+            self.selection = None;
+            return;
+        }
+        let Some(tab) = self.tabs.iter().find(|t| t.id == selection.tab) else { return };
+        let ((start_row, start_col), (end_row, end_col)) = selection.ordered();
+        let text = tab.screen().contents_between(start_row, start_col, end_row, end_col + 1);
+        if text.is_empty() {
+            return;
+        }
+        clipboard::copy(&text);
+        let count = text.chars().count();
+        self.status = Some((format!("copied {count} character{}", if count == 1 { "" } else { "s" }), Instant::now()));
     }
 
     fn paste(&mut self, text: &str) {
@@ -554,4 +714,27 @@ impl App {
             tab.write(text);
         }
     }
+}
+
+/// The run of non-separator characters around (row, col), for double-click.
+fn word_bounds(screen: &vt100::Screen, row: u16, col: u16) -> ((u16, u16), (u16, u16)) {
+    let is_word = |c: u16| {
+        screen.cell(row, c).is_some_and(|cell| {
+            let text = cell.contents();
+            !text.is_empty() && !text.chars().any(|ch| ch.is_whitespace() || "\"'`()[]{}<>|,;".contains(ch))
+        })
+    };
+    if !is_word(col) {
+        return ((row, col), (row, col));
+    }
+    let (_, cols) = screen.size();
+    let mut start = col;
+    while start > 0 && is_word(start - 1) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end + 1 < cols && is_word(end + 1) {
+        end += 1;
+    }
+    ((row, start), (row, end))
 }

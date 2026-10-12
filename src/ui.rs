@@ -5,9 +5,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, Selection};
 use crate::sidebar;
-use crate::theme::{ACCENT, BORDER, SIDEBAR_BG, TEXT, TEXT_DIM};
+use crate::theme::{ACCENT, BORDER, ON_ACCENT, SIDEBAR_BG, TEXT, TEXT_DIM, YELLOW};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     sidebar::render(frame.buffer_mut(), app);
@@ -15,11 +15,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let pane = app.layout.pane;
     let Some(tab) = app.active_tab() else { return };
     let screen = tab.screen();
-    render_screen(frame.buffer_mut(), pane, screen);
+    let selection = app.selection.as_ref().filter(|s| s.tab == tab.id);
+    render_screen(frame.buffer_mut(), pane, screen, selection);
+    if screen.scrollback() > 0 {
+        render_scroll_badge(frame.buffer_mut(), pane, screen.scrollback());
+    }
 
     match app.mode {
         Mode::Help => render_help(frame, app),
         Mode::ConfirmQuit => render_confirm_quit(frame, app),
+        Mode::Scroll => {}
         Mode::Normal | Mode::Tab => {
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
@@ -40,6 +45,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("g G", "first / last tab"),
         ("J K", "move tab down / up"),
         ("t c", "new tab"),
+        ("[ v PgUp", "scroll mode (j k ^u ^d g G, q exits)"),
         ("x w", "close tab"),
         ("b s", "collapse / expand sidebar"),
         ("h l  ← →", "narrower / wider sidebar"),
@@ -51,9 +57,12 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("^PgDn ^PgUp", "next / previous tab"),
         ("^⇧PgDn ^⇧PgUp", "move tab down / up"),
         ("Alt 1 … 9", "go to tab"),
+        ("⇧PgUp ⇧PgDn", "scroll back / forward"),
     ]),
     ("Mouse", &[
         ("click / drag", "switch / reorder tabs"),
+        ("drag in terminal", "select & copy (2× word, 3× line)"),
+        ("⇧ drag", "select even when an app uses the mouse"),
         ("middle-click ×", "close tab"),
         ("drag the divider", "resize the sidebar"),
     ]),
@@ -77,7 +86,7 @@ fn render_help(frame: &mut Frame, app: &App) {
             ]));
         }
     }
-    let area = popup_area(frame.area(), 54, lines.len() as u16 + 2);
+    let area = popup_area(frame.area(), 62, lines.len() as u16 + 2);
     let block = popup_block(" sasha keys ");
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -119,8 +128,17 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
     area
 }
 
+fn render_scroll_badge(buf: &mut Buffer, pane: Rect, offset: usize) {
+    let label = format!(" ↑ {offset} ");
+    let width = label.chars().count() as u16;
+    if pane.width > width + 1 {
+        let style = Style::new().fg(ON_ACCENT).bg(YELLOW).add_modifier(Modifier::BOLD);
+        buf.set_string(pane.right() - width - 1, pane.y, label, style);
+    }
+}
+
 /// Copies the emulator's visible cells into the ratatui buffer.
-fn render_screen(buf: &mut Buffer, area: Rect, screen: &vt100::Screen) {
+fn render_screen(buf: &mut Buffer, area: Rect, screen: &vt100::Screen, selection: Option<&Selection>) {
     let (rows, cols) = screen.size();
     for row in 0..rows.min(area.height) {
         for col in 0..cols.min(area.width) {
@@ -132,8 +150,12 @@ fn render_screen(buf: &mut Buffer, area: Rect, screen: &vt100::Screen) {
                 continue;
             }
             let contents = cell.contents();
+            let mut style = cell_style(cell);
+            if selection.is_some_and(|s| s.contains(row, col)) {
+                style.add_modifier.toggle(Modifier::REVERSED);
+            }
             target.set_symbol(if contents.is_empty() { " " } else { contents });
-            target.set_style(cell_style(cell));
+            target.set_style(style);
         }
     }
 }
