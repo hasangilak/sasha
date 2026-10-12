@@ -2,6 +2,11 @@
 name = "sasha"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal with Chrome-style vertical tabs, tab groups and workspaces, whose sessions keep running in the background like tmux"
+repository = "https://github.com/hasangilak/sasha"
+readme = "README.md"
+keywords = ["terminal", "tui", "ratatui", "tabs", "tmux"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
