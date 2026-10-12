@@ -7,7 +7,6 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode, PickerEntry, Selection};
-use crate::theme::{ACCENT, BORDER, ON_ACCENT, SIDEBAR_BG, TEXT, TEXT_DIM, YELLOW};
 use crate::workspace::pretty_path;
 use crate::{activity, sidebar, theme};
 
@@ -89,6 +88,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
 ];
 
 fn render_help(frame: &mut Frame, app: &App) {
+    let p = theme::palette();
     let prefix = app.config.prefix.label();
     let key_width = 18;
     let mut lines = Vec::new();
@@ -97,12 +97,12 @@ fn render_help(frame: &mut Frame, app: &App) {
             lines.push(Line::default());
         }
         let section = section.replace("{p}", &prefix);
-        lines.push(Line::styled(section, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
+        lines.push(Line::styled(section, Style::new().fg(p.accent).add_modifier(Modifier::BOLD)));
         for (keys, action) in *bindings {
             let keys = keys.replace("{p}", &prefix);
             lines.push(Line::from(vec![
-                Span::styled(format!("  {keys:<key_width$}"), Style::new().fg(TEXT)),
-                Span::styled(action.replace("{p}", &prefix), Style::new().fg(TEXT_DIM)),
+                Span::styled(format!("  {keys:<key_width$}"), Style::new().fg(p.text)),
+                Span::styled(action.replace("{p}", &prefix), Style::new().fg(p.text_dim)),
             ]));
         }
     }
@@ -132,6 +132,7 @@ struct Picker<'a> {
 
 /// Chrome's tab search, across every workspace.
 fn render_search(frame: &mut Frame, app: &App) {
+    let p = theme::palette();
     let rows = app
         .search_results()
         .into_iter()
@@ -148,7 +149,7 @@ fn render_search(frame: &mut Frame, app: &App) {
         .collect();
     render_picker(frame, app, Picker {
         title: " search tabs ",
-        prompt: ("⌕", theme::PURPLE),
+        prompt: ("⌕", p.purple),
         placeholder: "title, program, folder or workspace",
         empty: "no matching tabs",
         rows,
@@ -157,6 +158,7 @@ fn render_search(frame: &mut Frame, app: &App) {
 }
 
 fn render_workspaces(frame: &mut Frame, app: &App) {
+    let p = theme::palette();
     let rows = app
         .picker_entries()
         .into_iter()
@@ -169,7 +171,7 @@ fn render_workspaces(frame: &mut Frame, app: &App) {
                     1 => "1 tab · ".to_owned(),
                     n => format!("{n} tabs · "),
                 };
-                let icon = if index == app.current { ("●", ws.color()) } else { (" ", TEXT) };
+                let icon = if index == app.current { ("●", ws.color()) } else { (" ", p.text) };
                 PickerRow {
                     badge: Some((ws.initials(), ws.color())),
                     icon,
@@ -178,8 +180,8 @@ fn render_workspaces(frame: &mut Frame, app: &App) {
                 }
             }
             PickerEntry::AddFolder(path) => PickerRow {
-                badge: Some(("+".to_owned(), theme::GREEN)),
-                icon: (" ", TEXT),
+                badge: Some(("+".to_owned(), p.green)),
+                icon: (" ", p.text),
                 title: format!(
                     "add {}",
                     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -189,12 +191,12 @@ fn render_workspaces(frame: &mut Frame, app: &App) {
         })
         .collect();
     let hint = match app.remove_warning() {
-        Some(warning) => (warning, theme::RED),
-        None => ("⏎ open · ⇥ complete · ^D remove · esc".to_owned(), TEXT_DIM),
+        Some(warning) => (warning, p.red),
+        None => ("⏎ open · ⇥ complete · ^D remove · esc".to_owned(), p.text_dim),
     };
     render_picker(frame, app, Picker {
         title: " workspaces ",
-        prompt: ("▸", theme::ORANGE),
+        prompt: ("▸", p.orange),
         placeholder: "name, or a folder path like ~/Work",
         empty: "no matching folders",
         rows,
@@ -204,6 +206,7 @@ fn render_workspaces(frame: &mut Frame, app: &App) {
 
 /// A dropdown at the top of the terminal pane with a query line and rows.
 fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
+    let p = theme::palette();
     let pane = app.layout.pane;
     let visible = picker.rows.len().clamp(1, 12);
     let hint_rows = u16::from(picker.hint.is_some());
@@ -219,9 +222,9 @@ fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
     frame.render_widget(block, area);
 
     let buf = frame.buffer_mut();
-    let plain = Style::new().fg(TEXT).bg(SIDEBAR_BG);
+    let plain = Style::new().fg(p.text).bg(p.popup_bg);
     let (prompt, prompt_color) = picker.prompt;
-    buf.set_string(inner.x, inner.y, prompt, Style::new().fg(prompt_color).bg(SIDEBAR_BG));
+    buf.set_string(inner.x, inner.y, prompt, Style::new().fg(prompt_color).bg(p.popup_bg));
     let query_x = inner.x + 2;
     let room = inner.width.saturating_sub(3) as usize;
     // Keep the end of a long query (e.g. a path) visible.
@@ -229,25 +232,25 @@ fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
     let shown: String = app.input.chars().skip(skip).collect();
     let (end, _) = buf.set_stringn(query_x, inner.y, &shown, room, plain);
     if app.input.is_empty() {
-        buf.set_stringn(query_x, inner.y, picker.placeholder, room, Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
+        buf.set_stringn(query_x, inner.y, picker.placeholder, room, Style::new().fg(p.text_dim).bg(p.popup_bg));
     }
     let separator = "─".repeat(inner.width as usize);
-    buf.set_string(inner.x, inner.y + 1, &separator, Style::new().fg(BORDER).bg(SIDEBAR_BG));
+    buf.set_string(inner.x, inner.y + 1, &separator, Style::new().fg(p.border).bg(p.popup_bg));
 
     let list_y = inner.y + 2;
     let list_rows = inner.height.saturating_sub(2 + hint_rows) as usize;
     if picker.rows.is_empty() {
-        buf.set_string(inner.x, list_y, picker.empty, Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
+        buf.set_string(inner.x, list_y, picker.empty, Style::new().fg(p.text_dim).bg(p.popup_bg));
     }
     // Keep the highlighted row in view.
     let first = app.picker_selected.saturating_sub(list_rows.saturating_sub(1));
     for (index, row) in picker.rows.iter().enumerate().skip(first).take(list_rows) {
         let y = list_y + (index - first) as u16;
-        let bg = if index == app.picker_selected { theme::ACTIVE_BG } else { SIDEBAR_BG };
+        let bg = if index == app.picker_selected { p.active_bg } else { p.popup_bg };
         buf.set_style(Rect::new(inner.x, y, inner.width, 1), Style::new().bg(bg));
         let mut x = inner.x;
         if let Some((initials, color)) = &row.badge {
-            let style = Style::new().fg(ON_ACCENT).bg(*color).add_modifier(Modifier::BOLD);
+            let style = Style::new().fg(p.on_accent).bg(*color).add_modifier(Modifier::BOLD);
             buf.set_string(x, y, format!("{initials:^4}"), style);
             x += 5;
         }
@@ -257,30 +260,31 @@ fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
 
         let detail_width = (row.detail.width() as u16).min(inner.width / 2);
         let title_room = inner.right().saturating_sub(x + detail_width + 2) as usize;
-        buf.set_stringn(x, y, &row.title, title_room, Style::new().fg(TEXT).bg(bg));
+        buf.set_stringn(x, y, &row.title, title_room, Style::new().fg(p.text).bg(bg));
         if detail_width > 0 {
             // Show the end of long paths: the folder name matters most.
             let skip = row.detail.width().saturating_sub(detail_width as usize);
             let detail: String = row.detail.chars().skip(skip).collect();
-            buf.set_string(inner.right() - detail_width, y, detail, Style::new().fg(TEXT_DIM).bg(bg));
+            buf.set_string(inner.right() - detail_width, y, detail, Style::new().fg(p.text_dim).bg(bg));
         }
     }
     if let Some((hint, color)) = &picker.hint {
-        buf.set_stringn(inner.x, inner.bottom() - 1, hint, inner.width as usize, Style::new().fg(*color).bg(SIDEBAR_BG));
+        buf.set_stringn(inner.x, inner.bottom() - 1, hint, inner.width as usize, Style::new().fg(*color).bg(p.popup_bg));
     }
     frame.set_cursor_position(Position::new(end, inner.y));
 }
 
 fn render_confirm_quit(frame: &mut Frame, app: &App) {
+    let p = theme::palette();
     let count = app.tab_count();
     let lines = vec![
-        Line::styled(format!("Close {count} tabs and quit?"), Style::new().fg(TEXT)),
+        Line::styled(format!("Close {count} tabs and quit?"), Style::new().fg(p.text)),
         Line::default(),
         Line::from(vec![
-            Span::styled(" y ", Style::new().fg(SIDEBAR_BG).bg(ACCENT).add_modifier(Modifier::BOLD)),
-            Span::styled(" quit    ", Style::new().fg(TEXT_DIM)),
-            Span::styled(" n ", Style::new().fg(TEXT).bg(BORDER).add_modifier(Modifier::BOLD)),
-            Span::styled(" cancel", Style::new().fg(TEXT_DIM)),
+            Span::styled(" y ", Style::new().fg(p.on_accent).bg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" quit    ", Style::new().fg(p.text_dim)),
+            Span::styled(" n ", Style::new().fg(p.text).bg(p.border).add_modifier(Modifier::BOLD)),
+            Span::styled(" cancel", Style::new().fg(p.text_dim)),
         ]),
     ];
     let area = popup_area(frame.area(), 34, lines.len() as u16 + 2);
@@ -289,11 +293,12 @@ fn render_confirm_quit(frame: &mut Frame, app: &App) {
 }
 
 fn popup_block(title: &str) -> Block<'_> {
+    let p = theme::palette();
     Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(BORDER))
-        .title(Span::styled(title, Style::new().fg(TEXT).add_modifier(Modifier::BOLD)))
-        .style(Style::new().bg(SIDEBAR_BG).fg(TEXT))
+        .border_style(Style::new().fg(p.border))
+        .title(Span::styled(title, Style::new().fg(p.text).add_modifier(Modifier::BOLD)))
+        .style(Style::new().bg(p.popup_bg).fg(p.text))
         .padding(ratatui::widgets::Padding::horizontal(1))
 }
 
@@ -308,10 +313,11 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn render_scroll_badge(buf: &mut Buffer, pane: Rect, offset: usize) {
+    let p = theme::palette();
     let label = format!(" ↑ {offset} ");
     let width = label.chars().count() as u16;
     if pane.width > width + 1 {
-        let style = Style::new().fg(ON_ACCENT).bg(YELLOW).add_modifier(Modifier::BOLD);
+        let style = Style::new().fg(p.on_accent).bg(p.yellow).add_modifier(Modifier::BOLD);
         buf.set_string(pane.right() - width - 1, pane.y, label, style);
     }
 }

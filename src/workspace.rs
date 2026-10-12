@@ -68,16 +68,7 @@ impl Workspace {
 
     /// A colour derived from the path, so a workspace keeps its colour.
     pub fn color(&self) -> Color {
-        const PALETTE: [Color; 8] = [
-            theme::BLUE,
-            theme::GREEN,
-            theme::ORANGE,
-            theme::PURPLE,
-            theme::YELLOW,
-            theme::CYAN,
-            theme::RED,
-            theme::PINK,
-        ];
+        let colors = theme::palette().badge_colors();
         // FNV-1a, stable across runs (unlike std's hasher).
         let hash = self
             .path
@@ -85,7 +76,7 @@ impl Workspace {
             .as_encoded_bytes()
             .iter()
             .fold(0xcbf29ce484222325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
-        PALETTE[(hash % PALETTE.len() as u64) as usize]
+        colors[(hash % colors.len() as u64) as usize]
     }
 }
 

@@ -8,14 +8,15 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::{App, Mode};
 use crate::layout::{Hit, ListItem, list_items};
 use crate::tab::Tab;
-use crate::theme::{self, ACCENT, ACTIVE_BG, BORDER, SIDEBAR_BG, TEXT, TEXT_DIM};
+use crate::theme::{self, BG};
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Draws the sidebar; returns where the text cursor goes while renaming.
 pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
+    let p = theme::palette();
     let layout = &app.layout;
-    buf.set_style(layout.sidebar, Style::new().bg(SIDEBAR_BG).fg(TEXT));
+    buf.set_style(layout.sidebar, Style::new().bg(BG).fg(p.text));
     if layout.sidebar.width == 0 {
         return None;
     }
@@ -33,20 +34,20 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
             ListItem::Tab(index) => render_tab(buf, app, index, &ws.tabs[index], pill),
             ListItem::Separator => {
                 let line = "─".repeat(pill.width.saturating_sub(2) as usize);
-                buf.set_string(pill.x + 1, row, line, Style::new().fg(BORDER).bg(SIDEBAR_BG));
+                buf.set_string(pill.x + 1, row, line, Style::new().fg(p.border).bg(BG));
             }
             ListItem::NewTab => {
                 let hovered = app.hover == Some(Hit::NewTab);
-                let bg = if hovered { theme::BUTTON_HOVER_BG } else { theme::BUTTON_BG };
+                let bg = if hovered { p.button_hover_bg } else { p.button_bg };
                 buf.set_style(pill, Style::new().bg(bg));
-                buf.set_string(pill.x + pill.width / 2, row, "+", Style::new().fg(TEXT).bg(bg));
+                buf.set_string(pill.x + pill.width / 2, row, "+", Style::new().fg(p.text).bg(bg));
             }
         }
     }
     render_footer(buf, app);
 
     let divider_hot = matches!(app.hover, Some(Hit::Divider)) || app.dragging_divider();
-    let divider_style = Style::new().fg(if divider_hot { ACCENT } else { BORDER }).bg(SIDEBAR_BG);
+    let divider_style = Style::new().fg(if divider_hot { p.accent } else { p.border }).bg(BG);
     for y in layout.divider.top()..layout.divider.bottom() {
         buf.set_string(layout.divider.x, y, "│", divider_style);
     }
@@ -54,32 +55,33 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
 }
 
 fn render_header(buf: &mut Buffer, app: &App) {
+    let p = theme::palette();
     let layout = &app.layout;
     let button = |buf: &mut Buffer, rect: Rect, glyph: &str, hit: Hit, base: Color| {
         if rect.is_empty() {
             return;
         }
-        let bg = if app.hover == Some(hit) { theme::BUTTON_HOVER_BG } else { base };
+        let bg = if app.hover == Some(hit) { p.button_hover_bg } else { base };
         buf.set_style(rect, Style::new().bg(bg));
-        buf.set_string(rect.x + 1, rect.y, glyph, Style::new().fg(TEXT).bg(bg));
+        buf.set_string(rect.x + 1, rect.y, glyph, Style::new().fg(p.text).bg(bg));
     };
     let toggle = layout.toggle_button();
     let search = layout.search_button();
-    button(buf, toggle, "≡", Hit::Toggle, SIDEBAR_BG);
-    button(buf, search, "⌕", Hit::Search, theme::BUTTON_BG);
+    button(buf, toggle, "≡", Hit::Toggle, BG);
+    button(buf, search, "⌕", Hit::Search, p.button_bg);
 
     // The workspace name, between the two buttons.
     if !search.is_empty() {
         let x = toggle.right() + 1;
         let room = search.x.saturating_sub(x + 1) as usize;
         let name = &app.ws().name;
-        let style = Style::new().fg(TEXT).bg(SIDEBAR_BG).add_modifier(Modifier::BOLD);
-        render_faded(buf, x, layout.header.y, name, room, style, SIDEBAR_BG);
+        let style = Style::new().fg(p.text).bg(BG).add_modifier(Modifier::BOLD);
+        render_faded(buf, x, layout.header.y, name, room, style, BG);
     }
 
     if layout.header.height > 1 {
         let y = layout.header.y + 1;
-        let style = Style::new().fg(BORDER).bg(SIDEBAR_BG);
+        let style = Style::new().fg(p.border).bg(BG);
         for x in layout.header.x + 1..layout.header.right().saturating_sub(1) {
             buf.set_string(x, y, "─", style);
         }
@@ -87,19 +89,20 @@ fn render_header(buf: &mut Buffer, app: &App) {
 }
 
 fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) {
+    let p = theme::palette();
     let active = index == app.ws().active;
     let hovered = matches!(app.hover, Some(Hit::Tab(i) | Hit::Close(i)) if i == index);
     let highlight = app.highlight_active();
     let (bg, fg) = match (active, hovered) {
-        (true, _) if highlight => (ACCENT, theme::ON_ACCENT),
-        (true, _) => (ACTIVE_BG, TEXT),
-        (false, true) => (theme::HOVER_BG, TEXT),
-        (false, false) => (SIDEBAR_BG, TEXT),
+        (true, _) if highlight => (p.accent, p.on_accent),
+        (true, _) => (p.active_bg, p.text),
+        (false, true) => (p.hover_bg, p.text),
+        (false, false) => (BG, p.text),
     };
     buf.set_style(pill, Style::new().bg(bg).fg(fg));
 
     let (icon, icon_color) = if app.is_busy(tab) {
-        (SPINNER[app.spinner_frame() % SPINNER.len()], ACCENT)
+        (SPINNER[app.spinner_frame() % SPINNER.len()], p.accent)
     } else {
         theme::process_icon(tab.process_name())
     };
@@ -118,14 +121,14 @@ fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) 
     // status dots.
     let button_hot = app.hover == Some(Hit::Close(index));
     let marker = if tab.pinned && (active || hovered || !(tab.bell || tab.unseen)) {
-        let color = if button_hot || active || hovered { fg } else { TEXT_DIM };
+        let color = if button_hot || active || hovered { fg } else { p.text_dim };
         Some(("⚲", color))
     } else if active || hovered {
-        Some(("×", if button_hot { theme::RED } else { fg }))
+        Some(("×", if button_hot { p.red } else { fg }))
     } else if tab.bell {
-        Some(("•", theme::YELLOW))
+        Some(("•", p.yellow))
     } else if tab.unseen {
-        Some(("•", ACCENT))
+        Some(("•", p.accent))
     } else {
         None
     };
@@ -144,9 +147,10 @@ fn render_tab(buf: &mut Buffer, app: &App, index: usize, tab: &Tab, pill: Rect) 
 
 /// The active tab's row turned into a text field.
 fn render_rename(buf: &mut Buffer, app: &App, pill: Rect) -> Position {
-    let style = Style::new().fg(TEXT).bg(ACTIVE_BG);
+    let p = theme::palette();
+    let style = Style::new().fg(p.text).bg(p.active_bg);
     buf.set_style(pill, style);
-    buf.set_string(pill.x + 1, pill.y, "✎", Style::new().fg(theme::GREEN).bg(ACTIVE_BG));
+    buf.set_string(pill.x + 1, pill.y, "✎", Style::new().fg(p.green).bg(p.active_bg));
     // Show the end of the text when it's longer than the row.
     let room = pill.width.saturating_sub(5) as usize;
     let mut width = 0;
@@ -167,6 +171,7 @@ fn render_rename(buf: &mut Buffer, app: &App, pill: Rect) -> Position {
 /// Draws `text` clipped to `max_width`; clipped text fades out into the
 /// background over its last few columns, like Chrome's tab titles.
 pub fn render_faded(buf: &mut Buffer, x: u16, y: u16, text: &str, max_width: usize, style: Style, bg: Color) {
+    let p = theme::palette();
     let mut glyphs = Vec::new();
     let mut width = 0;
     let mut truncated = false;
@@ -180,7 +185,7 @@ pub fn render_faded(buf: &mut Buffer, x: u16, y: u16, text: &str, max_width: usi
         glyphs.push((c, w));
     }
     let fade_from = if truncated { glyphs.len().saturating_sub(3) } else { glyphs.len() };
-    let fg = style.fg.unwrap_or(TEXT);
+    let fg = style.fg.unwrap_or(p.text);
     let mut col = x;
     for (i, (c, w)) in glyphs.iter().enumerate() {
         let mut style = style;
@@ -194,6 +199,7 @@ pub fn render_faded(buf: &mut Buffer, x: u16, y: u16, text: &str, max_width: usi
 }
 
 fn render_footer(buf: &mut Buffer, app: &App) {
+    let p = theme::palette();
     let footer = app.layout.footer;
     if footer.is_empty() {
         return;
@@ -202,13 +208,13 @@ fn render_footer(buf: &mut Buffer, app: &App) {
     let mut x = if app.layout.collapsed { footer.x } else { footer.x + 1 };
     if let Some((label, color)) = badge {
         let label = format!(" {label} ");
-        let style = Style::new().fg(theme::ON_ACCENT).bg(color).add_modifier(Modifier::BOLD);
+        let style = Style::new().fg(p.on_accent).bg(color).add_modifier(Modifier::BOLD);
         let room = footer.right().saturating_sub(x) as usize;
         let (end, _) = buf.set_stringn(x, footer.y, &label, room, style);
         x = end + 1;
     }
     let room = footer.right().saturating_sub(x + 1) as usize;
     if room > 0 && !app.layout.collapsed {
-        buf.set_stringn(x, footer.y, hint, room, Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
+        buf.set_stringn(x, footer.y, hint, room, Style::new().fg(p.text_dim).bg(BG));
     }
 }

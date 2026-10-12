@@ -275,39 +275,40 @@ impl App {
 
     /// Badge and hint text for the bottom of the sidebar.
     pub fn footer(&self) -> (Option<(&'static str, Color)>, String) {
+        let p = theme::palette();
         let short = self.layout.collapsed;
         let prefix = self.config.prefix.label();
         if let Some((message, at)) = &self.status
             && at.elapsed() < STATUS_TIMEOUT
             && matches!(self.mode, Mode::Normal | Mode::Tab)
         {
-            let badge = (self.mode == Mode::Tab).then_some((if short { "TAB" } else { "TABS" }, theme::ACCENT));
+            let badge = (self.mode == Mode::Tab).then_some((if short { "TAB" } else { "TABS" }, p.accent));
             return (badge, message.clone());
         }
         match self.mode {
             Mode::Normal => (None, format!("{prefix} tab keys · {prefix} ? help")),
             Mode::Scroll => (
-                Some((if short { "SCR" } else { "SCROLL" }, theme::YELLOW)),
+                Some((if short { "SCR" } else { "SCROLL" }, p.yellow)),
                 "j/k ^u/^d g/G · q exit".to_owned(),
             ),
             Mode::Tab => (
-                Some((if short { "TAB" } else { "TABS" }, theme::ACCENT)),
+                Some((if short { "TAB" } else { "TABS" }, p.accent)),
                 "j/k tabs · h/l spaces · p pin".to_owned(),
             ),
             Mode::Rename => (
-                Some((if short { "REN" } else { "RENAME" }, theme::GREEN)),
+                Some((if short { "REN" } else { "RENAME" }, p.green)),
                 "⏎ save · esc".to_owned(),
             ),
             Mode::Search => (
-                Some((if short { "/" } else { "SEARCH" }, theme::PURPLE)),
+                Some((if short { "/" } else { "SEARCH" }, p.purple)),
                 "↑↓ ⏎ go · esc".to_owned(),
             ),
             Mode::Workspaces => (
-                Some((if short { "WS" } else { "SPACES" }, theme::ORANGE)),
+                Some((if short { "WS" } else { "SPACES" }, p.orange)),
                 "⏎ open · ⇥ complete".to_owned(),
             ),
-            Mode::Help => (Some(("?", theme::ACCENT)), "any key to close".to_owned()),
-            Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, theme::RED)), "y / n".to_owned()),
+            Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
+            Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, p.red)), "y / n".to_owned()),
         }
     }
 

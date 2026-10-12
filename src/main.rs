@@ -8,6 +8,7 @@ mod procinfo;
 mod sidebar;
 mod store;
 mod tab;
+mod termcolors;
 mod theme;
 mod ui;
 mod workspace;
@@ -43,6 +44,8 @@ fn main() -> Result<()> {
 
 fn setup_terminal() -> Result<DefaultTerminal> {
     enable_raw_mode()?;
+    let (fg, bg) = termcolors::query();
+    theme::init(fg, bg);
     execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
     Ok(DefaultTerminal::new(CrosstermBackend::new(stdout()))?)
 }
