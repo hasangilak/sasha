@@ -4,12 +4,15 @@ use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode, Selection};
-use crate::{sidebar, theme};
+use crate::app::{App, Mode, PickerEntry, Selection};
 use crate::theme::{ACCENT, BORDER, ON_ACCENT, SIDEBAR_BG, TEXT, TEXT_DIM, YELLOW};
+use crate::workspace::pretty_path;
+use crate::{activity, sidebar, theme};
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    activity::render(frame.buffer_mut(), app);
     let rename_cursor = sidebar::render(frame.buffer_mut(), app);
 
     let pane = app.layout.pane;
@@ -20,6 +23,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if screen.scrollback() > 0 {
         render_scroll_badge(frame.buffer_mut(), pane, screen.scrollback());
     }
+    activity::render_tooltip(frame.buffer_mut(), app);
 
     match app.mode {
         Mode::Help => render_help(frame, app),
@@ -31,6 +35,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             }
         }
         Mode::Search => render_search(frame, app),
+        Mode::Workspaces => render_workspaces(frame, app),
         Mode::Normal | Mode::Tab => {
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
@@ -46,17 +51,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
 const HELP: &[(&str, &[(&str, &str)])] = &[
     ("Tab mode — press {p}, then", &[
         ("j k  ↓ ↑", "next / previous tab"),
+        ("h l  ← →", "previous / next workspace"),
         ("1 … 9", "go to tab (9 = last)"),
-        ("Tab", "back to the previous tab"),
+        ("Tab  ⇧Tab", "previous tab / previous workspace"),
         ("g G", "first / last tab"),
         ("J K", "move tab down / up"),
-        ("t c", "new tab"),
+        ("t n c", "new tab"),
+        ("x", "close tab"),
         ("r ,", "rename tab (empty name = automatic)"),
-        ("/ f", "search tabs"),
+        ("w", "workspaces: switch, add a folder, ^D remove"),
+        ("/ f", "search tabs in every workspace"),
         ("[ v PgUp", "scroll mode (j k ^u ^d g G, q exits)"),
-        ("x w", "close tab"),
-        ("b s", "collapse / expand sidebar"),
-        ("h l  ← →", "narrower / wider sidebar"),
+        ("b s", "collapse / expand the tab sidebar"),
+        ("a", "show / hide the workspace bar"),
+        ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
         ("q", "quit"),
         ("Esc ⏎", "back to the terminal"),
@@ -70,9 +78,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ("Mouse", &[
         ("click / drag", "switch / reorder tabs"),
         ("double-click tab", "rename it"),
+        ("middle-click ×", "close tab"),
+        ("workspace bar", "switch workspace, + adds a folder"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
         ("⇧ drag", "select even when an app uses the mouse"),
-        ("middle-click ×", "close tab"),
         ("drag the divider", "resize the sidebar"),
     ]),
 ];
@@ -95,75 +104,173 @@ fn render_help(frame: &mut Frame, app: &App) {
             ]));
         }
     }
-    let area = popup_area(frame.area(), 62, lines.len() as u16 + 2);
+    let area = popup_area(frame.area(), 66, lines.len() as u16 + 2);
     let block = popup_block(" sasha keys ");
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Chrome's tab search: a dropdown next to the sidebar's ⌕ button.
+/// One row of a picker popup.
+struct PickerRow {
+    /// Workspace initials and colour.
+    badge: Option<(String, Color)>,
+    icon: (&'static str, Color),
+    title: String,
+    detail: String,
+}
+
+struct Picker<'a> {
+    title: &'a str,
+    prompt: (&'a str, Color),
+    placeholder: &'a str,
+    empty: &'a str,
+    rows: Vec<PickerRow>,
+    hint: Option<(String, Color)>,
+}
+
+/// Chrome's tab search, across every workspace.
 fn render_search(frame: &mut Frame, app: &App) {
-    let results = app.search_results();
+    let rows = app
+        .search_results()
+        .into_iter()
+        .map(|(w, t)| {
+            let ws = &app.workspaces[w];
+            let tab = &ws.tabs[t];
+            PickerRow {
+                badge: Some((ws.initials(), ws.color())),
+                icon: theme::process_icon(tab.process_name()),
+                title: tab.title(),
+                detail: tab.cwd().map(pretty_path).unwrap_or_default(),
+            }
+        })
+        .collect();
+    render_picker(frame, app, Picker {
+        title: " search tabs ",
+        prompt: ("⌕", theme::PURPLE),
+        placeholder: "title, program, folder or workspace",
+        empty: "no matching tabs",
+        rows,
+        hint: None,
+    });
+}
+
+fn render_workspaces(frame: &mut Frame, app: &App) {
+    let rows = app
+        .picker_entries()
+        .into_iter()
+        .map(|entry| match entry {
+            PickerEntry::Workspace(index) => {
+                let ws = &app.workspaces[index];
+                let count = ws.tabs.len();
+                let tabs = match count {
+                    0 => String::new(),
+                    1 => "1 tab · ".to_owned(),
+                    n => format!("{n} tabs · "),
+                };
+                let icon = if index == app.current { ("●", ws.color()) } else { (" ", TEXT) };
+                PickerRow {
+                    badge: Some((ws.initials(), ws.color())),
+                    icon,
+                    title: ws.name.clone(),
+                    detail: format!("{tabs}{}", pretty_path(&ws.path)),
+                }
+            }
+            PickerEntry::AddFolder(path) => PickerRow {
+                badge: Some(("+".to_owned(), theme::GREEN)),
+                icon: (" ", TEXT),
+                title: format!(
+                    "add {}",
+                    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+                ),
+                detail: pretty_path(&path),
+            },
+        })
+        .collect();
+    let hint = match app.remove_warning() {
+        Some(warning) => (warning, theme::RED),
+        None => ("⏎ open · ⇥ complete · ^D remove · esc".to_owned(), TEXT_DIM),
+    };
+    render_picker(frame, app, Picker {
+        title: " workspaces ",
+        prompt: ("▸", theme::ORANGE),
+        placeholder: "name, or a folder path like ~/Work",
+        empty: "no matching folders",
+        rows,
+        hint: Some(hint),
+    });
+}
+
+/// A dropdown at the top of the terminal pane with a query line and rows.
+fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
     let pane = app.layout.pane;
-    let visible = results.len().clamp(1, 12);
-    let width = pane.width.saturating_sub(2).min(64);
-    let height = (visible as u16 + 4).min(pane.height);
+    let visible = picker.rows.len().clamp(1, 12);
+    let hint_rows = u16::from(picker.hint.is_some());
+    let width = pane.width.saturating_sub(2).min(72);
+    let height = (visible as u16 + 4 + hint_rows).min(pane.height);
     let area = Rect::new(pane.x + 1, pane.y, width, height);
-    if area.width < 12 || area.height < 5 {
+    if area.width < 16 || area.height < 5 {
         return;
     }
     frame.render_widget(Clear, area);
-    let block = popup_block(" search tabs ");
+    let block = popup_block(picker.title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let buf = frame.buffer_mut();
-    buf.set_string(inner.x, inner.y, "⌕ ", Style::new().fg(theme::PURPLE).bg(SIDEBAR_BG));
+    let plain = Style::new().fg(TEXT).bg(SIDEBAR_BG);
+    let (prompt, prompt_color) = picker.prompt;
+    buf.set_string(inner.x, inner.y, prompt, Style::new().fg(prompt_color).bg(SIDEBAR_BG));
     let query_x = inner.x + 2;
-    let (end, _) = buf.set_stringn(query_x, inner.y, &app.input, inner.width.saturating_sub(3) as usize, Style::new().fg(TEXT).bg(SIDEBAR_BG));
+    let room = inner.width.saturating_sub(3) as usize;
+    // Keep the end of a long query (e.g. a path) visible.
+    let skip = app.input.width().saturating_sub(room);
+    let shown: String = app.input.chars().skip(skip).collect();
+    let (end, _) = buf.set_stringn(query_x, inner.y, &shown, room, plain);
     if app.input.is_empty() {
-        buf.set_string(query_x, inner.y, "title, program or folder", Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
+        buf.set_stringn(query_x, inner.y, picker.placeholder, room, Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
     }
     let separator = "─".repeat(inner.width as usize);
     buf.set_string(inner.x, inner.y + 1, &separator, Style::new().fg(BORDER).bg(SIDEBAR_BG));
 
     let list_y = inner.y + 2;
-    if results.is_empty() {
-        buf.set_string(inner.x, list_y, "no matching tabs", Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
+    let list_rows = inner.height.saturating_sub(2 + hint_rows) as usize;
+    if picker.rows.is_empty() {
+        buf.set_string(inner.x, list_y, picker.empty, Style::new().fg(TEXT_DIM).bg(SIDEBAR_BG));
     }
     // Keep the highlighted row in view.
-    let first = app.search_selected.saturating_sub(visible - 1);
-    for (row, &index) in results.iter().enumerate().skip(first).take(visible) {
-        let tab = &app.tabs[index];
-        let y = list_y + (row - first) as u16;
-        let bg = if row == app.search_selected { theme::ACTIVE_BG } else { SIDEBAR_BG };
+    let first = app.picker_selected.saturating_sub(list_rows.saturating_sub(1));
+    for (index, row) in picker.rows.iter().enumerate().skip(first).take(list_rows) {
+        let y = list_y + (index - first) as u16;
+        let bg = if index == app.picker_selected { theme::ACTIVE_BG } else { SIDEBAR_BG };
         buf.set_style(Rect::new(inner.x, y, inner.width, 1), Style::new().bg(bg));
-        let (icon, color) = theme::process_icon(tab.process_name());
-        buf.set_string(inner.x + 1, y, icon, Style::new().fg(color).bg(bg));
-
-        let dir = tab.cwd().map(pretty_path).unwrap_or_default();
-        let dir_width = (dir.chars().count() as u16).min(inner.width / 2);
-        let title_room = inner.width.saturating_sub(dir_width + 5) as usize;
-        buf.set_stringn(inner.x + 3, y, tab.title(), title_room, Style::new().fg(TEXT).bg(bg));
-        if dir_width > 0 {
-            let dir: String = dir.chars().rev().take(dir_width as usize).collect::<Vec<_>>().into_iter().rev().collect();
-            buf.set_string(inner.right() - dir_width - 1, y, dir, Style::new().fg(TEXT_DIM).bg(bg));
+        let mut x = inner.x;
+        if let Some((initials, color)) = &row.badge {
+            let style = Style::new().fg(ON_ACCENT).bg(*color).add_modifier(Modifier::BOLD);
+            buf.set_string(x, y, format!("{initials:^4}"), style);
+            x += 5;
         }
+        let (icon, icon_color) = row.icon;
+        buf.set_string(x, y, icon, Style::new().fg(icon_color).bg(bg));
+        x += 2;
+
+        let detail_width = (row.detail.width() as u16).min(inner.width / 2);
+        let title_room = inner.right().saturating_sub(x + detail_width + 2) as usize;
+        buf.set_stringn(x, y, &row.title, title_room, Style::new().fg(TEXT).bg(bg));
+        if detail_width > 0 {
+            // Show the end of long paths: the folder name matters most.
+            let skip = row.detail.width().saturating_sub(detail_width as usize);
+            let detail: String = row.detail.chars().skip(skip).collect();
+            buf.set_string(inner.right() - detail_width, y, detail, Style::new().fg(TEXT_DIM).bg(bg));
+        }
+    }
+    if let Some((hint, color)) = &picker.hint {
+        buf.set_stringn(inner.x, inner.bottom() - 1, hint, inner.width as usize, Style::new().fg(*color).bg(SIDEBAR_BG));
     }
     frame.set_cursor_position(Position::new(end, inner.y));
 }
 
-/// A path with the home directory shown as `~`.
-fn pretty_path(path: &std::path::Path) -> String {
-    match std::env::home_dir().and_then(|home| path.strip_prefix(home).ok().map(ToOwned::to_owned)) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
-    }
-}
-
 fn render_confirm_quit(frame: &mut Frame, app: &App) {
-    let count = app.tabs.len();
+    let count = app.tab_count();
     let lines = vec![
         Line::styled(format!("Close {count} tabs and quit?"), Style::new().fg(TEXT)),
         Line::default(),

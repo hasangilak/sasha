@@ -1,0 +1,214 @@
+//! Mouse handling: the activity bar, tab sidebar and terminal pane.
+
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+use super::{App, Drag, Mode, Selection};
+use crate::clipboard;
+use crate::input;
+use crate::layout::{self, Hit};
+
+const MULTI_CLICK: Duration = Duration::from_millis(400);
+const WHEEL_LINES: usize = 3;
+
+impl App {
+    pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let hit = self.layout.hit(mouse.column, mouse.row, self);
+        self.hover = hit.filter(|h| *h != Hit::Pane);
+        if self.handle_drag(&mouse, hit) {
+            return;
+        }
+
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            match self.mode {
+                Mode::Help | Mode::ConfirmQuit | Mode::Search | Mode::Workspaces => {
+                    self.mode = Mode::Normal;
+                    return;
+                }
+                // Clicking away saves the name, like leaving a text field.
+                Mode::Rename => self.finish_rename(),
+                Mode::Tab if hit == Some(Hit::Pane) => self.mode = Mode::Normal,
+                _ => {}
+            }
+        }
+
+        match (mouse.kind, hit) {
+            (_, Some(Hit::Pane)) => self.mouse_in_pane(mouse),
+            (MouseEventKind::Down(MouseButton::Left), Some(hit)) => self.click(hit),
+            // Middle-click closes, like in a browser.
+            (MouseEventKind::Down(MouseButton::Middle), Some(Hit::Tab(index) | Hit::Close(index))) => {
+                self.close_tab(index);
+            }
+            (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(hit)) => {
+                let down = mouse.kind == MouseEventKind::ScrollDown;
+                if matches!(hit, Hit::Workspace(_) | Hit::AddWorkspace | Hit::HelpButton) {
+                    let scroll = if down { self.activity_scroll + 1 } else { self.activity_scroll.saturating_sub(1) };
+                    self.activity_scroll = self.layout.clamp_activity_scroll(scroll, self.workspaces.len(), None);
+                } else {
+                    let (tabs, pinned) = (self.ws().tabs.len(), self.ws().pinned_count());
+                    let ws = &mut self.workspaces[self.current];
+                    let scroll = if down { ws.scroll + 1 } else { ws.scroll.saturating_sub(1) };
+                    ws.scroll = self.layout.clamp_scroll(scroll, tabs, pinned, None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn click(&mut self, hit: Hit) {
+        match hit {
+            Hit::Workspace(index) => self.switch_workspace(index),
+            Hit::AddWorkspace => self.start_workspaces("~/".to_owned()),
+            Hit::HelpButton => self.mode = Mode::Help,
+            Hit::Toggle => self.set_collapsed(!self.collapsed),
+            Hit::Search => self.start_search(),
+            Hit::Tab(index) => {
+                let double = self
+                    .last_tab_click
+                    .is_some_and(|(at, i)| i == index && at.elapsed() < MULTI_CLICK);
+                self.last_tab_click = Some((Instant::now(), index));
+                self.activate(index);
+                if double {
+                    self.start_rename();
+                } else {
+                    self.drag = Some(Drag::Tab(index));
+                }
+            }
+            Hit::Close(index) => self.close_tab(index),
+            Hit::NewTab => {
+                if let Err(err) = self.new_tab() {
+                    self.set_status(format!("can't start a shell: {err}"));
+                }
+            }
+            Hit::Divider => self.drag = Some(Drag::Divider),
+            Hit::Pane => {}
+        }
+    }
+
+    /// Continues or ends a drag; returns true when the event was consumed.
+    fn handle_drag(&mut self, mouse: &MouseEvent, hit: Option<Hit>) -> bool {
+        match (mouse.kind, self.drag) {
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Divider)) => {
+                let width = mouse.column.saturating_sub(self.layout.sidebar.x) + 1;
+                self.sidebar_width = width.max(layout::MIN_WIDTH);
+                self.collapsed = false;
+                self.relayout_now();
+            }
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Tab(from))) => {
+                if let Some(Hit::Tab(to) | Hit::Close(to)) = hit {
+                    self.move_tab(from, to);
+                    self.drag = Some(Drag::Tab(to));
+                }
+            }
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Select)) => {
+                let pane = self.layout.pane;
+                let col = mouse.column.clamp(pane.left(), pane.right().saturating_sub(1)) - pane.x;
+                let row = mouse.row.clamp(pane.top(), pane.bottom().saturating_sub(1)) - pane.y;
+                if let Some(selection) = &mut self.selection {
+                    selection.head = (row, col);
+                }
+            }
+            (MouseEventKind::Up(_), Some(Drag::Select)) => {
+                self.drag = None;
+                self.copy_selection();
+            }
+            (MouseEventKind::Up(_), Some(_)) => self.drag = None,
+            _ => return false,
+        }
+        true
+    }
+
+    fn mouse_in_pane(&mut self, mouse: MouseEvent) {
+        let pane = self.layout.pane;
+        let (col, row) = (mouse.column - pane.x, mouse.row - pane.y);
+        let Some(tab) = self.ws_mut().active_tab_mut() else { return };
+        let screen = tab.screen();
+        let mode = screen.mouse_protocol_mode();
+        // Shift bypasses the program's mouse handling, as in xterm.
+        if mode != vt100::MouseProtocolMode::None
+            && !mouse.modifiers.contains(KeyModifiers::SHIFT)
+            && screen.scrollback() == 0
+        {
+            let encoding = screen.mouse_protocol_encoding();
+            if let Some(bytes) = input::encode_mouse(&mouse, col, row, mode, encoding) {
+                tab.write(bytes);
+            }
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = mouse.kind == MouseEventKind::ScrollUp;
+                if screen.alternate_screen() {
+                    // Full-screen apps without mouse support (less, man) get arrow keys.
+                    let key = KeyEvent::from(if up { KeyCode::Up } else { KeyCode::Down });
+                    let bytes = input::encode_key(&key, screen.application_cursor()).repeat(WHEEL_LINES);
+                    tab.write(bytes);
+                } else {
+                    let lines = WHEEL_LINES as isize;
+                    self.scroll_active(if up { lines } else { -lines });
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let tab_id = tab.id;
+                let clicks = match self.last_click {
+                    Some((at, pos, n)) if pos == (row, col) && at.elapsed() < MULTI_CLICK => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((Instant::now(), (row, col), clicks));
+                let (anchor, head) = match clicks {
+                    2 => match self.active_tab() {
+                        Some(tab) => word_bounds(tab.screen(), row, col),
+                        None => ((row, col), (row, col)),
+                    },
+                    3 => ((row, 0), (row, pane.width.saturating_sub(1))),
+                    _ => ((row, col), (row, col)),
+                };
+                self.selection = Some(Selection { tab: tab_id, anchor, head });
+                self.drag = Some(Drag::Select);
+            }
+            _ => {}
+        }
+    }
+
+    fn copy_selection(&mut self) {
+        let Some(selection) = self.selection else { return };
+        if selection.anchor == selection.head {
+            self.selection = None;
+            return;
+        }
+        let Some(tab) = self.active_tab().filter(|t| t.id == selection.tab) else { return };
+        let ((start_row, start_col), (end_row, end_col)) = selection.ordered();
+        let text = tab.screen().contents_between(start_row, start_col, end_row, end_col + 1);
+        if text.is_empty() {
+            return;
+        }
+        clipboard::copy(&text);
+        let count = text.chars().count();
+        self.set_status(format!("copied {count} character{}", if count == 1 { "" } else { "s" }));
+    }
+}
+
+/// The run of non-separator characters around (row, col), for double-click.
+fn word_bounds(screen: &vt100::Screen, row: u16, col: u16) -> ((u16, u16), (u16, u16)) {
+    let is_word = |c: u16| {
+        screen.cell(row, c).is_some_and(|cell| {
+            let text = cell.contents();
+            !text.is_empty() && !text.chars().any(|ch| ch.is_whitespace() || "\"'`()[]{}<>|,;".contains(ch))
+        })
+    };
+    if !is_word(col) {
+        return ((row, col), (row, col));
+    }
+    let (_, cols) = screen.size();
+    let mut start = col;
+    while start > 0 && is_word(start - 1) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end + 1 < cols && is_word(end + 1) {
+        end += 1;
+    }
+    ((row, start), (row, end))
+}

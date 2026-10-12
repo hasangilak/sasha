@@ -83,6 +83,8 @@ pub struct Tab {
     shell_pid: Option<i32>,
     /// Name given by the user; overrides every automatic title.
     pub custom_title: Option<String>,
+    /// Pinned tabs sit at the top of their workspace and are restored on startup.
+    pub pinned: bool,
     /// Name of the process in the foreground of this tab's tty.
     fg_name: String,
     fg_pgid: Option<i32>,
@@ -163,6 +165,7 @@ impl Tab {
             child,
             shell_pid,
             custom_title: None,
+            pinned: false,
             fg_name: String::new(),
             fg_pgid: shell_pid,
             title_owner: None,

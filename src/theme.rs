@@ -2,6 +2,7 @@
 
 use ratatui::style::Color;
 
+pub const ACTIVITY_BG: Color = rgb(0x17, 0x17, 0x19);
 pub const SIDEBAR_BG: Color = rgb(0x20, 0x21, 0x24);
 pub const HOVER_BG: Color = rgb(0x2d, 0x2e, 0x31);
 pub const ACTIVE_BG: Color = rgb(0x3c, 0x40, 0x43);
@@ -20,6 +21,7 @@ pub const PURPLE: Color = rgb(0xc5, 0x8a, 0xf9);
 pub const YELLOW: Color = rgb(0xfd, 0xd6, 0x63);
 pub const CYAN: Color = rgb(0x78, 0xd9, 0xec);
 pub const RED: Color = rgb(0xf2, 0x8b, 0x82);
+pub const PINK: Color = rgb(0xff, 0x8b, 0xcb);
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)

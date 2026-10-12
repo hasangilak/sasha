@@ -1,12 +1,15 @@
+mod activity;
 mod app;
 mod clipboard;
 mod config;
 mod input;
+mod layout;
 mod procinfo;
 mod sidebar;
 mod tab;
 mod theme;
 mod ui;
+mod workspace;
 
 use std::io::stdout;
 
