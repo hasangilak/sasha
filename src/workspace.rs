@@ -49,6 +49,9 @@ pub struct Workspace {
     /// Tabs saved last time and not reopened yet: they come back the first
     /// time the workspace is opened.
     pub dormant: Option<SavedWorkspace>,
+    /// Its section was closed from the stacked sidebar; going to the
+    /// workspace shows it again.
+    pub section_hidden: bool,
 }
 
 impl Workspace {
@@ -62,6 +65,7 @@ impl Workspace {
             active: 0,
             previous: None,
             dormant: None,
+            section_hidden: false,
         }
     }
 
