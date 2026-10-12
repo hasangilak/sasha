@@ -24,6 +24,17 @@ use crate::protocol::{self, ClientMessage};
 
 pub type ClientId = u64;
 
+/// Set by SIGTERM, SIGHUP or SIGINT: save and stop.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn request_stop(_: libc::c_int) {
+    STOP.store(true, Ordering::Relaxed);
+}
+
+pub fn stop_requested() -> bool {
+    STOP.load(Ordering::Relaxed)
+}
+
 /// How long a new server waits for the client that started it.
 const FIRST_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A client that stops reading is dropped rather than freezing every tab.
@@ -48,6 +59,14 @@ pub fn spawn(socket: &Path) -> Result<()> {
 }
 
 pub fn run() -> Result<()> {
+    // Logging out or shutting down sends SIGTERM: stop cleanly, so the tabs
+    // are saved and come back next time.
+    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+        // SAFETY: the handler only stores to an atomic.
+        unsafe {
+            libc::signal(signal, request_stop as *const () as libc::sighandler_t);
+        }
+    }
     let path = protocol::socket_path()?;
     let listener = bind(&path)?;
     let (events_tx, events) = mpsc::channel();
@@ -69,7 +88,10 @@ pub fn run() -> Result<()> {
     let mut app = App::new(hello.config.clone(), Size::new(cols, rows), events_tx, events);
     app.attach(id, *hello, stream);
     let result = app.run();
+    // Stop answering before the client goes, so a sasha started right away
+    // starts a new server instead of reaching this one on its way out.
     let _ = std::fs::remove_file(&path);
+    app.dismiss_client();
     result
 }
 

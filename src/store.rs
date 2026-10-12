@@ -1,5 +1,5 @@
-//! What sasha remembers between runs: the workspaces and their pinned
-//! tabs, stored as JSON in ~/.config/sasha/state.json.
+//! What sasha remembers between runs: the workspaces, their tabs and groups,
+//! and the layout, stored as JSON in ~/.config/sasha/state.json.
 
 use std::path::PathBuf;
 
@@ -10,6 +10,20 @@ use serde::{Deserialize, Serialize};
 pub struct State {
     #[serde(default)]
     pub workspaces: Vec<SavedWorkspace>,
+    /// Index of the workspace that was on screen.
+    #[serde(default)]
+    pub current: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<SavedLayout>,
+}
+
+/// Sidebar and workspace bar sizes.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SavedLayout {
+    pub sidebar_width: u16,
+    pub collapsed: bool,
+    pub activity_width: u16,
+    pub wide_activity_width: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,17 +32,52 @@ pub struct SavedWorkspace {
     /// The name the user gave it, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Every tab, in order; they come back as fresh shells.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<SavedTab>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<SavedGroup>,
+    /// Index of the active tab.
+    #[serde(default)]
+    pub active: usize,
+    /// Older versions saved only the pinned tabs, here.
+    #[serde(default, skip_serializing)]
     pub pinned: Vec<SavedTab>,
 }
 
-/// A pinned tab: reopened as a fresh shell in `cwd` on startup.
+impl SavedWorkspace {
+    /// The tabs to reopen, from either format.
+    pub fn take_tabs(&mut self) -> Vec<SavedTab> {
+        if self.tabs.is_empty() {
+            for tab in &mut self.pinned {
+                tab.pinned = true;
+            }
+            return std::mem::take(&mut self.pinned);
+        }
+        std::mem::take(&mut self.tabs)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedTab {
+    /// The folder it was in.
     pub cwd: PathBuf,
     /// The prefix the user gave the tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// Index into the workspace's `groups`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SavedGroup {
+    pub name: String,
+    pub color: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
 }
 
 /// `$SASHA_STATE`, else `$XDG_CONFIG_HOME/sasha/state.json`, else
@@ -62,14 +111,35 @@ pub fn load() -> (State, Option<String>) {
     }
 }
 
-pub fn save(state: &State) -> Result<()> {
+pub fn encode(state: &State) -> Result<String> {
+    Ok(serde_json::to_string_pretty(state)? + "\n")
+}
+
+pub fn write(json: &str) -> Result<()> {
     let path = path().context("no home directory to save state in")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("can't create {}", dir.display()))?;
     }
     // Write then rename, so a crash never leaves a half-written file.
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(state)? + "\n")?;
+    std::fs::write(&tmp, json)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_old_pinned_only_format() {
+        let old = r#"{"workspaces":[{"path":"/w","pinned":[{"cwd":"/w/a","title":"api"}]}]}"#;
+        let mut state: State = serde_json::from_str(old).unwrap();
+        let tabs = state.workspaces[0].take_tabs();
+        assert_eq!(tabs.len(), 1);
+        assert!(tabs[0].pinned);
+        assert_eq!(tabs[0].title.as_deref(), Some("api"));
+        // The old field isn't written back.
+        assert!(!encode(&state).unwrap().contains("pinned"));
+    }
 }

@@ -13,15 +13,14 @@ use crossterm::event::{Event, KeyEventKind};
 use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
-use crate::clipboard;
 use crate::config::Config;
 use crate::layout::{self, Hit, Layout};
 use crate::protocol::{self, Hello};
-use crate::server::{Attached, ClientId};
-use crate::store::{self, SavedTab, SavedWorkspace, State};
+use crate::server::{self, Attached, ClientId};
+use crate::store::{self, SavedGroup, SavedLayout, SavedTab, SavedWorkspace, State};
 use crate::tab::{Tab, TabId};
 use crate::workspace::{self, Group, GroupId, Workspace, WorkspaceId};
-use crate::{theme, ui};
+use crate::{clipboard, notify, theme, ui};
 
 /// Minimum time between two frames (~120 fps).
 const FRAME: Duration = Duration::from_millis(8);
@@ -31,6 +30,8 @@ const INFO_REFRESH: Duration = Duration::from_millis(500);
 const BUSY: Duration = Duration::from_millis(800);
 const SPINNER_STEP: Duration = Duration::from_millis(80);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+/// At most one notification per tab this often.
+const NOTIFY_GAP: Duration = Duration::from_secs(10);
 
 pub enum AppEvent {
     Output(TabId, Vec<u8>),
@@ -130,10 +131,14 @@ pub struct App {
     pub(crate) config: Config,
     /// The client showing the tabs, if any.
     client: Option<Attached>,
+    /// Whether the client's window has focus (when its terminal says).
+    focused: bool,
     /// This server's `protocol::build_id`.
     build: u64,
     /// Whether a client has attached before (the first one opens a tab).
     attached_before: bool,
+    /// The state file as last written.
+    saved: String,
     pub(crate) mode: Mode,
     pub(crate) workspaces: Vec<Workspace>,
     /// Index of the workspace on screen.
@@ -184,8 +189,10 @@ impl App {
         let mut app = Self {
             config,
             client: None,
+            focused: true,
             build: protocol::build_id(),
             attached_before: false,
+            saved: String::new(),
             mode: Mode::Normal,
             workspaces: Vec::new(),
             current: 0,
@@ -222,24 +229,54 @@ impl App {
         app.relayout(size);
 
         let (state, warning) = store::load();
-        for saved in state.workspaces {
-            let index = app.add_workspace(saved.path);
-            app.workspaces[index].rename(saved.name);
-            for pinned in saved.pinned {
-                match app.spawn_tab(&pinned.cwd) {
-                    Ok(mut tab) => {
-                        tab.pinned = true;
-                        tab.custom_prefix = pinned.title;
-                        app.workspaces[index].tabs.push(tab);
-                    }
-                    Err(err) => app.set_status(format!("can't restore a pinned tab: {err}")),
-                }
-            }
-        }
+        app.restore(state);
         if let Some(warning) = warning {
             app.set_status(warning);
         }
         app
+    }
+
+    /// Reopens the saved workspaces, tabs (as fresh shells, in the folders
+    /// they were in) and groups, and the layout.
+    fn restore(&mut self, state: State) {
+        if let Some(layout) = state.layout {
+            self.sidebar_width = layout.sidebar_width.max(layout::MIN_WIDTH);
+            self.collapsed = layout.collapsed;
+            self.activity_width = layout.activity_width.min(layout::ACTIVITY_MAX);
+            self.wide_activity_width = layout.wide_activity_width.clamp(layout::ACTIVITY_WIDE_MIN, layout::ACTIVITY_MAX);
+            self.relayout_now();
+        }
+        for mut saved in state.workspaces {
+            let index = self.add_workspace(saved.path.clone());
+            self.workspaces[index].rename(saved.name.take());
+            let mut group_ids = Vec::new();
+            for group in &saved.groups {
+                let id = self.next_group_id;
+                self.next_group_id += 1;
+                group_ids.push(id);
+                let (name, color, collapsed) = (group.name.clone(), group.color, group.collapsed);
+                self.workspaces[index].groups.push(Group { id, name, color, collapsed, last_active: None });
+            }
+            for saved_tab in saved.take_tabs() {
+                // A folder that has gone since falls back to the workspace's.
+                let cwd = if saved_tab.cwd.is_dir() { saved_tab.cwd } else { self.workspaces[index].path.clone() };
+                match self.spawn_tab(&cwd) {
+                    Ok(mut tab) => {
+                        tab.pinned = saved_tab.pinned;
+                        tab.custom_prefix = saved_tab.title;
+                        tab.group = saved_tab.group.and_then(|g| group_ids.get(g).copied()).filter(|_| !tab.pinned);
+                        self.workspaces[index].tabs.push(tab);
+                    }
+                    Err(err) => self.set_status(format!("can't reopen a tab: {err}")),
+                }
+            }
+            let ws = &mut self.workspaces[index];
+            // Pinned tabs first, whatever the file says.
+            ws.tabs.sort_by_key(|tab| !tab.pinned);
+            ws.prune_groups();
+            ws.active = saved.active.min(ws.tabs.len().saturating_sub(1));
+        }
+        self.current = state.current.min(self.workspaces.len().saturating_sub(1));
     }
 
     // ── Clients ─────────────────────────────────────────────────────────
@@ -270,6 +307,7 @@ impl App {
             old.exit("[sasha opened in another window]");
         }
         self.reset_modes();
+        self.focused = true;
         theme::init(hello.colors.0, hello.colors.1);
         self.config = hello.config;
         // A fresh terminal has the default cursor.
@@ -288,14 +326,17 @@ impl App {
         }
     }
 
-    /// The first time, opens a tab in the folder sasha was started in. Later
-    /// it shows that folder's workspace, unless sasha was started in the home
-    /// folder, where every new terminal window starts: then it carries on
-    /// where you left off.
+    /// Shows the workspace for the folder sasha was started in, adding it if
+    /// it's new; the very first time, with nothing to reopen, that means a
+    /// tab right there. Started from the home folder, where new terminal
+    /// windows open, it carries on where you left off instead.
     fn open_launch_folder(&mut self, launch: &Path) -> Result<()> {
-        let first = !self.attached_before;
+        let fresh = !self.attached_before && self.tab_count() == 0;
         self.attached_before = true;
-        if !first && std::env::home_dir().is_some_and(|home| home == launch) {
+        let at_home = std::env::home_dir().is_some_and(|home| home == launch);
+        if at_home && !fresh {
+            let current = self.current;
+            self.switch_workspace(current);
             return Ok(());
         }
         let index = match self.workspace_for(launch) {
@@ -306,13 +347,13 @@ impl App {
                 index
             }
         };
-        if first {
+        if fresh {
             self.current = index;
             let tab = self.spawn_tab(launch)?;
             self.ws_mut().tabs.push(tab);
             let last = self.ws().tabs.len() - 1;
             self.activate(last);
-        } else if index != self.current {
+        } else {
             self.switch_workspace(index);
         }
         Ok(())
@@ -487,6 +528,10 @@ impl App {
         let mut last_refresh = Instant::now();
         let mut was_animating = false;
         while !self.quit {
+            // Logging out or shutting down: keep the tabs for next time.
+            if server::stop_requested() {
+                break;
+            }
             let timeout = if dirty {
                 FRAME.saturating_sub(last_draw.elapsed())
             } else if was_animating {
@@ -512,6 +557,8 @@ impl App {
             if last_refresh.elapsed() >= INFO_REFRESH {
                 last_refresh = Instant::now();
                 self.refresh_tabs();
+                self.notify();
+                self.save();
                 dirty = true;
             }
             // Keep spinners moving, and redraw once more when they stop.
@@ -525,11 +572,15 @@ impl App {
                 dirty = false;
             }
         }
-        if let Some(client) = self.client.take() {
-            client.exit("");
-        }
         self.save();
         Ok(())
+    }
+
+    /// Tells the client sasha has stopped (once nothing can attach anymore).
+    pub fn dismiss_client(&mut self) {
+        if let Some(client) = self.client.take() {
+            client.exit("[sasha stopped · run sasha to reopen your tabs]");
+        }
     }
 
     fn draw(&mut self) {
@@ -546,25 +597,24 @@ impl App {
     /// the footer.
     fn save(&mut self) {
         let state = State {
-            workspaces: self
-                .workspaces
-                .iter()
-                .map(|ws| SavedWorkspace {
-                    path: ws.path.clone(),
-                    name: ws.custom_name.clone(),
-                    pinned: ws
-                        .tabs
-                        .iter()
-                        .filter(|tab| tab.pinned)
-                        .map(|tab| SavedTab {
-                            cwd: tab.cwd().map_or_else(|| ws.path.clone(), Path::to_path_buf),
-                            title: tab.custom_prefix.clone(),
-                        })
-                        .collect(),
-                })
-                .collect(),
+            workspaces: self.workspaces.iter().map(save_workspace).collect(),
+            current: self.current,
+            layout: Some(SavedLayout {
+                sidebar_width: self.sidebar_width,
+                collapsed: self.collapsed,
+                activity_width: self.activity_width,
+                wide_activity_width: self.wide_activity_width,
+            }),
         };
-        if let Err(err) = store::save(&state) {
+        let result = store::encode(&state).and_then(|json| {
+            // Only touch the disk when something changed.
+            if json != self.saved {
+                store::write(&json)?;
+                self.saved = json;
+            }
+            Ok(())
+        });
+        if let Err(err) = result {
             self.set_status(format!("couldn't save workspaces: {err:#}"));
         }
     }
@@ -1054,6 +1104,25 @@ impl App {
         self.close_tab(index);
     }
 
+    /// Posts a notification for each tab with news you aren't looking at:
+    /// any tab but the one on screen, or every tab while the window is in the
+    /// background or no window is open.
+    fn notify(&mut self) {
+        let watching = self.client.is_some() && self.focused;
+        let on_screen = (self.current, self.workspaces.get(self.current).map_or(0, |ws| ws.active));
+        for (w, ws) in self.workspaces.iter_mut().enumerate() {
+            for (t, tab) in ws.tabs.iter_mut().enumerate() {
+                let Some(news) = tab.take_news() else { continue };
+                let seen = watching && (w, t) == on_screen;
+                if seen || tab.last_notified.is_some_and(|at| at.elapsed() < NOTIFY_GAP) {
+                    continue;
+                }
+                tab.last_notified = Some(Instant::now());
+                notify::send(&tab.title(), &news);
+            }
+        }
+    }
+
     // ── Tab groups ──────────────────────────────────────────────────────
 
     /// Starts a group holding the active tab, in the first colour no other
@@ -1209,6 +1278,8 @@ impl App {
                 Event::Mouse(mouse) => self.handle_mouse(mouse),
                 Event::Paste(text) => self.paste(&text),
                 Event::Resize(cols, rows) => self.resize_client(Size::new(cols, rows)),
+                Event::FocusGained => self.focused = true,
+                Event::FocusLost => self.focused = false,
                 _ => {}
             },
             AppEvent::Input(..) => {}
@@ -1235,7 +1306,7 @@ impl App {
         let clipboard = tab.process(bytes).and_then(|data| clipboard::copy_base64(&data));
         // A shell starting up or redrawing after a resize isn't news.
         if !tab.settling() {
-            tab.last_activity = Instant::now();
+            tab.note_output();
             if !on_screen {
                 tab.unseen = true;
             }
@@ -1261,5 +1332,31 @@ impl App {
         } else {
             tab.write(text);
         }
+    }
+}
+
+fn save_workspace(ws: &Workspace) -> SavedWorkspace {
+    // Groups in the order they appear, numbered for the tabs to refer to.
+    let groups = ws.groups_in_order();
+    let tabs = ws
+        .tabs
+        .iter()
+        .map(|tab| SavedTab {
+            cwd: tab.cwd().map_or_else(|| ws.path.clone(), Path::to_path_buf),
+            title: tab.custom_prefix.clone(),
+            pinned: tab.pinned,
+            group: tab.group.and_then(|id| groups.iter().position(|g| g.id == id)),
+        })
+        .collect();
+    SavedWorkspace {
+        path: ws.path.clone(),
+        name: ws.custom_name.clone(),
+        tabs,
+        groups: groups
+            .iter()
+            .map(|g| SavedGroup { name: g.name.clone(), color: g.color, collapsed: g.collapsed })
+            .collect(),
+        active: ws.active,
+        pinned: Vec::new(),
     }
 }

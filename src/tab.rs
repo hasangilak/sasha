@@ -11,12 +11,18 @@ use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::app::AppEvent;
-use crate::procinfo;
+use crate::{notify, procinfo};
 use crate::workspace::GroupId;
 
 pub type TabId = u64;
 
 const SCROLLBACK_LINES: usize = 5_000;
+/// Output this far apart belongs to separate stretches of work.
+const QUIET: Duration = Duration::from_secs(3);
+/// Stretches of work, and commands, at least this long are worth a
+/// notification when they end.
+const LONG_WORK: Duration = Duration::from_secs(15);
+const LONG_COMMAND: Duration = Duration::from_secs(10);
 
 /// Handles the escape sequences vt100 parses but leaves to the embedder:
 /// queries that need a reply, titles, bells, clipboard and cursor shape.
@@ -30,6 +36,8 @@ pub struct Callbacks {
     /// Base64 payload of an OSC 52 clipboard write.
     clipboard: Option<Vec<u8>>,
     cursor_style: u16,
+    /// A notification the program asked for (OSC 9 or OSC 777).
+    notice: Option<String>,
 }
 
 impl vt100::Callbacks for Callbacks {
@@ -45,6 +53,28 @@ impl vt100::Callbacks for Callbacks {
 
     fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, _ty: &[u8], data: &[u8]) {
         self.clipboard = Some(data.to_vec());
+    }
+
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        let text = |parts: &[&[u8]]| {
+            let joined = parts.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>().join(";");
+            Some(joined.trim().to_owned()).filter(|t| !t.is_empty())
+        };
+        match params {
+            // iTerm2's `OSC 9 ; message`. A number after the 9 is something
+            // else (ConEmu's progress bar), not a message.
+            [b"9", rest @ ..] if !rest.first().is_some_and(|p| !p.is_empty() && p.iter().all(u8::is_ascii_digit)) => {
+                self.notice = text(rest);
+            }
+            // `OSC 777 ; notify ; title ; body`, from urxvt, Ghostty and others.
+            [b"777", b"notify", title, body @ ..] => {
+                self.notice = match text(body) {
+                    Some(body) => Some(format!("{}: {body}", String::from_utf8_lossy(title))),
+                    None => text(&[title]),
+                };
+            }
+            _ => {}
+        }
     }
 
     fn unhandled_csi(
@@ -102,6 +132,16 @@ pub struct Tab {
     /// Output arrived while the tab was in the background.
     pub unseen: bool,
     pub bell: bool,
+    /// News not yet considered for a notification: a bell, a program's own
+    /// notification, a long command finishing, a long stretch of output.
+    rang: bool,
+    notice: Option<String>,
+    finished: Option<(String, Duration)>,
+    streak_start: Option<Instant>,
+    /// When the program in the foreground started, and what it is.
+    command_since: Option<Instant>,
+    last_command: String,
+    pub last_notified: Option<Instant>,
 }
 
 impl Tab {
@@ -184,6 +224,13 @@ impl Tab {
             settle_until: Instant::now() + Duration::from_secs(2),
             unseen: false,
             bell: false,
+            rang: false,
+            notice: None,
+            finished: None,
+            streak_start: None,
+            command_since: None,
+            last_command: String::new(),
+            last_notified: None,
         };
         tab.refresh_info();
         Ok(tab)
@@ -232,7 +279,11 @@ impl Tab {
         let bell = std::mem::take(&mut cb.bell);
         let title_changed = std::mem::take(&mut cb.title_changed);
         let clipboard = cb.clipboard.take();
+        if let Some(notice) = cb.notice.take() {
+            self.notice = Some(notice);
+        }
         self.bell |= bell;
+        self.rang |= bell;
         if title_changed {
             self.title_owner = self.master.process_group_leader();
         }
@@ -252,6 +303,49 @@ impl Tab {
         if let Some(cwd) = self.shell_pid.and_then(procinfo::cwd) {
             self.cwd = Some(cwd);
         }
+        // Notice long commands finishing.
+        match (self.is_running_command(), self.command_since) {
+            (true, None) => self.command_since = Some(Instant::now()),
+            (false, Some(since)) => {
+                self.command_since = None;
+                if since.elapsed() >= LONG_COMMAND {
+                    self.finished = Some((self.last_command.clone(), since.elapsed()));
+                }
+            }
+            _ => {}
+        }
+        if self.is_running_command() {
+            self.last_command.clone_from(&self.fg_name);
+        }
+    }
+
+    /// Records output that is news (not the shell starting or redrawing).
+    pub fn note_output(&mut self) {
+        let now = Instant::now();
+        if self.streak_start.is_none() || now - self.last_activity > QUIET {
+            self.streak_start = Some(now);
+        }
+        self.last_activity = now;
+    }
+
+    /// What's worth a notification since the last call, if anything:
+    /// the program's own message, a long command finishing, a bell, or a
+    /// long stretch of output coming to an end.
+    pub fn take_news(&mut self) -> Option<String> {
+        let notice = self.notice.take();
+        let finished = self.finished.take();
+        let rang = std::mem::take(&mut self.rang);
+        let mut worked = None;
+        if let Some(start) = self.streak_start
+            && self.last_activity.elapsed() >= QUIET
+        {
+            self.streak_start = None;
+            worked = Some(self.last_activity - start).filter(|w| *w >= LONG_WORK);
+        }
+        notice
+            .or_else(|| finished.map(|(name, took)| format!("{name} finished after {}", notify::duration(took))))
+            .or_else(|| rang.then(|| "wants your attention".to_owned()))
+            .or_else(|| worked.map(|w| format!("went quiet after {} of output", notify::duration(w))))
     }
 
     pub fn cwd(&self) -> Option<&Path> {

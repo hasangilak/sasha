@@ -73,7 +73,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
         ("d", "detach: tabs keep running, sasha brings them back"),
-        ("q", "quit: close every tab"),
+        ("q", "quit: stop everything; tabs reopen next time"),
         ("Esc ⏎", "back to the terminal"),
     ]),
     ("Anywhere", &[
@@ -334,7 +334,8 @@ fn render_confirm_quit(frame: &mut Frame, app: &App) {
     let count = app.tab_count();
     let key = |label, bg| Span::styled(label, Style::new().fg(p.on_accent).bg(bg).add_modifier(Modifier::BOLD));
     let lines = vec![
-        Line::styled(format!("Close {count} tabs and quit?"), Style::new().fg(p.text)),
+        Line::styled(format!("Quit and stop what's running in {count} tabs?"), Style::new().fg(p.text)),
+        Line::styled("The tabs reopen next time, as fresh shells.", Style::new().fg(p.text_dim)),
         Line::styled("Detaching keeps them running.", Style::new().fg(p.text_dim)),
         Line::default(),
         Line::from(vec![
@@ -346,7 +347,7 @@ fn render_confirm_quit(frame: &mut Frame, app: &App) {
             Span::styled(" cancel", Style::new().fg(p.text_dim)),
         ]),
     ];
-    let area = popup_area(frame.area(), 40, lines.len() as u16 + 2);
+    let area = popup_area(frame.area(), 50, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(popup_block(" quit ")), area);
 }

@@ -10,7 +10,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use crossterm::cursor::{SetCursorStyle, Show};
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange,
+    EnableMouseCapture,
+};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 
@@ -122,7 +125,7 @@ pub fn kill_server() -> Result<()> {
 
 fn setup_terminal() -> Result<()> {
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture, EnableFocusChange)?;
     Ok(())
 }
 
@@ -130,6 +133,7 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(
         stdout(),
+        DisableFocusChange,
         DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen,

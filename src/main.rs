@@ -5,6 +5,7 @@ mod clipboard;
 mod config;
 mod input;
 mod layout;
+mod notify;
 mod procinfo;
 mod protocol;
 mod server;
