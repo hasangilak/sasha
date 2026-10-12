@@ -227,3 +227,7 @@ Shells see `TERM=xterm-256color` and `TERM_PROGRAM=sasha`.
 - One window at a time shows the tabs. Opening sasha in another window moves them there, where
   tmux could show them in both.
 - Only workspaces and pinned tabs survive a logout or restart, as fresh shells.
+
+## License
+
+[MIT](LICENSE)
