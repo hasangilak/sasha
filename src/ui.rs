@@ -349,6 +349,8 @@ fn render_confirm_quit(frame: &mut Frame, app: &App) {
         Line::default(),
         Line::from(vec![
             key(" y ", p.red),
+            Span::styled(" or ", Style::new().fg(p.text_dim)),
+            key(" q ", p.red),
             Span::styled(" quit  ", Style::new().fg(p.text_dim)),
             key(" d ", p.accent),
             Span::styled(" detach  ", Style::new().fg(p.text_dim)),
@@ -356,7 +358,7 @@ fn render_confirm_quit(frame: &mut Frame, app: &App) {
             Span::styled(" cancel", Style::new().fg(p.text_dim)),
         ]),
     ];
-    let area = popup_area(frame.area(), 50, lines.len() as u16 + 2);
+    let area = popup_area(frame.area(), 54, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(popup_block(" quit ")), area);
 }

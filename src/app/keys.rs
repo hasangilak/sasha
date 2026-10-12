@@ -2,7 +2,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::{App, GroupEntry, Mode, PickerEntry, Renaming};
+use std::time::Instant;
+
+use super::{App, GroupEntry, Mode, PREFIX_TWICE, PickerEntry, Renaming, TAB_MODE_REPEAT};
 use crate::workspace::GroupId;
 use crate::input;
 use crate::workspace;
@@ -22,7 +24,8 @@ impl App {
             Mode::ConfirmQuit => {
                 self.mode = Mode::Normal;
                 match key.code {
-                    KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.quit = true,
+                    // q again confirms: ^B q q.
+                    KeyCode::Char('y' | 'Y' | 'q' | 'Q') | KeyCode::Enter => self.quit = true,
                     KeyCode::Char('d' | 'D') => self.detach(),
                     _ => {}
                 }
@@ -33,6 +36,8 @@ impl App {
     fn normal_key(&mut self, key: KeyEvent) {
         if self.config.prefix.matches(&key) {
             self.mode = Mode::Tab;
+            self.prefix_at = Instant::now();
+            self.tab_mode_until = None;
             return;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -54,13 +59,28 @@ impl App {
     }
 
     fn tab_mode_key(&mut self, key: KeyEvent) {
+        let prefix = self.config.prefix.matches(&key);
+        self.tab_mode_command(key);
+        // Moving keys (j j k…) may follow; tab mode waits a moment for them.
+        if self.mode == Mode::Tab && !prefix {
+            self.tab_mode_until = Some(Instant::now() + TAB_MODE_REPEAT);
+        }
+    }
+
+    fn tab_mode_command(&mut self, key: KeyEvent) {
         if self.config.prefix.matches(&key) {
-            // Prefix twice sends it through, like tmux.
-            let byte = self.config.prefix.byte();
-            if let Some(tab) = self.active_tab() {
-                tab.write([byte]);
+            if self.prefix_at.elapsed() < PREFIX_TWICE {
+                // A quick double press sends the prefix through, like tmux.
+                let byte = self.config.prefix.byte();
+                if let Some(tab) = self.active_tab() {
+                    tab.write([byte]);
+                }
+                self.mode = Mode::Normal;
+            } else {
+                // Tab mode was still on: start over, waiting for a key.
+                self.prefix_at = Instant::now();
+                self.tab_mode_until = None;
             }
-            self.mode = Mode::Normal;
             return;
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);

@@ -38,6 +38,11 @@ const INFO_REFRESH: Duration = Duration::from_millis(500);
 const BUSY: Duration = Duration::from_millis(800);
 const SPINNER_STEP: Duration = Duration::from_millis(80);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+/// Pressing the prefix twice this quickly sends it to the program.
+const PREFIX_TWICE: Duration = Duration::from_millis(400);
+/// After a tab-mode key, tab mode stays this long for the next one (j j k…),
+/// then ends by itself.
+const TAB_MODE_REPEAT: Duration = Duration::from_secs(2);
 /// A click on a link opens it once this passes without a second click.
 const LINK_DELAY: Duration = Duration::from_millis(400);
 /// At most one notification per tab this often.
@@ -212,6 +217,11 @@ pub struct App {
     confirm_close: Option<TabId>,
     /// Workspace whose tabs wait for a second click on its heading's ×.
     confirm_close_section: Option<WorkspaceId>,
+    /// When the prefix was last pressed.
+    prefix_at: Instant,
+    /// When tab mode ends by itself; `None` while it waits for its first
+    /// key.
+    tab_mode_until: Option<Instant>,
     sidebar_width: u16,
     collapsed: bool,
     /// Width of the workspace bar; 0 hides it.
@@ -274,6 +284,8 @@ impl App {
             confirm_remove: None,
             confirm_close: None,
             confirm_close_section: None,
+            prefix_at: Instant::now(),
+            tab_mode_until: None,
             sidebar_width: layout::DEFAULT_WIDTH,
             collapsed: false,
             activity_width: layout::ACTIVITY_COMPACT,
@@ -678,6 +690,9 @@ impl App {
             if let Some((_, at)) = &self.pending_link {
                 timeout = timeout.min(LINK_DELAY.saturating_sub(at.elapsed()));
             }
+            if let Some(until) = self.tab_mode_until {
+                timeout = timeout.min(until.saturating_duration_since(Instant::now()));
+            }
             match self.events.recv_timeout(timeout) {
                 Ok(event) => {
                     self.handle(event);
@@ -693,6 +708,12 @@ impl App {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
 
+            // Tab mode ends a moment after its last key.
+            if self.mode == Mode::Tab && self.tab_mode_until.is_some_and(|until| Instant::now() >= until) {
+                self.mode = Mode::Normal;
+                self.tab_mode_until = None;
+                dirty = true;
+            }
             if self.pending_link.as_ref().is_some_and(|(_, at)| at.elapsed() >= LINK_DELAY)
                 && let Some((url, _)) = self.pending_link.take()
             {
