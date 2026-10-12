@@ -9,7 +9,7 @@ use crate::app::{App, Mode, Renaming};
 use crate::app::Activity;
 use crate::layout::{Hit, ListItem, Row};
 use crate::tab::Tab;
-use crate::workspace::{GroupId, Workspace};
+use crate::workspace::GroupId;
 use crate::theme::{self, BG};
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -29,6 +29,14 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
         let Some(row) = layout.row_of(row_index, app.list_scroll) else { continue };
         let pill = layout.pill(row);
         let (w, item) = match item {
+            Row::Group(id) if renaming && app.renaming == Renaming::Group(id) => {
+                cursor = Some(render_group_rename(buf, app, id, pill));
+                continue;
+            }
+            Row::Group(id) => {
+                render_group(buf, app, id, pill, app.hover == Some(Hit::Group(id)));
+                continue;
+            }
             Row::Workspace(w) => {
                 render_heading(buf, app, w, pill);
                 continue;
@@ -40,7 +48,7 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
         let current = w == app.current;
         // Tabs in a group hang off a rail in the group's colour.
         if let ListItem::Tab(index) = item
-            && let Some(group) = ws.group_of(index)
+            && let Some(group) = ws.tabs[index].group.and_then(|id| app.group(id))
         {
             buf.set_string(layout.list.x, row, "▎", Style::new().fg(group.color()).bg(BG));
         }
@@ -62,13 +70,6 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
                 let hovered = app.hover == Some(Hit::OtherTab(w, index));
                 let state = TabState { active: false, hovered, button_hot: false, closable: false };
                 render_tab(buf, app, &ws.tabs[index], pill, state);
-            }
-            ListItem::Group(id) if current && renaming && app.renaming == Renaming::Group(id) => {
-                cursor = Some(render_group_rename(buf, app, id, pill));
-            }
-            ListItem::Group(id) => {
-                let hit = if current { Hit::Group(id) } else { Hit::OtherGroup(w, id) };
-                render_group(buf, app, ws, id, pill, app.hover == Some(hit));
             }
             ListItem::Separator => {
                 let line = "─".repeat(pill.width.saturating_sub(2) as usize);
@@ -242,9 +243,9 @@ fn render_tab(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, state: TabStat
 /// A group's header: a chip with its name in its colour, like Chrome's.
 /// A collapsed group also shows how many tabs it hides and whether any of
 /// them is busy or has news.
-fn render_group(buf: &mut Buffer, app: &App, ws: &Workspace, id: GroupId, pill: Rect, hovered: bool) {
+fn render_group(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect, hovered: bool) {
     let p = theme::palette();
-    let Some(group) = ws.group(id) else { return };
+    let Some(group) = app.group(id) else { return };
     let bg = if hovered { p.hover_bg } else { BG };
     buf.set_style(pill, Style::new().bg(bg));
     let chip = Style::new().fg(p.on_accent).bg(group.color()).add_modifier(Modifier::BOLD);
@@ -258,7 +259,7 @@ fn render_group(buf: &mut Buffer, app: &App, ws: &Workspace, id: GroupId, pill: 
     let mut right = pill.right() - 2;
     buf.set_string(right, pill.y, if group.collapsed { "▸" } else { "▾" }, dim);
     if group.collapsed {
-        let tabs = &ws.tabs[ws.group_range(id)];
+        let tabs: Vec<&Tab> = app.members(id).into_iter().map(|(w, t)| &app.workspaces[w].tabs[t]).collect();
         let count = tabs.len().to_string();
         right -= count.len() as u16 + 1;
         buf.set_string(right, pill.y, &count, dim);
@@ -286,7 +287,7 @@ fn render_group(buf: &mut Buffer, app: &App, ws: &Workspace, id: GroupId, pill: 
 
 /// A group's header turned into a text field for its name.
 fn render_group_rename(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect) -> Position {
-    let Some(group) = app.ws().group(id) else { return Position::new(pill.x, pill.y) };
+    let Some(group) = app.group(id) else { return Position::new(pill.x, pill.y) };
     let chip = Style::new().fg(theme::palette().on_accent).bg(group.color()).add_modifier(Modifier::BOLD);
     let (tail, width) = input_tail(&app.input, pill.width.saturating_sub(4) as usize);
     let end = pill.x + 1 + width as u16;

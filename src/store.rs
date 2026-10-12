@@ -15,6 +15,9 @@ pub struct State {
     pub current: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<SavedLayout>,
+    /// Tab groups, which can hold tabs from any workspace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<SavedGroup>,
 }
 
 /// Sidebar and workspace bar sizes.
@@ -38,7 +41,8 @@ pub struct SavedWorkspace {
     /// Every tab, in order; they come back as fresh shells.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tabs: Vec<SavedTab>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Older versions kept groups per workspace, here.
+    #[serde(default, skip_serializing)]
     pub groups: Vec<SavedGroup>,
     /// Index of the active tab.
     #[serde(default)]
@@ -46,6 +50,23 @@ pub struct SavedWorkspace {
     /// Older versions saved only the pinned tabs, here.
     #[serde(default, skip_serializing)]
     pub pinned: Vec<SavedTab>,
+}
+
+impl State {
+    /// Moves groups that older versions kept per workspace up to the state,
+    /// where they can hold tabs from any workspace.
+    fn lift_groups(&mut self) {
+        for ws in &mut self.workspaces {
+            if ws.groups.is_empty() {
+                continue;
+            }
+            let offset = self.groups.len();
+            self.groups.append(&mut ws.groups);
+            for tab in ws.tabs.iter_mut().chain(&mut ws.pinned) {
+                tab.group = tab.group.map(|g| g + offset);
+            }
+        }
+    }
 }
 
 impl SavedWorkspace {
@@ -70,7 +91,7 @@ pub struct SavedTab {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
-    /// Index into the workspace's `groups`.
+    /// Index into the state's `groups`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<usize>,
 }
@@ -104,8 +125,11 @@ pub fn load() -> (State, Option<String>) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (State::default(), None),
         Err(err) => return (State::default(), Some(format!("can't read {}: {err}", path.display()))),
     };
-    match serde_json::from_str(&text) {
-        Ok(state) => (state, None),
+    match serde_json::from_str::<State>(&text) {
+        Ok(mut state) => {
+            state.lift_groups();
+            (state, None)
+        }
         Err(err) => {
             let aside = path.with_extension("json.broken");
             let _ = std::fs::rename(&path, &aside);
@@ -144,5 +168,18 @@ mod tests {
         assert_eq!(tabs[0].title.as_deref(), Some("api"));
         // The old field isn't written back.
         assert!(!encode(&state).unwrap().contains("pinned"));
+    }
+
+    #[test]
+    fn lifts_per_workspace_groups() {
+        let old = r#"{"workspaces":[
+            {"path":"/a","tabs":[{"cwd":"/a","group":0}],"groups":[{"name":"x","color":1}]},
+            {"path":"/b","tabs":[{"cwd":"/b"},{"cwd":"/b","group":0}],"groups":[{"name":"y","color":2}]}]}"#;
+        let mut state: State = serde_json::from_str(old).unwrap();
+        state.lift_groups();
+        let names: Vec<_> = state.groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["x", "y"]);
+        assert_eq!(state.workspaces[0].tabs[0].group, Some(0));
+        assert_eq!(state.workspaces[1].tabs[1].group, Some(1));
     }
 }

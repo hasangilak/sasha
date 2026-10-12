@@ -223,7 +223,6 @@ fn render_workspaces(frame: &mut Frame, app: &App) {
 /// Putting the active tab into a new or existing tab group.
 fn render_groups(frame: &mut Frame, app: &App) {
     let p = theme::palette();
-    let ws = app.ws();
     let current = app.active_tab().and_then(|t| t.group);
     let rows = app
         .group_entries()
@@ -236,8 +235,8 @@ fn render_groups(frame: &mut Frame, app: &App) {
                 detail: String::new(),
             }),
             GroupEntry::Group(id) => {
-                let group = ws.group(id)?;
-                let count = ws.group_range(id).len();
+                let group = app.group(id)?;
+                let count = app.members(id).len();
                 let initial = group.name.chars().next().map_or_else(String::new, |c| c.to_uppercase().collect());
                 Some(PickerRow {
                     badge: Some((initial, group.color())),

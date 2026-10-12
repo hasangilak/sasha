@@ -1,6 +1,5 @@
 //! A workspace is a folder on disk with its own set of tabs.
 
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use ratatui::style::Color;
@@ -13,14 +12,15 @@ use crate::theme;
 pub type WorkspaceId = u64;
 pub type GroupId = u64;
 
-/// A named, coloured run of neighbouring tabs, like a Chrome tab group.
+/// A named, coloured set of tabs, from any workspaces, like a Chrome tab
+/// group: workspaces sort tabs by folder, groups by what you're doing.
 pub struct Group {
     pub id: GroupId,
     /// May be empty: the header then shows just the colour.
     pub name: String,
     /// Index into `Palette::group_colors`.
     pub color: usize,
-    /// Collapsed groups show only their header, plus the active tab when
+    /// Collapsed groups show only their header, plus the tab on screen when
     /// it's one of theirs.
     pub collapsed: bool,
     /// The tab to go to when the collapsed group is selected.
@@ -40,11 +40,9 @@ pub struct Workspace {
     pub name: String,
     pub custom_name: Option<String>,
     pub path: PathBuf,
-    /// Pinned tabs always come first, and the tabs of a group are always
-    /// next to each other.
+    /// Pinned tabs always come first. Grouped tabs are listed under their
+    /// group, in this order.
     pub tabs: Vec<Tab>,
-    /// In no particular order: the tabs decide where a group appears.
-    pub groups: Vec<Group>,
     pub active: usize,
     /// The tab that was active before the current one.
     pub previous: Option<TabId>,
@@ -61,7 +59,6 @@ impl Workspace {
             custom_name: None,
             path,
             tabs: Vec::new(),
-            groups: Vec::new(),
             active: 0,
             previous: None,
             dormant: None,
@@ -87,65 +84,16 @@ impl Workspace {
         self.tabs.iter().take_while(|t| t.pinned).count()
     }
 
-    pub fn group(&self, id: GroupId) -> Option<&Group> {
-        self.groups.iter().find(|g| g.id == id)
-    }
-
-    pub fn group_mut(&mut self, id: GroupId) -> Option<&mut Group> {
-        self.groups.iter_mut().find(|g| g.id == id)
-    }
-
-    /// The group of tab `index`, if it has one.
-    pub fn group_of(&self, index: usize) -> Option<&Group> {
-        self.group(self.tabs.get(index)?.group?)
-    }
-
-    /// Indices of the tabs in group `id`.
-    pub fn group_range(&self, id: GroupId) -> Range<usize> {
-        let start = self.tabs.iter().position(|t| t.group == Some(id)).unwrap_or(self.tabs.len());
-        let len = self.tabs[start..].iter().take_while(|t| t.group == Some(id)).count();
-        start..start + len
-    }
-
-    /// Groups in the order they appear in the tab list.
-    pub fn groups_in_order(&self) -> Vec<&Group> {
-        let mut ids: Vec<GroupId> = self.tabs.iter().filter_map(|t| t.group).collect();
-        ids.dedup();
-        ids.into_iter().filter_map(|id| self.group(id)).collect()
-    }
-
-    /// Forgets groups whose last tab has gone.
-    pub fn prune_groups(&mut self) {
-        let tabs = &self.tabs;
-        self.groups.retain(|g| tabs.iter().any(|t| t.group == Some(g.id)));
-    }
-
-    /// Rows of the tab list.
+    /// Rows of the workspace's own section of the sidebar: pinned tabs, a
+    /// separator, the tabs that aren't in a group, then "+".
     pub fn list_items(&self) -> Vec<ListItem> {
-        let tabs: Vec<_> = self.tabs.iter().map(|t| (t.pinned, t.group)).collect();
-        let collapsed = |id| self.group(id).is_some_and(|g| g.collapsed);
-        list_items(&tabs, collapsed, self.active)
+        let tabs: Vec<_> = self.tabs.iter().map(|t| (t.pinned, t.group.is_some())).collect();
+        list_items(&tabs)
     }
 
-    /// Where keyboard navigation stops, in order: every visible tab, and
-    /// one tab standing in for each collapsed group.
-    pub fn stops(&self) -> Vec<usize> {
-        self.list_items()
-            .into_iter()
-            .filter_map(|item| match item {
-                ListItem::Tab(index) => Some(index),
-                ListItem::Group(id) => {
-                    let group = self.group(id)?;
-                    let range = self.group_range(id);
-                    if !group.collapsed || range.contains(&self.active) {
-                        return None;
-                    }
-                    let last = range.clone().find(|&i| Some(self.tabs[i].id) == group.last_active);
-                    Some(last.unwrap_or(range.start))
-                }
-                ListItem::Separator | ListItem::NewTab => None,
-            })
-            .collect()
+    /// Whether it has tabs of its own to list, outside any group.
+    pub fn has_loose_tabs(&self) -> bool {
+        self.tabs.iter().any(|t| t.group.is_none())
     }
 
     /// Up to two letters for the activity bar badge: the initials of the
@@ -181,27 +129,15 @@ impl Workspace {
     }
 }
 
-/// Rows of a tab list whose tabs are (pinned, group): pinned tabs, a
-/// separator, the other tabs with a header above each group, then "+".
-/// A collapsed group hides its tabs, except the active one.
-fn list_items(tabs: &[(bool, Option<GroupId>)], collapsed: impl Fn(GroupId) -> bool, active: usize) -> Vec<ListItem> {
+/// Rows for tabs that are (pinned, grouped): the pinned ones, a separator,
+/// the others not in a group, then "+".
+fn list_items(tabs: &[(bool, bool)]) -> Vec<ListItem> {
     let pinned = tabs.iter().take_while(|(pinned, _)| *pinned).count();
     let mut items: Vec<ListItem> = (0..pinned).map(ListItem::Tab).collect();
     if pinned > 0 {
         items.push(ListItem::Separator);
     }
-    let mut previous = None;
-    for (index, &(_, group)) in tabs.iter().enumerate().skip(pinned) {
-        if let Some(id) = group
-            && group != previous
-        {
-            items.push(ListItem::Group(id));
-        }
-        previous = group;
-        if !group.is_some_and(&collapsed) || index == active {
-            items.push(ListItem::Tab(index));
-        }
-    }
+    items.extend((pinned..tabs.len()).filter(|&i| !tabs[i].1).map(ListItem::Tab));
     items.push(ListItem::NewTab);
     items
 }
@@ -255,14 +191,11 @@ mod tests {
     }
 
     #[test]
-    fn groups_get_headers_and_collapse() {
-        use ListItem::{Group as G, NewTab, Separator, Tab as T};
-        let tabs = [(true, None), (false, None), (false, Some(7)), (false, Some(7)), (false, Some(9)), (false, None)];
-        assert_eq!(list_items(&tabs, |_| false, 0), [T(0), Separator, T(1), G(7), T(2), T(3), G(9), T(4), T(5), NewTab]);
-        // Collapsed, group 7 keeps only the active tab on show.
-        assert_eq!(list_items(&tabs, |id| id == 7, 3), [T(0), Separator, T(1), G(7), T(3), G(9), T(4), T(5), NewTab]);
-        assert_eq!(list_items(&tabs, |id| id == 7, 1), [T(0), Separator, T(1), G(7), G(9), T(4), T(5), NewTab]);
-        assert_eq!(list_items(&[], |_| false, 0), [NewTab]);
+    fn grouped_tabs_leave_their_workspace_list() {
+        use ListItem::{NewTab, Separator, Tab as T};
+        let tabs = [(true, false), (false, false), (false, true), (false, false)];
+        assert_eq!(list_items(&tabs), [T(0), Separator, T(1), T(3), NewTab]);
+        assert_eq!(list_items(&[]), [NewTab]);
     }
 
     #[test]

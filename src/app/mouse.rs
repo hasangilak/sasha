@@ -93,13 +93,7 @@ impl App {
             }
             Hit::ActivityDivider => self.drag = Some(Drag::ActivityDivider),
             // Another workspace's tab or group, stacked in the sidebar.
-            Hit::OtherTab(w, t) => {
-                if w != self.current {
-                    self.switch_workspace(w);
-                }
-                self.activate(t);
-            }
-            Hit::OtherGroup(w, id) => self.toggle_group_in(w, id),
+            Hit::OtherTab(w, t) => self.go_to(w, t),
             Hit::AddWorkspace => self.start_workspaces("~/".to_owned()),
             Hit::HelpButton => self.mode = Mode::Help,
             Hit::Toggle => self.set_collapsed(!self.collapsed),
@@ -155,9 +149,21 @@ impl App {
                 let Some(from) = self.ws().tabs.iter().position(|t| t.id == id) else { return true };
                 match hit {
                     Some(Hit::Tab(to) | Hit::Close(to)) => self.move_tab(from, to),
-                    Some(Hit::Group(group)) => self.drop_on_group(from, group),
+                    // Onto a group, or a tab in one: into that group.
+                    Some(Hit::Group(group)) => self.set_membership(self.current, from, false, Some(group)),
+                    Some(Hit::OtherTab(w, t)) => {
+                        if let Some(group) = self.workspaces[w].tabs[t].group {
+                            self.set_membership(self.current, from, false, Some(group));
+                        }
+                    }
                     // Past the last tab: to the end, out of any group.
-                    Some(Hit::NewTab) => self.place_tab(from, usize::MAX, false, None),
+                    Some(Hit::NewTab) => {
+                        self.set_membership(self.current, from, false, None);
+                        let last = self.ws().tabs.len() - 1;
+                        if let Some(from) = self.ws().tabs.iter().position(|t| t.id == id) {
+                            self.move_within(from, last);
+                        }
+                    }
                     _ => {}
                 }
             }

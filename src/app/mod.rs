@@ -144,6 +144,9 @@ pub struct App {
     saved: String,
     pub(crate) mode: Mode,
     pub(crate) workspaces: Vec<Workspace>,
+    /// Tab groups, in the order they're listed; their tabs can come from
+    /// any workspace.
+    pub(crate) groups: Vec<Group>,
     /// Index of the workspace on screen.
     pub(crate) current: usize,
     previous_workspace: Option<WorkspaceId>,
@@ -208,6 +211,7 @@ impl App {
             saved: String::new(),
             mode: Mode::Normal,
             workspaces: Vec::new(),
+            groups: Vec::new(),
             current: 0,
             previous_workspace: None,
             layout: Layout::default(),
@@ -253,8 +257,9 @@ impl App {
         app
     }
 
-    /// Brings back the saved workspaces and layout. Their tabs wait until
-    /// each workspace is first opened (see `wake`).
+    /// Brings back the saved workspaces, groups and layout. Pinned and
+    /// grouped tabs reopen right away; a workspace's other tabs wait until
+    /// it's first opened (see `wake`).
     fn restore(&mut self, state: State) {
         if let Some(layout) = state.layout {
             self.sidebar_width = layout.sidebar_width.max(layout::MIN_WIDTH);
@@ -264,47 +269,84 @@ impl App {
             self.current_only = layout.current_only;
             self.relayout_now();
         }
-        for mut saved in state.workspaces {
-            let index = self.add_workspace(saved.path.clone());
-            self.workspaces[index].rename(saved.name.take());
-            saved.tabs = saved.take_tabs();
-            if !saved.tabs.is_empty() {
-                self.workspaces[index].dormant = Some(saved);
-            }
-        }
-        self.current = state.current.min(self.workspaces.len().saturating_sub(1));
-    }
-
-    /// Reopens a workspace's saved tabs (as fresh shells, in the folders
-    /// they were in) and groups, the first time it's opened.
-    fn wake(&mut self, index: usize) {
-        let Some(saved) = self.workspaces.get_mut(index).and_then(|ws| ws.dormant.take()) else { return };
         let mut group_ids = Vec::new();
-        for group in &saved.groups {
+        for group in state.groups {
             let id = self.next_group_id;
             self.next_group_id += 1;
             group_ids.push(id);
-            let (name, color, collapsed) = (group.name.clone(), group.color, group.collapsed);
-            self.workspaces[index].groups.push(Group { id, name, color, collapsed, last_active: None });
+            let (name, color, collapsed) = (group.name, group.color, group.collapsed);
+            self.groups.push(Group { id, name, color, collapsed, last_active: None });
         }
-        for saved_tab in saved.tabs {
-            // A folder that has gone since falls back to the workspace's.
-            let cwd = if saved_tab.cwd.is_dir() { saved_tab.cwd } else { self.workspaces[index].path.clone() };
-            match self.spawn_tab(&cwd) {
-                Ok(mut tab) => {
-                    tab.pinned = saved_tab.pinned;
-                    tab.custom_prefix = saved_tab.title;
-                    tab.group = saved_tab.group.and_then(|g| group_ids.get(g).copied()).filter(|_| !tab.pinned);
-                    self.workspaces[index].tabs.push(tab);
+        for mut saved in state.workspaces {
+            let index = self.add_workspace(saved.path.clone());
+            self.workspaces[index].rename(saved.name.take());
+            let mut later = Vec::new();
+            let mut active = None;
+            for (i, tab) in saved.take_tabs().into_iter().enumerate() {
+                let group = tab.group.and_then(|g| group_ids.get(g).copied());
+                if tab.pinned || group.is_some() {
+                    let id = self.reopen(index, tab, group);
+                    if i == saved.active {
+                        active = id;
+                    }
+                } else {
+                    if i == saved.active {
+                        saved.active = later.len();
+                    }
+                    later.push(tab);
                 }
-                Err(err) => self.set_status(format!("can't reopen a tab: {err}")),
+            }
+            let ws = &mut self.workspaces[index];
+            // Pinned tabs first, whatever the file says.
+            ws.tabs.sort_by_key(|tab| !tab.pinned);
+            ws.active = ws.tabs.iter().position(|tab| Some(tab.id) == active).unwrap_or(0);
+            if !later.is_empty() {
+                if active.is_some() {
+                    saved.active = usize::MAX;
+                }
+                saved.tabs = later;
+                ws.dormant = Some(saved);
+            }
+        }
+        self.prune_groups();
+        self.current = state.current.min(self.workspaces.len().saturating_sub(1));
+    }
+
+    /// Reopens a workspace's remaining saved tabs, the first time it's
+    /// opened.
+    fn wake(&mut self, index: usize) {
+        let Some(saved) = self.workspaces.get_mut(index).and_then(|ws| ws.dormant.take()) else { return };
+        let mut active = None;
+        for (i, tab) in saved.tabs.into_iter().enumerate() {
+            let id = self.reopen(index, tab, None);
+            if i == saved.active {
+                active = id;
             }
         }
         let ws = &mut self.workspaces[index];
-        // Pinned tabs first, whatever the file says.
-        ws.tabs.sort_by_key(|tab| !tab.pinned);
-        ws.prune_groups();
-        ws.active = saved.active.min(ws.tabs.len().saturating_sub(1));
+        if let Some(position) = ws.tabs.iter().position(|tab| Some(tab.id) == active) {
+            ws.active = position;
+        }
+    }
+
+    /// Reopens a saved tab as a fresh shell in the folder it was in (or the
+    /// workspace's, if that's gone), at the end of workspace `index`.
+    fn reopen(&mut self, index: usize, saved: SavedTab, group: Option<GroupId>) -> Option<TabId> {
+        let cwd = if saved.cwd.is_dir() { saved.cwd } else { self.workspaces[index].path.clone() };
+        match self.spawn_tab(&cwd) {
+            Ok(mut tab) => {
+                tab.pinned = saved.pinned;
+                tab.custom_prefix = saved.title;
+                tab.group = group.filter(|_| !tab.pinned);
+                let id = tab.id;
+                self.workspaces[index].tabs.push(tab);
+                Some(id)
+            }
+            Err(err) => {
+                self.set_status(format!("can't reopen a tab: {err}"));
+                None
+            }
+        }
     }
 
     // ── Clients ─────────────────────────────────────────────────────────
@@ -637,8 +679,13 @@ impl App {
     /// Writes the workspaces and pinned tabs to disk; failures show up in
     /// the footer.
     fn save(&mut self) {
+        let groups = &self.groups;
         let state = State {
-            workspaces: self.workspaces.iter().map(save_workspace).collect(),
+            workspaces: self.workspaces.iter().map(|ws| save_workspace(ws, groups)).collect(),
+            groups: groups
+                .iter()
+                .map(|g| SavedGroup { name: g.name.clone(), color: g.color, collapsed: g.collapsed })
+                .collect(),
             current: self.current,
             layout: Some(SavedLayout {
                 sidebar_width: self.sidebar_width,
@@ -916,13 +963,13 @@ impl App {
         Tab::spawn(id, self.pty_size(), Some(cwd), self.events_tx.clone())
     }
 
-    /// Opens a tab at the end of the current workspace.
+    /// Opens a tab in the current workspace.
     fn new_tab(&mut self) -> Result<()> {
         self.open_tab(None)
     }
 
-    /// Opens a tab at the end of the active tab's group, or of the
-    /// workspace when it isn't in one.
+    /// Opens a tab in the current workspace, in the active tab's group if
+    /// it's in one.
     fn new_tab_in_group(&mut self) -> Result<()> {
         let group = self.active_tab().and_then(|t| t.group);
         self.open_tab(group)
@@ -940,9 +987,9 @@ impl App {
         let mut tab = self.spawn_tab(&cwd)?;
         tab.group = group;
         let ws = self.ws_mut();
-        let index = group.map_or(ws.tabs.len(), |id| ws.group_range(id).end);
-        ws.tabs.insert(index, tab);
-        self.activate(index);
+        ws.tabs.push(tab);
+        let last = ws.tabs.len() - 1;
+        self.activate(last);
         Ok(())
     }
 
@@ -961,12 +1008,20 @@ impl App {
         tab.unseen = false;
         tab.bell = false;
         let (id, group) = (tab.id, tab.group);
-        if let Some(group) = group.and_then(|g| ws.group_mut(g)) {
+        if let Some(group) = group.and_then(|g| self.group_mut(g)) {
             group.last_active = Some(id);
         }
         self.selection = None;
         self.hover_link = None;
         self.clamp_list_scroll(true);
+    }
+
+    /// Shows tab `t` of workspace `w`.
+    fn go_to(&mut self, w: usize, t: usize) {
+        if w != self.current {
+            self.switch_workspace(w);
+        }
+        self.activate(t);
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -980,10 +1035,10 @@ impl App {
         }
         // Dropping the tab hangs up its shell.
         let was_pinned = ws.tabs.remove(index).pinned;
-        ws.prune_groups();
         if index < ws.active || ws.active >= ws.tabs.len() {
             ws.active = ws.active.saturating_sub(1);
         }
+        self.prune_groups();
         if was_pinned {
             self.save();
         }
@@ -998,36 +1053,63 @@ impl App {
         }
     }
 
-    /// Workspaces with a section in the sidebar: the current one, and any
-    /// other with open tabs.
-    fn shown_workspaces(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.workspaces.len()).filter(|&w| w == self.current || !self.workspaces[w].tabs.is_empty())
-    }
-
-    /// Whether the tab sidebar stacks several workspaces' tabs.
-    fn stacked(&self) -> bool {
-        !self.current_only && self.shown_workspaces().count() > 1
-    }
-
-    /// Rows of the tab sidebar: every workspace's heading and tabs, stacked
-    /// (only the current workspace has a "+"), or just the current one's.
+    /// Rows of the tab sidebar: the groups first, each with its tabs from
+    /// any workspace, then each workspace's other tabs, under a heading
+    /// when there's more than one such workspace. Only the current
+    /// workspace's section has a "+", and other workspaces show up only
+    /// with tabs outside groups. `current_only` leaves out every other
+    /// workspace's tabs.
     pub fn sidebar_rows(&self) -> Vec<Row> {
-        let section = |w: usize| {
-            let items = self.workspaces[w].list_items().into_iter();
-            items.filter(move |item| w == self.current || *item != ListItem::NewTab).map(move |item| Row::Item(w, item))
-        };
-        if !self.stacked() {
-            return self.workspaces.get(self.current).map_or_else(Vec::new, |_| section(self.current).collect());
-        }
+        let Some(current) = self.workspaces.get(self.current) else { return Vec::new() };
+        let on_screen = (self.current, current.active);
         let mut rows = Vec::new();
-        for w in self.shown_workspaces() {
+        for group in &self.groups {
+            let members = self.shown_members(group.id);
+            if members.is_empty() {
+                continue;
+            }
+            rows.push(Row::Group(group.id));
+            let visible = members.into_iter().filter(|&tab| !group.collapsed || tab == on_screen);
+            rows.extend(visible.map(|(w, t)| Row::Item(w, ListItem::Tab(t))));
+        }
+        let sections: Vec<usize> = (0..self.workspaces.len())
+            .filter(|&w| w == self.current || (!self.current_only && self.workspaces[w].has_loose_tabs()))
+            .collect();
+        let headings = sections.len() > 1;
+        for w in sections {
             if !rows.is_empty() {
                 rows.push(Row::Gap);
             }
-            rows.push(Row::Workspace(w));
-            rows.extend(section(w));
+            if headings {
+                rows.push(Row::Workspace(w));
+            }
+            let items = self.workspaces[w].list_items().into_iter();
+            rows.extend(items.filter(|item| w == self.current || *item != ListItem::NewTab).map(|item| Row::Item(w, item)));
         }
         rows
+    }
+
+    /// Where keyboard navigation stops, top to bottom: every tab in the
+    /// sidebar, and one standing in for each collapsed group.
+    fn stops(&self) -> Vec<(usize, usize)> {
+        let on_screen = (self.current, self.ws().active);
+        let mut stops = Vec::new();
+        for row in self.sidebar_rows() {
+            match row {
+                Row::Item(w, ListItem::Tab(t)) => stops.push((w, t)),
+                Row::Group(id) => {
+                    let Some(group) = self.group(id).filter(|g| g.collapsed) else { continue };
+                    let members = self.shown_members(id);
+                    if members.contains(&on_screen) {
+                        continue;
+                    }
+                    let last = members.iter().find(|&&(w, t)| Some(self.workspaces[w].tabs[t].id) == group.last_active);
+                    stops.extend(last.or(members.first()));
+                }
+                _ => {}
+            }
+        }
+        stops
     }
 
     /// Keeps the tab sidebar scrolled into range; with `reveal`, it shows
@@ -1047,40 +1129,28 @@ impl App {
         self.activity_scroll = self.layout.clamp_activity_scroll(self.activity_scroll, self.workspaces.len(), reveal);
     }
 
-    /// Every workspace's tabs, stacked, or only the current workspace's.
+    /// Every workspace's tabs, or only the current workspace's.
     fn toggle_stacked(&mut self) {
         self.current_only = !self.current_only;
         self.clamp_list_scroll(true);
         self.set_status(if self.current_only { "showing this workspace's tabs" } else { "showing every workspace's tabs" });
     }
 
-    /// Activates the tab `delta` steps away, wrapping around. A collapsed
-    /// group counts as one step. While the sidebar stacks every workspace,
-    /// the steps go through all of their tabs, top to bottom.
+    /// Activates the tab `delta` steps away in the sidebar, wrapping
+    /// around, across groups and workspaces. A collapsed group counts as one
+    /// step.
     fn cycle(&mut self, delta: isize) {
-        if self.stacked() {
-            let all: Vec<(usize, usize)> = (self.workspaces.iter().enumerate())
-                .flat_map(|(w, ws)| ws.stops().into_iter().map(move |t| (w, t)))
-                .collect();
-            let here = (self.current, self.ws().active);
-            let Some(position) = all.iter().position(|&stop| stop == here) else { return };
-            let (w, t) = all[(position as isize + delta).rem_euclid(all.len() as isize) as usize];
-            if w != self.current {
-                self.switch_workspace(w);
-            }
-            self.activate(t);
-            return;
-        }
-        let stops = self.ws().stops();
-        let Some(position) = stops.iter().position(|&i| i == self.ws().active) else { return };
-        let next = (position as isize + delta).rem_euclid(stops.len() as isize) as usize;
-        self.activate(stops[next]);
+        let stops = self.stops();
+        let here = (self.current, self.ws().active);
+        let Some(position) = stops.iter().position(|&stop| stop == here) else { return };
+        let (w, t) = stops[(position as isize + delta).rem_euclid(stops.len() as isize) as usize];
+        self.go_to(w, t);
     }
 
-    /// Chrome numbering: 1-8 pick a tab, 9 is always the last one. A
-    /// collapsed group counts as one tab.
+    /// Chrome numbering for the current workspace's tabs: 1-8 pick a tab,
+    /// 9 is always the last one. A collapsed group counts as one tab.
     fn jump(&mut self, digit: char) {
-        let stops = self.ws().stops();
+        let stops: Vec<usize> = self.stops().into_iter().filter(|&(w, _)| w == self.current).map(|(_, t)| t).collect();
         let stop = match digit {
             '9' => stops.last(),
             '1'..='8' => stops.get(digit as usize - '1' as usize),
@@ -1098,110 +1168,89 @@ impl App {
         }
     }
 
-    /// Moves the active tab one step, as Chrome does: through its group,
-    /// out of it at either end, into a group it meets, or past a collapsed
-    /// one. Keyboard moves never cross into or out of the pinned section.
+    /// Moves the active tab one place up or down its list: the pinned tabs,
+    /// its group's tabs from the same workspace, or the workspace's tabs
+    /// outside groups.
     fn shift_active(&mut self, delta: isize) {
         let ws = self.ws();
         let index = ws.active;
         let Some(tab) = ws.tabs.get(index) else { return };
-        let pinned = ws.pinned_count();
-        let down = delta > 0;
-        let past = |range: std::ops::Range<usize>| if down { range.end - 1 } else { range.start };
-
-        if tab.pinned {
-            if let Some(to) = index.checked_add_signed(delta).filter(|&to| to < pinned) {
-                self.place_tab(index, to, true, None);
-            }
-        } else if let Some(id) = tab.group {
-            let range = ws.group_range(id);
-            let collapsed = ws.group(id).is_some_and(|g| g.collapsed);
-            let at_edge = if down { index + 1 == range.end } else { index == range.start };
-            if collapsed || at_edge {
-                self.place_tab(index, past(range), false, None);
-            } else {
-                self.place_tab(index, index.saturating_add_signed(delta), false, Some(id));
-            }
+        let same_list = |other: &Tab| other.pinned == tab.pinned && other.group == tab.group;
+        let neighbour = if delta > 0 {
+            (index + 1..ws.tabs.len()).find(|&i| same_list(&ws.tabs[i]))
         } else {
-            let Some(neighbour) = index.checked_add_signed(delta).filter(|&i| i >= pinned && i < ws.tabs.len())
-            else {
-                return;
-            };
-            match ws.tabs[neighbour].group {
-                Some(id) if ws.group(id).is_some_and(|g| g.collapsed) => {
-                    self.place_tab(index, past(ws.group_range(id)), false, None);
-                }
-                // Join the group at the near end.
-                Some(id) => self.place_tab(index, index, false, Some(id)),
-                None => self.place_tab(index, neighbour, false, None),
-            }
+            (0..index).rev().find(|&i| same_list(&ws.tabs[i]))
+        };
+        if let Some(to) = neighbour {
+            self.move_within(index, to);
         }
     }
 
-    /// Drops tab `from` where tab `to` is, taking on that tab's place: in
-    /// the pinned section, in its group or in neither, like dragging tabs
-    /// in Chrome.
-    fn move_tab(&mut self, from: usize, to: usize) {
-        let Some(target) = self.ws().tabs.get(to) else { return };
-        let (pinned, group) = (target.pinned, target.group);
-        self.place_tab(from, to, pinned, group);
-    }
-
-    /// Drops tab `from` on a group's header: from above it joins the group
-    /// (or skips past it when collapsed); from inside or below it ends up
-    /// above the group, outside it.
-    fn drop_on_group(&mut self, from: usize, id: GroupId) {
-        let ws = self.ws();
-        let Some(group) = ws.group(id) else { return };
-        let range = ws.group_range(id);
-        if from < range.start {
-            // Taking the tab out shifts the group up by one.
-            if group.collapsed {
-                self.place_tab(from, range.end - 1, false, None);
-            } else {
-                self.place_tab(from, range.start - 1, false, Some(id));
-            }
-        } else {
-            self.place_tab(from, range.start, false, None);
-        }
-    }
-
-    /// Takes tab `from` out and puts it back at index `to` (counted without
-    /// it), pinned, in `group`, or neither.
-    fn place_tab(&mut self, from: usize, to: usize, pinned: bool, group: Option<GroupId>) {
+    /// Moves tab `from` of the current workspace to where tab `to` is.
+    fn move_within(&mut self, from: usize, to: usize) {
         let ws = &mut self.workspaces[self.current];
-        let Some(tab) = ws.tabs.get(from) else { return };
-        let group = if pinned { None } else { group };
-        // Pinned tabs stay above the others.
-        let pinned_rest = ws.pinned_count() - usize::from(tab.pinned);
-        let last = ws.tabs.len() - 1;
-        let to = if pinned { to.min(pinned_rest) } else { to.clamp(pinned_rest, last) };
-        if to == from && tab.pinned == pinned && tab.group == group {
+        if from == to || from >= ws.tabs.len() || to >= ws.tabs.len() {
             return;
         }
-        let affects_pins = tab.pinned || pinned;
         let active_id = ws.tabs[ws.active].id;
-        let mut tab = ws.tabs.remove(from);
-        tab.pinned = pinned;
-        tab.group = group;
+        let tab = ws.tabs.remove(from);
+        let pinned = tab.pinned;
         ws.tabs.insert(to, tab);
         ws.active = ws.tabs.iter().position(|t| t.id == active_id).unwrap_or(0);
-        ws.prune_groups();
         self.clamp_list_scroll(true);
-        if affects_pins {
+        if pinned {
             self.save();
         }
     }
 
-    /// Pins a tab (to the end of the pinned section, out of its group) or
-    /// unpins it (to the top of the regular tabs).
-    fn toggle_pin(&mut self, index: usize) {
+    /// Drops tab `from` of the current workspace onto tab `to`, taking on
+    /// its place: pinned, in its group or in neither, like dragging tabs in
+    /// Chrome.
+    fn move_tab(&mut self, from: usize, to: usize) {
         let ws = self.ws();
-        let Some(tab) = ws.tabs.get(index) else { return };
+        let (Some(tab), Some(target)) = (ws.tabs.get(from), ws.tabs.get(to)) else { return };
+        if from == to {
+            return;
+        }
+        let (id, target_id, pinned, group) = (tab.id, target.id, target.pinned, target.group);
+        self.set_membership(self.current, from, pinned, group);
+        let ws = self.ws();
+        let position = |id| ws.tabs.iter().position(|t| t.id == id);
+        if let (Some(from), Some(to)) = (position(id), position(target_id)) {
+            self.move_within(from, to);
+        }
+    }
+
+    /// Pins tab `t` of workspace `w`, puts it in `group`, or neither.
+    /// Pinning takes it out of its group to the end of the pinned tabs;
+    /// unpinning puts it first among the others.
+    fn set_membership(&mut self, w: usize, t: usize, pinned: bool, group: Option<GroupId>) {
+        let Some(ws) = self.workspaces.get_mut(w) else { return };
+        let Some(tab) = ws.tabs.get_mut(t) else { return };
+        let group = if pinned { None } else { group };
+        let pin_changed = tab.pinned != pinned;
+        tab.group = group;
+        if pin_changed {
+            let active_id = ws.tabs.get(ws.active).map(|tab| tab.id);
+            let mut tab = ws.tabs.remove(t);
+            tab.pinned = pinned;
+            let at = ws.pinned_count();
+            ws.tabs.insert(at, tab);
+            ws.active = ws.tabs.iter().position(|tab| Some(tab.id) == active_id).unwrap_or(0);
+        }
+        self.prune_groups();
+        self.clamp_list_scroll(true);
+        if pin_changed {
+            self.save();
+        }
+    }
+
+    /// Pins a tab (out of its group) or unpins it.
+    fn toggle_pin(&mut self, index: usize) {
+        let Some(tab) = self.ws().tabs.get(index) else { return };
         let pin = !tab.pinned;
         let message = format!("{} {}", if pin { "pinned" } else { "unpinned" }, tab.title());
-        let to = ws.pinned_count() - usize::from(tab.pinned);
-        self.place_tab(index, to, pin, None);
+        self.set_membership(self.current, index, pin, None);
         self.set_status(message);
     }
 
@@ -1238,72 +1287,88 @@ impl App {
 
     // ── Tab groups ──────────────────────────────────────────────────────
 
+    pub fn group(&self, id: GroupId) -> Option<&Group> {
+        self.groups.iter().find(|g| g.id == id)
+    }
+
+    fn group_mut(&mut self, id: GroupId) -> Option<&mut Group> {
+        self.groups.iter_mut().find(|g| g.id == id)
+    }
+
+    /// The tabs (workspace, tab) in group `id`, by workspace and then in
+    /// each workspace's order.
+    pub fn members(&self, id: GroupId) -> Vec<(usize, usize)> {
+        let mut members = Vec::new();
+        for (w, ws) in self.workspaces.iter().enumerate() {
+            for (t, tab) in ws.tabs.iter().enumerate() {
+                if tab.group == Some(id) {
+                    members.push((w, t));
+                }
+            }
+        }
+        members
+    }
+
+    /// `members`, minus other workspaces' with `current_only`.
+    fn shown_members(&self, id: GroupId) -> Vec<(usize, usize)> {
+        let mut members = self.members(id);
+        if self.current_only {
+            members.retain(|&(w, _)| w == self.current);
+        }
+        members
+    }
+
+    /// Forgets groups whose last tab has gone.
+    fn prune_groups(&mut self) {
+        let workspaces = &self.workspaces;
+        self.groups.retain(|g| workspaces.iter().flat_map(|ws| &ws.tabs).any(|tab| tab.group == Some(g.id)));
+    }
+
     /// Starts a group holding the active tab, in the first colour no other
-    /// group in the workspace has.
+    /// group has.
     fn new_group(&mut self, name: String) {
         let id = self.next_group_id;
         self.next_group_id += 1;
         let colors = theme::palette().group_colors().len();
-        let ws = self.ws_mut();
         let color = (1..colors)
             .chain([0])
-            .find(|c| !ws.groups.iter().any(|g| g.color == *c))
-            .unwrap_or(ws.groups.len() % colors);
-        ws.groups.push(Group { id, name, color, collapsed: false, last_active: None });
-        let index = ws.active;
-        let Some(tab) = ws.tabs.get(index) else { return };
-        // A pinned tab moves to the top of the regular tabs; one from another
-        // group moves out past the end of that group.
-        let to = match (tab.pinned, tab.group) {
-            (true, _) => ws.pinned_count() - 1,
-            (false, Some(old)) => ws.group_range(old).end - 1,
-            (false, None) => index,
-        };
-        self.place_tab(index, to, false, Some(id));
+            .find(|c| !self.groups.iter().any(|g| g.color == *c))
+            .unwrap_or(self.groups.len() % colors);
+        self.groups.push(Group { id, name, color, collapsed: false, last_active: None });
+        let active = self.ws().active;
+        self.set_membership(self.current, active, false, Some(id));
     }
 
-    /// Moves the active tab to the end of group `id`.
+    /// Puts the active tab in group `id`, whichever workspaces its other
+    /// tabs are from.
     fn add_to_group(&mut self, id: GroupId) {
-        let ws = self.ws();
-        let index = ws.active;
-        if ws.tabs.get(index).is_none_or(|t| t.group == Some(id)) {
-            return;
-        }
-        let range = ws.group_range(id);
-        let to = if index < range.start { range.end - 1 } else { range.end };
-        self.place_tab(index, to, false, Some(id));
+        let active = self.ws().active;
+        self.set_membership(self.current, active, false, Some(id));
     }
 
-    /// Takes the active tab out of its group, at the group's nearer end.
+    /// Takes the active tab out of its group, back among its workspace's.
     fn remove_from_group(&mut self) {
-        let ws = self.ws();
-        let index = ws.active;
-        let Some(id) = ws.tabs.get(index).and_then(|t| t.group) else {
+        if self.active_tab().and_then(|t| t.group).is_none() {
             self.set_status("this tab isn't in a group");
             return;
-        };
-        let range = ws.group_range(id);
-        let to = if index == range.start { index } else { range.end - 1 };
-        self.place_tab(index, to, false, None);
+        }
+        let active = self.ws().active;
+        self.set_membership(self.current, active, false, None);
     }
 
-    /// Dissolves a group; its tabs stay where they are.
+    /// Dissolves a group; its tabs go back among their workspaces'.
     fn ungroup(&mut self, id: GroupId) {
-        let ws = &mut self.workspaces[self.current];
-        for tab in ws.tabs.iter_mut().filter(|t| t.group == Some(id)) {
-            tab.group = None;
+        for tab in self.workspaces.iter_mut().flat_map(|ws| &mut ws.tabs) {
+            if tab.group == Some(id) {
+                tab.group = None;
+            }
         }
-        ws.prune_groups();
+        self.prune_groups();
         self.clamp_list_scroll(false);
     }
 
     fn toggle_group(&mut self, id: GroupId) {
-        self.toggle_group_in(self.current, id);
-    }
-
-    fn toggle_group_in(&mut self, ws_index: usize, id: GroupId) {
-        let Some(ws) = self.workspaces.get_mut(ws_index) else { return };
-        if let Some(group) = ws.group_mut(id) {
+        if let Some(group) = self.group_mut(id) {
             group.collapsed = !group.collapsed;
         }
         self.clamp_list_scroll(false);
@@ -1311,7 +1376,7 @@ impl App {
 
     fn cycle_group_color(&mut self, id: GroupId) {
         let colors = theme::palette().group_colors().len();
-        if let Some(group) = self.ws_mut().group_mut(id) {
+        if let Some(group) = self.group_mut(id) {
             group.color = (group.color + 1) % colors;
         }
     }
@@ -1326,12 +1391,12 @@ impl App {
         group
     }
 
-    /// Rows of the group picker: existing groups matching the query, and a
-    /// new group named after it (first when nothing is typed yet).
+    /// Rows of the group picker: every group matching the query, and a new
+    /// group named after it (first when nothing is typed yet).
     pub fn group_entries(&self) -> Vec<GroupEntry> {
         let query = self.input.trim();
         let lower = query.to_lowercase();
-        let groups = self.ws().groups_in_order();
+        let groups = &self.groups;
         let matching = groups.iter().filter(|g| g.name.to_lowercase().contains(&lower)).map(|g| GroupEntry::Group(g.id));
         let new = GroupEntry::New(query.to_owned());
         if query.is_empty() {
@@ -1357,7 +1422,7 @@ impl App {
                     tab.process_name(),
                     tab.cwd().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
                     ws.name,
-                    tab.group.and_then(|id| ws.group(id)).map_or("", |g| g.name.as_str()),
+                    tab.group.and_then(|id| self.group(id)).map_or("", |g| g.name.as_str()),
                 )
                 .to_lowercase();
                 if terms.iter().all(|term| haystack.contains(term)) {
@@ -1451,20 +1516,18 @@ impl App {
     }
 }
 
-fn save_workspace(ws: &Workspace) -> SavedWorkspace {
+fn save_workspace(ws: &Workspace, groups: &[Group]) -> SavedWorkspace {
     // Not opened since the last start: its tabs stay as they were saved.
     if let Some(dormant) = &ws.dormant {
         return SavedWorkspace {
             path: ws.path.clone(),
             name: ws.custom_name.clone(),
             tabs: dormant.tabs.clone(),
-            groups: dormant.groups.clone(),
+            groups: Vec::new(),
             active: dormant.active,
             pinned: Vec::new(),
         };
     }
-    // Groups in the order they appear, numbered for the tabs to refer to.
-    let groups = ws.groups_in_order();
     let tabs = ws
         .tabs
         .iter()
@@ -1479,10 +1542,7 @@ fn save_workspace(ws: &Workspace) -> SavedWorkspace {
         path: ws.path.clone(),
         name: ws.custom_name.clone(),
         tabs,
-        groups: groups
-            .iter()
-            .map(|g| SavedGroup { name: g.name.clone(), color: g.color, collapsed: g.collapsed })
-            .collect(),
+        groups: Vec::new(),
         active: ws.active,
         pinned: Vec::new(),
     }

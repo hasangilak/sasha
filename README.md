@@ -43,9 +43,10 @@ link to open it.
 
 ## What it does
 
-- **Workspaces**: each folder has its own tabs. The sidebar stacks every workspace that has
-  terminals open.
-- **Tab groups**: named, coloured and collapsible, like in Chrome.
+- **Workspaces** sort terminals by folder: each folder has its own tabs, and the sidebar
+  stacks every workspace that has terminals open.
+- **Groups** sort them by task: a named, coloured, collapsible set of terminals from any
+  folders, listed at the top of the sidebar.
 - **Sessions that last**: close the window or detach, then run `sasha` again and everything is
   still there. After a restart, your tabs come back as fresh shells.
 - **Notifications** when a background tab finishes, rings the bell, or goes quiet (say, Claude

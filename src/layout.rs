@@ -31,8 +31,6 @@ pub enum Hit {
     WorkspaceName,
     /// A tab (workspace, tab) of another workspace, in the tab sidebar.
     OtherTab(usize, usize),
-    /// A group's header (workspace, group) of another workspace.
-    OtherGroup(usize, GroupId),
     Toggle,
     Search,
     Tab(usize),
@@ -49,17 +47,16 @@ pub enum Hit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListItem {
     Tab(usize),
-    /// A tab group's header, above its tabs.
-    Group(GroupId),
     /// The line between pinned and regular tabs.
     Separator,
     NewTab,
 }
 
-/// A row of the tab sidebar, which stacks every workspace's tabs: a
-/// workspace's heading, one of its list items, or the gap before the next.
+/// A row of the tab sidebar: a group's header or a workspace's heading,
+/// a tab (or separator, or "+") of a workspace, or a gap between sections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
+    Group(GroupId),
     Workspace(usize),
     Item(usize, ListItem),
     Gap,
@@ -261,8 +258,7 @@ impl Layout {
                 }
             }
             Row::Item(w, ListItem::Tab(index)) => Some(Hit::OtherTab(w, index)),
-            Row::Item(w, ListItem::Group(id)) if w == current => Some(Hit::Group(id)),
-            Row::Item(w, ListItem::Group(id)) => Some(Hit::OtherGroup(w, id)),
+            Row::Group(id) => Some(Hit::Group(id)),
             Row::Item(_, ListItem::NewTab) => Some(Hit::NewTab),
             Row::Item(_, ListItem::Separator) | Row::Gap => None,
         }

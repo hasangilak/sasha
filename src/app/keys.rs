@@ -179,7 +179,7 @@ impl App {
     }
 
     pub(super) fn start_group_rename(&mut self, id: GroupId) {
-        let Some(group) = self.ws().group(id) else { return };
+        let Some(group) = self.group(id) else { return };
         self.input = group.name.clone();
         self.renaming = Renaming::Group(id);
         if self.collapsed {
@@ -203,7 +203,7 @@ impl App {
         self.mode = Mode::Normal;
         match std::mem::replace(&mut self.renaming, Renaming::Tab) {
             Renaming::Group(id) => {
-                if let Some(group) = self.ws_mut().group_mut(id) {
+                if let Some(group) = self.group_mut(id) {
                     group.name = name;
                 }
                 return;
