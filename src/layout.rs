@@ -45,7 +45,7 @@ pub enum Hit {
     CloseWorkspace(usize),
     /// The – beside it.
     MinimizeWorkspace(usize),
-    /// The keep-awake button in the sidebar header.
+    /// The keep-awake button at the top of the workspace bar.
     Awake,
     /// A port (by position) in the ports bar.
     Port(usize),
@@ -166,21 +166,27 @@ impl Layout {
 
     /// Where the workspace's name sits in the header, between the buttons.
     pub fn workspace_name(&self) -> Rect {
-        let awake = self.awake_button();
-        if awake.is_empty() {
-            return Rect::default();
-        }
-        let x = self.toggle_button().right() + 1;
-        Rect::new(x, self.header.y, awake.x.saturating_sub(x + 1), 1)
-    }
-
-    /// Left of the search button.
-    pub fn awake_button(&self) -> Rect {
         let search = self.search_button();
         if search.is_empty() {
             return Rect::default();
         }
-        Rect::new(search.x - 3, search.y, 3, search.height)
+        let x = self.toggle_button().right() + 1;
+        Rect::new(x, self.header.y, search.x.saturating_sub(x + 1), 1)
+    }
+
+    /// The keep-awake button, at the top of the workspace bar, above the
+    /// workspaces (when the bar is tall enough to spare the rows).
+    pub fn awake_button(&self) -> Rect {
+        if self.activity.is_empty() || self.activity.height < 8 {
+            return Rect::default();
+        }
+        Rect::new(self.activity.x + 1, self.activity.y, self.activity.width.saturating_sub(2), 1)
+    }
+
+    /// First row for workspace badges, below the keep-awake button and a
+    /// rule.
+    fn activity_items_top(&self) -> u16 {
+        if self.awake_button().is_empty() { self.activity.y } else { self.activity.y + 2 }
     }
 
     pub fn search_button(&self) -> Rect {
@@ -224,7 +230,7 @@ impl Layout {
     }
 
     fn activity_capacity(&self) -> usize {
-        (self.activity_items_bottom() - self.activity.y).div_ceil(ACTIVITY_ROW) as usize
+        self.activity_items_bottom().saturating_sub(self.activity_items_top()).div_ceil(ACTIVITY_ROW) as usize
     }
 
     /// Screen row of activity item `item` (workspaces, then the add button).
@@ -233,7 +239,7 @@ impl Layout {
         if offset >= self.activity_capacity() {
             return None;
         }
-        Some(self.activity.y + offset as u16 * ACTIVITY_ROW)
+        Some(self.activity_items_top() + offset as u16 * ACTIVITY_ROW)
     }
 
     pub fn badge(&self, row: u16) -> Rect {
@@ -318,9 +324,6 @@ impl Layout {
         if self.search_button().contains(pos) {
             return Some(Hit::Search);
         }
-        if self.awake_button().contains(pos) {
-            return Some(Hit::Awake);
-        }
         if self.workspace_name().contains(pos) {
             return Some(Hit::WorkspaceName);
         }
@@ -358,7 +361,10 @@ impl Layout {
         if self.help_button().contains(pos) {
             return Some(Hit::HelpButton);
         }
-        let offset = pos.y - self.activity.y;
+        if self.awake_button().contains(pos) {
+            return Some(Hit::Awake);
+        }
+        let offset = pos.y.checked_sub(self.activity_items_top())?;
         if !offset.is_multiple_of(ACTIVITY_ROW) || pos.y >= self.activity_items_bottom() {
             return None;
         }

@@ -60,7 +60,8 @@ link to open it, and drag any bar's edge to resize it.
   [GitHub CLI](https://cli.github.com), signed in.
 - **Ports**: a slim bar lists what the programs in your tabs listen on; click one to see which
   tab runs it, jump there, or force-kill it.
-- **Keep awake**: while it's on, the computer won't sleep, even with the window closed.
+- **Keep awake**: click ☾ at the top of the workspace bar (☀ while it's on) and the computer
+  won't sleep or hibernate, even with the window closed.
 - **Your terminal's colours**, transparency included.
 
 Use another prefix with `sasha --prefix ctrl-a`. Turn notifications off with `SASHA_NOTIFY=0`.

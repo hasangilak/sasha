@@ -77,6 +77,8 @@ pub fn render(buf: &mut Buffer, app: &App) {
         button(buf, layout, help.y, "?", "keys & help", app.hover == Some(Hit::HelpButton));
     }
 
+    render_awake(buf, app);
+
     // The edge you drag to resize the bar.
     let divider = layout.activity_divider;
     let hot = app.hover == Some(Hit::ActivityDivider) || app.dragging_activity_divider();
@@ -84,6 +86,32 @@ pub fn render(buf: &mut Buffer, app: &App) {
     for y in divider.top()..divider.bottom() {
         buf.set_string(divider.x, y, "│", style);
     }
+}
+
+/// The keep-awake toggle at the top: ☀ while the computer is kept awake,
+/// ☾ while it may sleep; a rule under it sets it apart from the workspaces.
+fn render_awake(buf: &mut Buffer, app: &App) {
+    let layout = &app.layout;
+    let rect = layout.awake_button();
+    if rect.is_empty() {
+        return;
+    }
+    let p = theme::palette();
+    let on = app.awake.is_some();
+    let hovered = app.hover == Some(Hit::Awake);
+    let bg = if hovered { p.button_hover_bg } else { BG };
+    buf.set_style(rect, Style::new().bg(bg));
+    let badge = layout.badge(rect.y);
+    let (glyph, color) = if on { ("☀", p.yellow) } else { ("☾", if hovered { p.text } else { p.text_dim }) };
+    let glyph_style = Style::new().fg(color).bg(bg).add_modifier(Modifier::BOLD);
+    buf.set_string(badge.x + badge.width.saturating_sub(1) / 2, rect.y, glyph, glyph_style);
+    let label = layout.activity_label(rect.y);
+    if !label.is_empty() {
+        let (text, color) = if on { ("keeping awake", p.yellow) } else { ("keep awake", p.text_dim) };
+        buf.set_stringn(label.x, rect.y, text, label.width as usize, Style::new().fg(color).bg(bg));
+    }
+    let rule = "─".repeat(layout.activity_divider.x.saturating_sub(layout.activity.x) as usize);
+    buf.set_string(layout.activity.x, rect.y + 1, rule, Style::new().fg(p.border).bg(BG));
 }
 
 /// A badge-sized button, labelled when the bar is wide enough.
@@ -121,6 +149,14 @@ pub fn render_tooltip(buf: &mut Buffer, app: &App) {
             (row, " add a folder as a workspace ".to_owned())
         }
         Some(Hit::HelpButton) => (layout.help_button().y, " keys & help ".to_owned()),
+        Some(Hit::Awake) => {
+            let text = if app.awake.is_some() {
+                " keeping the computer awake · click to let it sleep "
+            } else {
+                " keep the computer awake (no sleep, no hibernate) · ^B C "
+            };
+            (layout.awake_button().y, text.to_owned())
+        }
         _ => return,
     };
     let x = layout.activity.right();
