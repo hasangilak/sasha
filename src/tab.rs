@@ -5,7 +5,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -89,7 +89,9 @@ pub struct Tab {
     /// Foreground process group at the time the OSC title was set.
     title_owner: Option<i32>,
     cwd: Option<PathBuf>,
-    pub last_output: Instant,
+    /// Last time the tab produced output that wasn't just a resize redraw.
+    pub last_activity: Instant,
+    resized_at: Instant,
     /// Output arrived while the tab was in the background.
     pub unseen: bool,
     pub bell: bool,
@@ -165,7 +167,8 @@ impl Tab {
             fg_pgid: shell_pid,
             title_owner: None,
             cwd: cwd.map(Path::to_path_buf),
-            last_output: Instant::now(),
+            last_activity: Instant::now(),
+            resized_at: Instant::now(),
             unseen: false,
             bell: false,
         };
@@ -191,6 +194,12 @@ impl Tab {
         }
         self.parser.screen_mut().set_size(rows, cols);
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        self.resized_at = Instant::now();
+    }
+
+    /// Output right after a resize is usually just the program redrawing.
+    pub fn recently_resized(&self) -> bool {
+        self.resized_at.elapsed() < Duration::from_millis(500)
     }
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {
@@ -201,7 +210,6 @@ impl Tab {
     /// payload (base64) if the child asked to set the clipboard.
     pub fn process(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
         self.parser.process(bytes);
-        self.last_output = Instant::now();
 
         let cb = self.parser.callbacks_mut();
         if !cb.replies.is_empty() {

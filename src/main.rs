@@ -1,14 +1,18 @@
 mod app;
 mod input;
 mod procinfo;
+mod sidebar;
 mod tab;
+mod theme;
 mod ui;
 
 use std::io::stdout;
 
 use anyhow::Result;
 use crossterm::cursor::{SetCursorStyle, Show};
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -31,7 +35,7 @@ fn main() -> Result<()> {
 
 fn setup_terminal() -> Result<DefaultTerminal> {
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
     Ok(DefaultTerminal::new(CrosstermBackend::new(stdout()))?)
 }
 
@@ -39,6 +43,7 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(
         stdout(),
+        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen,
         SetCursorStyle::DefaultUserShape,

@@ -8,10 +8,31 @@ pub fn name(pid: i32) -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: the buffer is valid for `buf.len()` bytes and proc_name writes at most that many.
     let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    if n <= 0 {
+    if n > 0 {
+        return Some(String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+    }
+
+    // proc_name is refused for other users' processes (e.g. setuid `top`),
+    // but the short BSD info is readable for any process.
+    // SAFETY: proc_bsdshortinfo is plain old data, all-zero is a valid value.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: we pass a pointer to a correctly sized, writable struct.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+            size,
+        )
+    };
+    if n != size {
         return None;
     }
-    Some(String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    let comm = info.pbsi_comm.map(|c| c as u8);
+    let len = comm.iter().position(|&b| b == 0).unwrap_or(comm.len());
+    (len > 0).then(|| String::from_utf8_lossy(&comm[..len]).into_owned())
 }
 
 #[cfg(target_os = "macos")]

@@ -4,9 +4,12 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::app::App;
+use crate::sidebar;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let pane = app.pane();
+    sidebar::render(frame.buffer_mut(), app);
+
+    let pane = app.layout.pane;
     let Some(tab) = app.active_tab() else { return };
     let screen = tab.screen();
     render_screen(frame.buffer_mut(), pane, screen);
