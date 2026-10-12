@@ -16,6 +16,7 @@ use ratatui::style::Color;
 use crate::clipboard;
 use crate::config::Config;
 use crate::layout::{self, Hit, Layout};
+use crate::store::{self, SavedWorkspace, State};
 use crate::tab::{Tab, TabId};
 use crate::workspace::{self, Workspace, WorkspaceId};
 use crate::{theme, ui};
@@ -164,6 +165,14 @@ impl App {
         };
         app.relayout(size);
 
+        let (state, warning) = store::load();
+        for saved in state.workspaces {
+            app.add_workspace(saved.path);
+        }
+        if let Some(warning) = warning {
+            app.set_status(warning);
+        }
+
         // Open a terminal where sasha was started, in the workspace that
         // contains that folder (or a new one for it).
         let launch = std::env::current_dir()
@@ -172,7 +181,11 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("/"));
         let index = match app.workspace_for(&launch) {
             Some(index) => index,
-            None => app.add_workspace(launch.clone()),
+            None => {
+                let index = app.add_workspace(launch.clone());
+                app.save();
+                index
+            }
         };
         app.current = index;
         let tab = app.spawn_tab(&launch)?;
@@ -340,7 +353,18 @@ impl App {
                 dirty = false;
             }
         }
+        self.save();
         Ok(())
+    }
+
+    /// Writes the workspaces to disk; failures show up in the footer.
+    fn save(&mut self) {
+        let state = State {
+            workspaces: self.workspaces.iter().map(|ws| SavedWorkspace { path: ws.path.clone() }).collect(),
+        };
+        if let Err(err) = store::save(&state) {
+            self.set_status(format!("couldn't save workspaces: {err:#}"));
+        }
     }
 
     /// Recomputes the layout and keeps every pty sized to the pane.
@@ -449,6 +473,7 @@ impl App {
         }
         let current = self.current;
         self.switch_workspace(current);
+        self.save();
         self.set_status(format!("removed workspace {}", removed.name));
     }
 

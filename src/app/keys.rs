@@ -221,6 +221,7 @@ impl App {
                     Some(PickerEntry::Workspace(index)) => self.switch_workspace(index),
                     Some(PickerEntry::AddFolder(path)) => {
                         let index = self.add_workspace(path);
+                        self.save();
                         self.switch_workspace(index);
                     }
                     None => {}

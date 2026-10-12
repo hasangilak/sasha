@@ -6,6 +6,7 @@ mod input;
 mod layout;
 mod procinfo;
 mod sidebar;
+mod store;
 mod tab;
 mod theme;
 mod ui;
