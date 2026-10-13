@@ -99,6 +99,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("middle-click ×", "close tab"),
         ("right-click tab", "pin / unpin (click ⚲ to unpin)"),
         ("click group", "collapse / expand"),
+        ("group + ×", "new terminal in it / delete the group"),
         ("2×-click group", "rename it"),
         ("right-click group", "change its colour"),
         ("drag tab to group", "add it / take it out"),
@@ -266,7 +267,7 @@ fn render_groups(frame: &mut Frame, app: &App) {
         placeholder: "name a new group, or pick one",
         empty: "",
         rows,
-        hint: Some(("⏎ add tab · ^D ungroup · esc".to_owned(), p.text_dim)),
+        hint: Some(("⏎ add tab · ^D delete group · esc".to_owned(), p.text_dim)),
     });
 }
 

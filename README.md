@@ -51,7 +51,8 @@ link to open it, and drag any bar's edge to resize it.
   (`cd` into another workspace's folder and the terminal moves there), and the sidebar stacks
   every workspace that has terminals open.
 - **Groups** sort them by task: a named, coloured, collapsible set of terminals from any
-  folders, listed at the top of the sidebar.
+  folders, listed at the top of the sidebar. A group stays, even empty, until you delete it
+  (`×` on its header; `+` opens a terminal in it).
 - **Sessions that last**: close the window or detach, then run `sasha` again and everything is
   still there. After a restart, your tabs come back as fresh shells.
 - **Notifications** when a background tab finishes, rings the bell, or goes quiet (say, Claude

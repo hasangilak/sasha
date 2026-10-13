@@ -383,7 +383,7 @@ impl App {
             }
             KeyCode::Char('d') if ctrl => {
                 if let Some(GroupEntry::Group(id)) = selected {
-                    self.ungroup(id);
+                    self.delete_group(id);
                     self.picker_selected = self.picker_selected.min(self.group_entries().len().saturating_sub(1));
                 }
             }

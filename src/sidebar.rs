@@ -34,7 +34,7 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
                 continue;
             }
             Row::Group(id) => {
-                render_group(buf, app, id, pill, app.hover == Some(Hit::Group(id)));
+                render_group(buf, app, id, pill);
                 continue;
             }
             Row::Workspace(w) => {
@@ -253,9 +253,11 @@ fn render_tab(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, state: TabStat
 /// A group's header: a chip with its name in its colour, like Chrome's.
 /// A collapsed group also shows how many tabs it hides and whether any of
 /// them is busy or has news.
-fn render_group(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect, hovered: bool) {
+fn render_group(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect) {
     let p = theme::palette();
     let Some(group) = app.group(id) else { return };
+    let (new_hot, delete_hot) = (app.hover == Some(Hit::GroupNewTab(id)), app.hover == Some(Hit::GroupDelete(id)));
+    let hovered = new_hot || delete_hot || app.hover == Some(Hit::Group(id));
     let bg = if hovered { p.hover_bg } else { BG };
     buf.set_style(pill, Style::new().bg(bg));
     let chip = Style::new().fg(p.on_accent).bg(group.color()).add_modifier(Modifier::BOLD);
@@ -268,8 +270,19 @@ fn render_group(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect, hovered: b
     let dim = Style::new().fg(if hovered { p.text } else { p.text_dim }).bg(bg);
     let mut right = pill.right() - 2;
     buf.set_string(right, pill.y, if group.collapsed { "▸" } else { "▾" }, dim);
-    if group.collapsed {
-        let tabs: Vec<&Tab> = app.members(id).into_iter().map(|(w, t)| &app.workspaces[w].tabs[t]).collect();
+    let members = app.members(id);
+    if hovered {
+        // + opens a terminal in the group, × deletes the group.
+        right -= 4;
+        let new = Style::new().fg(if new_hot { p.accent } else { p.text }).bg(bg);
+        buf.set_string(right, pill.y, "+", new);
+        let delete = Style::new().fg(if delete_hot { p.red } else { p.text }).bg(bg);
+        buf.set_string(right + 2, pill.y, "×", delete);
+    } else if members.is_empty() {
+        right -= 6;
+        buf.set_string(right, pill.y, "empty", dim);
+    } else if group.collapsed {
+        let tabs: Vec<&Tab> = members.into_iter().map(|(w, t)| &app.workspaces[w].tabs[t]).collect();
         let count = tabs.len().to_string();
         right -= count.len() as u16 + 1;
         buf.set_string(right, pill.y, &count, dim);

@@ -75,7 +75,10 @@ impl App {
             (MouseEventKind::Down(MouseButton::Right), Some(Hit::Tab(index) | Hit::Close(index))) => {
                 self.toggle_pin(index);
             }
-            (MouseEventKind::Down(MouseButton::Right), Some(Hit::Group(id))) => self.cycle_group_color(id),
+            (
+                MouseEventKind::Down(MouseButton::Right),
+                Some(Hit::Group(id) | Hit::GroupNewTab(id) | Hit::GroupDelete(id)),
+            ) => self.cycle_group_color(id),
             (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(_)) => {
                 let down = mouse.kind == MouseEventKind::ScrollDown;
                 let step = |scroll: usize| if down { scroll + 1 } else { scroll.saturating_sub(1) };
@@ -124,6 +127,8 @@ impl App {
             Hit::Search => self.start_search(),
             Hit::Awake => self.toggle_awake(),
             Hit::CloseWorkspace(w) => self.close_section(w),
+            Hit::GroupNewTab(id) => self.new_tab_in(id),
+            Hit::GroupDelete(id) => self.delete_group(id),
             Hit::MinimizeWorkspace(w) => self.minimize_section(w),
             Hit::Port(index) => self.open_ports(index),
             Hit::Pr(index) => self.open_bar_pr(index),
@@ -190,7 +195,9 @@ impl App {
                 match hit {
                     Some(Hit::Tab(to) | Hit::Close(to)) => self.move_tab(from, to),
                     // Onto a group, or a tab in one: into that group.
-                    Some(Hit::Group(group)) => self.set_membership(self.current, from, false, Some(group)),
+                    Some(Hit::Group(group) | Hit::GroupNewTab(group) | Hit::GroupDelete(group)) => {
+                        self.set_membership(self.current, from, false, Some(group));
+                    }
                     Some(Hit::OtherTab(w, t)) => {
                         if let Some(group) = self.workspaces[w].tabs[t].group {
                             self.set_membership(self.current, from, false, Some(group));

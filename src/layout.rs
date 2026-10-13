@@ -66,6 +66,10 @@ pub enum Hit {
     Close(usize),
     /// A tab group's header.
     Group(GroupId),
+    /// The + on a group's header: a new terminal in the group.
+    GroupNewTab(GroupId),
+    /// The × on a group's header: deletes the group.
+    GroupDelete(GroupId),
     NewTab,
     Divider,
     Pane,
@@ -351,7 +355,15 @@ impl Layout {
                 }
             }
             Row::Item(w, ListItem::Tab(index)) => Some(Hit::OtherTab(w, index)),
-            Row::Group(id) => Some(Hit::Group(id)),
+            // + and × left of a group header's chevron.
+            Row::Group(id) => {
+                let from_right = self.pill(y).right().saturating_sub(x);
+                match from_right {
+                    5..=6 if !self.collapsed => Some(Hit::GroupNewTab(id)),
+                    3..=4 if !self.collapsed => Some(Hit::GroupDelete(id)),
+                    _ => Some(Hit::Group(id)),
+                }
+            }
             Row::Item(_, ListItem::NewTab) => Some(Hit::NewTab),
             Row::Item(_, ListItem::Separator) | Row::Gap => None,
         }

@@ -368,7 +368,6 @@ impl App {
                 ws.dormant = Some(saved);
             }
         }
-        self.prune_groups();
         self.current = state.current.min(self.workspaces.len().saturating_sub(1));
         // Keeping the computer awake survives restarts (and updates).
         if state.keep_awake {
@@ -663,7 +662,7 @@ impl App {
             ),
             Mode::Groups => (
                 Some((if short { "GRP" } else { "GROUP" }, p.cyan)),
-                "⏎ add tab · ^D ungroup".to_owned(),
+                "⏎ add tab · ^D delete".to_owned(),
             ),
             Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
             Mode::Panel => match self.panel {
@@ -1136,7 +1135,6 @@ impl App {
         if index < ws.active || ws.active >= ws.tabs.len() {
             ws.active = ws.active.saturating_sub(1);
         }
-        self.prune_groups();
         if was_pinned {
             self.save();
         }
@@ -1163,7 +1161,10 @@ impl App {
         let mut rows = Vec::new();
         for group in &self.groups {
             let members = self.shown_members(group.id);
-            if members.is_empty() {
+            // Empty groups stay (only the user deletes them), but a group
+            // whose tabs are all in other workspaces stays out of
+            // `current_only`.
+            if members.is_empty() && !self.members(group.id).is_empty() {
                 continue;
             }
             rows.push(Row::Group(group.id));
@@ -1423,7 +1424,6 @@ impl App {
             ws.tabs.insert(at, tab);
             ws.active = ws.tabs.iter().position(|tab| Some(tab.id) == active_id).unwrap_or(0);
         }
-        self.prune_groups();
         self.clamp_list_scroll(true);
         if pin_changed {
             self.save();
@@ -1509,12 +1509,6 @@ impl App {
         members
     }
 
-    /// Forgets groups whose last tab has gone.
-    fn prune_groups(&mut self) {
-        let workspaces = &self.workspaces;
-        self.groups.retain(|g| workspaces.iter().flat_map(|ws| &ws.tabs).any(|tab| tab.group == Some(g.id)));
-    }
-
     /// Starts a group in the first colour no other group has. It takes the
     /// active tab, unless that tab is already in a group: then it starts with
     /// a new terminal instead, so the other group keeps its tabs.
@@ -1530,7 +1524,7 @@ impl App {
         if self.active_tab().is_some_and(|t| t.group.is_some()) {
             if let Err(err) = self.open_tab(Some(id)) {
                 self.set_status(format!("can't start a shell: {err}"));
-                self.prune_groups();
+                self.groups.retain(|g| g.id != id);
             }
             return;
         }
@@ -1555,15 +1549,28 @@ impl App {
         self.set_membership(self.current, active, false, None);
     }
 
-    /// Dissolves a group; its tabs go back among their workspaces'.
-    fn ungroup(&mut self, id: GroupId) {
+    /// Deletes a group; its terminals keep running, out of any group.
+    /// Groups only ever go this way: closing their last terminal leaves
+    /// them, empty.
+    fn delete_group(&mut self, id: GroupId) {
         for tab in self.workspaces.iter_mut().flat_map(|ws| &mut ws.tabs) {
             if tab.group == Some(id) {
                 tab.group = None;
             }
         }
-        self.prune_groups();
+        if let Some(index) = self.groups.iter().position(|g| g.id == id) {
+            let group = self.groups.remove(index);
+            let name = if group.name.is_empty() { "the group".to_owned() } else { group.name };
+            self.set_status(format!("deleted {name} · its terminals stay open"));
+        }
         self.clamp_list_scroll(false);
+    }
+
+    /// Opens a terminal in group `id`, in the current workspace.
+    fn new_tab_in(&mut self, id: GroupId) {
+        if let Err(err) = self.open_tab(Some(id)) {
+            self.set_status(format!("can't start a shell: {err}"));
+        }
     }
 
     fn toggle_group(&mut self, id: GroupId) {
