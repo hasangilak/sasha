@@ -7,7 +7,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::app::{App, Loadable};
 use crate::layout::Hit;
-use crate::sidebar::render_faded;
+use crate::sidebar::{SPINNER, render_faded};
 use crate::theme::{self, BG};
 
 pub fn render(buf: &mut Buffer, app: &App) {
@@ -109,6 +109,14 @@ fn render_prs(buf: &mut Buffer, app: &App) {
         say(buf, area, x, first, width, "this tab isn't in a git repository", p.text_dim);
         return;
     };
+    // The refresh button, spinning while it fetches; the heading clicks.
+    let (glyph, color) = if app.prs_fetching(&dir) {
+        (SPINNER[app.spinner_frame() % SPINNER.len()], p.accent)
+    } else {
+        ("↻", if hot { p.accent } else { p.text })
+    };
+    let button_x = (x + width).saturating_sub(1);
+    buf.set_string(button_x, area.y, glyph, Style::new().fg(color).bg(BG).add_modifier(Modifier::BOLD));
     let prs = match app.prs_of(&dir) {
         Loadable::Loading => return say(buf, area, x, first, width, "asking GitHub…", p.text_dim),
         Loadable::Failed(err) => return say(buf, area, x, first, width, err, p.red),
@@ -117,9 +125,9 @@ fn render_prs(buf: &mut Buffer, app: &App) {
         }
         Loadable::Ready(prs) => prs,
     };
-    // How many, right of the heading (↻ while it's hovered: click refreshes).
-    let count = if hot { "↻".to_owned() } else { prs.len().to_string() };
-    let count_x = (x + width).saturating_sub(count.chars().count() as u16);
+    // How many, left of the refresh button.
+    let count = prs.len().to_string();
+    let count_x = button_x.saturating_sub(count.chars().count() as u16 + 1);
     buf.set_string(count_x, area.y, &count, Style::new().fg(p.text_dim).bg(BG));
     for (i, pr) in prs.iter().enumerate() {
         let y = first + i as u16;

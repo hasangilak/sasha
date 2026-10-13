@@ -47,16 +47,17 @@ link to open it, and drag any bar's edge to resize it.
 
 ## What it does
 
-- **Workspaces** sort terminals by folder: each folder has its own tabs, and the sidebar
-  stacks every workspace that has terminals open.
+- **Workspaces** sort terminals by folder: a workspace lists every terminal in its folder
+  (`cd` into another workspace's folder and the terminal moves there), and the sidebar stacks
+  every workspace that has terminals open.
 - **Groups** sort them by task: a named, coloured, collapsible set of terminals from any
   folders, listed at the top of the sidebar.
 - **Sessions that last**: close the window or detach, then run `sasha` again and everything is
   still there. After a restart, your tabs come back as fresh shells.
 - **Notifications** when a background tab finishes, rings the bell, or goes quiet (say, Claude
   is done).
-- **Pull requests**: a bar right of the terminal lists the open PRs of the tab's repo. Open
-  one to see each file marked added, modified or deleted, with its diff. Needs the
+- **Pull requests**: a bar right of the terminal lists the open PRs of the tab's repo (↻
+  refreshes). Open one to see each file marked added, modified or deleted, with its diff. Needs the
   [GitHub CLI](https://cli.github.com), signed in.
 - **Ports**: a slim bar lists what the programs in your tabs listen on; click one to see which
   tab runs it, jump there, or force-kill it.

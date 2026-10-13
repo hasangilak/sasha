@@ -585,7 +585,7 @@ impl App {
     }
 
     fn animating(&self) -> bool {
-        self.workspaces.iter().flat_map(|w| &w.tabs).any(|t| self.is_busy(t))
+        self.workspaces.iter().flat_map(|w| &w.tabs).any(|t| self.is_busy(t)) || self.fetching_prs()
     }
 
     pub fn spinner_frame(&self) -> usize {
@@ -1175,7 +1175,7 @@ impl App {
         let sections: Vec<usize> = (0..self.workspaces.len())
             .filter(|&w| {
                 let ws = &self.workspaces[w];
-                let own = !ws.section_hidden && ws.has_loose_tabs();
+                let own = !ws.section_hidden && !ws.tabs.is_empty();
                 if w == self.current { !ws.section_hidden } else { !self.current_only && own }
             })
             .collect();
@@ -1211,7 +1211,7 @@ impl App {
     fn close_section(&mut self, w: usize) {
         let Some(ws) = self.workspaces.get(w) else { return };
         let (id, name) = (ws.id, ws.name.clone());
-        let tabs: Vec<TabId> = ws.tabs.iter().filter(|t| t.group.is_none()).map(|t| t.id).collect();
+        let tabs: Vec<TabId> = ws.tabs.iter().map(|t| t.id).collect();
         if tabs.len() > 1 && self.confirm_close_section != Some(id) {
             self.confirm_close_section = Some(id);
             self.set_status(format!("click × again to close {} tabs in {name}", tabs.len()));
@@ -1237,7 +1237,7 @@ impl App {
         let mut stops = Vec::new();
         for row in self.sidebar_rows() {
             match row {
-                Row::Item(w, ListItem::Tab(t)) => stops.push((w, t)),
+                Row::Item(w, ListItem::Tab(t)) if !stops.contains(&(w, t)) => stops.push((w, t)),
                 Row::Group(id) => {
                     let Some(group) = self.group(id).filter(|g| g.collapsed) else { continue };
                     let members = self.shown_members(id);
@@ -1647,6 +1647,51 @@ impl App {
         for tab in self.workspaces.iter_mut().flat_map(|w| &mut w.tabs) {
             tab.refresh_info();
         }
+        self.rehome_tabs();
+    }
+
+    /// Moves each tab to the workspace whose folder it's in now, so a
+    /// workspace lists every terminal in its folder. Tabs outside every
+    /// workspace's folder stay where they are.
+    fn rehome_tabs(&mut self) {
+        let mut moves = Vec::new();
+        for (w, ws) in self.workspaces.iter().enumerate() {
+            for tab in &ws.tabs {
+                let home = tab.cwd().and_then(|cwd| self.workspace_for(cwd));
+                if let Some(home) = home.filter(|&home| home != w) {
+                    moves.push((tab.id, home));
+                }
+            }
+        }
+        for (id, to) in moves {
+            self.move_to_workspace(id, to);
+        }
+    }
+
+    /// Moves a tab to workspace `to`; the tab on screen takes the view with
+    /// it.
+    fn move_to_workspace(&mut self, id: TabId, to: usize) {
+        let Some((from, index)) = self.find_tab(id) else { return };
+        let on_screen = from == self.current && index == self.workspaces[from].active;
+        let source = &mut self.workspaces[from];
+        let tab = source.tabs.remove(index);
+        if index < source.active || source.active >= source.tabs.len() {
+            source.active = source.active.saturating_sub(1);
+        }
+        let dest = &mut self.workspaces[to];
+        let at = if tab.pinned { dest.pinned_count() } else { dest.tabs.len() };
+        dest.tabs.insert(at, tab);
+        if at <= dest.active && dest.tabs.len() > 1 {
+            dest.active += 1;
+        }
+        if on_screen {
+            self.previous_workspace = Some(self.workspaces[from].id);
+            self.current = to;
+            self.workspaces[to].active = at;
+            self.workspaces[to].section_hidden = false;
+            self.clamp_bar_scroll(true);
+        }
+        self.clamp_list_scroll(on_screen);
     }
 
     fn handle(&mut self, event: AppEvent) {

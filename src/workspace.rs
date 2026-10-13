@@ -88,16 +88,12 @@ impl Workspace {
         self.tabs.iter().take_while(|t| t.pinned).count()
     }
 
-    /// Rows of the workspace's own section of the sidebar: pinned tabs, a
-    /// separator, the tabs that aren't in a group, then "+".
+    /// Rows of the workspace's section of the sidebar: pinned tabs, a
+    /// separator, the others (grouped ones too: a workspace lists every
+    /// terminal in its folder), then "+".
     pub fn list_items(&self) -> Vec<ListItem> {
-        let tabs: Vec<_> = self.tabs.iter().map(|t| (t.pinned, t.group.is_some())).collect();
-        list_items(&tabs)
-    }
-
-    /// Whether it has tabs of its own to list, outside any group.
-    pub fn has_loose_tabs(&self) -> bool {
-        self.tabs.iter().any(|t| t.group.is_none())
+        let pinned: Vec<bool> = self.tabs.iter().map(|t| t.pinned).collect();
+        list_items(&pinned)
     }
 
     /// Up to two letters for the activity bar badge: the initials of the
@@ -133,15 +129,15 @@ impl Workspace {
     }
 }
 
-/// Rows for tabs that are (pinned, grouped): the pinned ones, a separator,
-/// the others not in a group, then "+".
-fn list_items(tabs: &[(bool, bool)]) -> Vec<ListItem> {
-    let pinned = tabs.iter().take_while(|(pinned, _)| *pinned).count();
-    let mut items: Vec<ListItem> = (0..pinned).map(ListItem::Tab).collect();
-    if pinned > 0 {
+/// Rows for tabs that are pinned or not: the pinned ones, a separator, the
+/// others, then "+".
+fn list_items(pinned: &[bool]) -> Vec<ListItem> {
+    let count = pinned.iter().take_while(|p| **p).count();
+    let mut items: Vec<ListItem> = (0..count).map(ListItem::Tab).collect();
+    if count > 0 {
         items.push(ListItem::Separator);
     }
-    items.extend((pinned..tabs.len()).filter(|&i| !tabs[i].1).map(ListItem::Tab));
+    items.extend((count..pinned.len()).map(ListItem::Tab));
     items.push(ListItem::NewTab);
     items
 }
@@ -195,10 +191,10 @@ mod tests {
     }
 
     #[test]
-    fn grouped_tabs_leave_their_workspace_list() {
+    fn pinned_tabs_come_first() {
         use ListItem::{NewTab, Separator, Tab as T};
-        let tabs = [(true, false), (false, false), (false, true), (false, false)];
-        assert_eq!(list_items(&tabs), [T(0), Separator, T(1), T(3), NewTab]);
+        assert_eq!(list_items(&[true, false, false]), [T(0), Separator, T(1), T(2), NewTab]);
+        assert_eq!(list_items(&[false]), [T(0), NewTab]);
         assert_eq!(list_items(&[]), [NewTab]);
     }
 

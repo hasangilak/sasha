@@ -115,6 +115,16 @@ impl App {
         self.prs_of(&dir).ready().map(Vec::as_slice)
     }
 
+    /// Whether any pull requests are being fetched (their spinner moves).
+    pub(super) fn fetching_prs(&self) -> bool {
+        self.prs.values().any(|list| list.fetching)
+    }
+
+    /// Whether `dir`'s pull requests are being fetched right now.
+    pub fn prs_fetching(&self, dir: &Path) -> bool {
+        self.prs.get(dir).is_some_and(|list| list.fetching)
+    }
+
     pub fn port_count(&self) -> usize {
         self.ports.ready().map_or(0, Vec::len)
     }
