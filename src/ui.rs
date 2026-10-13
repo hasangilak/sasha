@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, GroupEntry, Mode, PickerEntry, Selection};
+use crate::app::{App, GroupEntry, Mode, PickerEntry, PickerKind, Selection};
 use crate::links::Link;
 use crate::workspace::pretty_path;
 use crate::{activity, bars, panel_view, sidebar, theme};
@@ -28,20 +28,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
     activity::render_tooltip(frame.buffer_mut(), app);
     bars::render_tooltip(frame.buffer_mut(), app);
 
-    match app.mode {
+    match &app.mode {
         Mode::Help => render_help(frame, app),
         Mode::ConfirmQuit => render_confirm_quit(frame, app),
         Mode::Scroll => {}
-        Mode::Rename => {
+        Mode::Rename(_) => {
             if let Some(cursor) = rename_cursor {
                 frame.set_cursor_position(cursor);
             }
         }
-        Mode::Search => render_search(frame, app),
-        Mode::Workspaces => render_workspaces(frame, app),
-        Mode::Groups => render_groups(frame, app),
-        Mode::Panel => panel_view::render(frame, app),
-        Mode::Normal | Mode::Tab => {
+        Mode::Picker(picker) => match picker.kind {
+            PickerKind::Search => render_search(frame, app),
+            PickerKind::Workspaces => render_workspaces(frame, app),
+            PickerKind::Groups => render_groups(frame, app),
+        },
+        Mode::Panel(_) => panel_view::render(frame, app),
+        Mode::Normal | Mode::Tab(_) => {
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
                 if row < pane.height && col < pane.width {
@@ -295,10 +297,11 @@ fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
     let query_x = inner.x + 2;
     let room = inner.width.saturating_sub(3) as usize;
     // Keep the end of a long query (e.g. a path) visible.
-    let skip = app.input.width().saturating_sub(room);
-    let shown: String = app.input.chars().skip(skip).collect();
+    let query = app.typed();
+    let skip = query.width().saturating_sub(room);
+    let shown: String = query.chars().skip(skip).collect();
     let (end, _) = buf.set_stringn(query_x, inner.y, &shown, room, plain);
-    if app.input.is_empty() {
+    if query.is_empty() {
         buf.set_stringn(query_x, inner.y, picker.placeholder, room, Style::new().fg(p.text_dim).bg(p.popup_bg));
     }
     let separator = "─".repeat(inner.width as usize);
@@ -310,10 +313,11 @@ fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
         buf.set_string(inner.x, list_y, picker.empty, Style::new().fg(p.text_dim).bg(p.popup_bg));
     }
     // Keep the highlighted row in view.
-    let first = app.picker_selected.saturating_sub(list_rows.saturating_sub(1));
+    let selected = app.picker().map_or(0, |picker| picker.selected);
+    let first = selected.saturating_sub(list_rows.saturating_sub(1));
     for (index, row) in picker.rows.iter().enumerate().skip(first).take(list_rows) {
         let y = list_y + (index - first) as u16;
-        let bg = if index == app.picker_selected { p.active_bg } else { p.popup_bg };
+        let bg = if index == selected { p.active_bg } else { p.popup_bg };
         buf.set_style(Rect::new(inner.x, y, inner.width, 1), Style::new().bg(bg));
         let mut x = inner.x;
         if let Some((initials, color)) = &row.badge {

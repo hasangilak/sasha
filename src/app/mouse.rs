@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use super::{App, Drag, Mode, Selection};
+use super::state::{Mode, Picker, PickerKind};
+use super::{App, Drag, Selection};
 use crate::layout::{self, Hit};
 use crate::{input, links};
 
@@ -16,7 +17,7 @@ impl App {
         let hit = self.layout.hit(mouse.column, mouse.row, self);
         // A panel covers the pane: the wheel scrolls it, a click outside it
         // closes it.
-        if self.mode == Mode::Panel {
+        if matches!(self.mode, Mode::Panel(_)) {
             match mouse.kind {
                 MouseEventKind::ScrollDown | MouseEventKind::ScrollUp if hit == Some(Hit::Pane) => {
                     self.panel_wheel(mouse.kind == MouseEventKind::ScrollDown, mouse.column, mouse.row);
@@ -24,10 +25,7 @@ impl App {
                 MouseEventKind::Down(MouseButton::Left) if hit == Some(Hit::Pane) => {
                     self.panel_click(mouse.column, mouse.row);
                 }
-                MouseEventKind::Down(_) if hit != Some(Hit::Pane) => {
-                    self.panel = None;
-                    self.mode = Mode::Normal;
-                }
+                MouseEventKind::Down(_) if hit != Some(Hit::Pane) => self.leave(),
                 _ => {}
             }
             return;
@@ -42,13 +40,13 @@ impl App {
 
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             match self.mode {
-                Mode::Help | Mode::ConfirmQuit | Mode::Search | Mode::Workspaces | Mode::Groups => {
-                    self.mode = Mode::Normal;
+                Mode::Help | Mode::ConfirmQuit | Mode::Picker(_) => {
+                    self.leave();
                     return;
                 }
                 // Clicking away saves the name, like leaving a text field.
-                Mode::Rename => self.finish_rename(),
-                Mode::Tab if hit == Some(Hit::Pane) => self.mode = Mode::Normal,
+                Mode::Rename(_) => self.finish_rename(),
+                Mode::Tab(_) if hit == Some(Hit::Pane) => self.leave(),
                 _ => {}
             }
         }
@@ -95,10 +93,6 @@ impl App {
     }
 
     fn click(&mut self, hit: Hit) {
-        // "Click × again" only holds for the very next click.
-        if !matches!(hit, Hit::CloseWorkspace(_)) {
-            self.confirm_close_section = None;
-        }
         match hit {
             // A double-click renames the workspace.
             Hit::Workspace(index) => {
@@ -122,9 +116,9 @@ impl App {
             // Another workspace's tab or group, stacked in the sidebar.
             Hit::OtherTab(w, t) => self.go_to(w, t),
             Hit::AddWorkspace => self.start_workspaces("~/".to_owned()),
-            Hit::HelpButton => self.mode = Mode::Help,
+            Hit::HelpButton => self.enter(Mode::Help),
             Hit::Toggle => self.set_collapsed(!self.collapsed),
-            Hit::Search => self.start_search(),
+            Hit::Search => self.enter(Mode::Picker(Picker::new(PickerKind::Search, String::new()))),
             Hit::Awake => self.toggle_awake(),
             Hit::CloseWorkspace(w) => self.close_section(w),
             Hit::GroupNewTab(id) => self.new_tab_in(id),

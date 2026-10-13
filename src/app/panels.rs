@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Position;
 
-use super::{App, AppEvent, Mode};
+use super::{App, AppEvent, Confirm, Mode};
 use crate::github::{self, FileDiff, Pr};
 use crate::panel_view;
 use crate::ports::{self, Port};
@@ -76,8 +76,6 @@ pub struct OpenPr {
 
 pub struct PortsPanel {
     pub selected: usize,
-    /// The program waiting for a second `x`.
-    pub confirm: Option<i32>,
 }
 
 /// What a key in a panel asks for, done once the panel is no longer
@@ -135,7 +133,7 @@ impl App {
         if self.client.is_none() {
             return;
         }
-        let ports_shown = self.layout.ports_bar.width > 0 || matches!(self.panel, Some(Panel::Ports(_)));
+        let ports_shown = self.layout.ports_bar.width > 0 || matches!(self.mode, Mode::Panel(Panel::Ports(_)));
         if ports_shown && self.ports_checked.is_none_or(|at| at.elapsed() >= PORTS_EVERY) {
             self.check_ports(Duration::ZERO);
         }
@@ -182,7 +180,7 @@ impl App {
     pub(super) fn prs_loaded(&mut self, dir: PathBuf, prs: Result<Vec<Pr>, String>) {
         let count = prs.as_ref().map_or(0, Vec::len);
         self.prs.insert(dir.clone(), PrList { prs: Loadable::from(prs), fetched: Some(Instant::now()), fetching: false });
-        if let Some(Panel::Prs(panel)) = &mut self.panel
+        if let Mode::Panel(Panel::Prs(panel)) = &mut self.mode
             && panel.dir == dir
         {
             panel.selected = panel.selected.min(count.saturating_sub(1));
@@ -190,7 +188,7 @@ impl App {
     }
 
     pub(super) fn pr_files_loaded(&mut self, number: u64, files: Result<Vec<FileDiff>, String>) {
-        if let Some(Panel::Prs(PrPanel { open: Some(open), .. })) = &mut self.panel
+        if let Mode::Panel(Panel::Prs(PrPanel { open: Some(open), .. })) = &mut self.mode
             && open.number == number
         {
             open.files = Loadable::from(files);
@@ -202,7 +200,7 @@ impl App {
         self.ports_checking = false;
         self.ports_checked = Some(Instant::now());
         let count = self.port_count();
-        if let Some(Panel::Ports(panel)) = &mut self.panel {
+        if let Mode::Panel(Panel::Ports(panel)) = &mut self.mode {
             panel.selected = panel.selected.min(count.saturating_sub(1));
         }
     }
@@ -221,7 +219,7 @@ impl App {
         let Some(dir) = self.active_repo() else { return };
         let Some(pr) = self.prs_of(&dir).ready().and_then(|prs| prs.get(index)).cloned() else { return };
         self.show_prs(dir.clone(), index);
-        if let Some(Panel::Prs(panel)) = &mut self.panel {
+        if let Mode::Panel(Panel::Prs(panel)) = &mut self.mode {
             panel.open = Some(OpenPr { number: pr.number, title: pr.title, files: Loadable::Loading, selected: 0, scroll: 0 });
         }
         self.load_files(dir, pr.number);
@@ -239,8 +237,7 @@ impl App {
         if self.prs_stale(&dir) {
             self.fetch_prs(dir.clone());
         }
-        self.panel = Some(Panel::Prs(PrPanel { dir, selected, open: None }));
-        self.mode = Mode::Panel;
+        self.enter(Mode::Panel(Panel::Prs(PrPanel { dir, selected, open: None })));
     }
 
     fn load_files(&self, dir: PathBuf, number: u64) {
@@ -254,8 +251,7 @@ impl App {
     /// Shows the ports that programs in the tabs listen on, with `index`
     /// selected.
     pub(super) fn open_ports(&mut self, index: usize) {
-        self.panel = Some(Panel::Ports(PortsPanel { selected: index, confirm: None }));
-        self.mode = Mode::Panel;
+        self.enter(Mode::Panel(Panel::Ports(PortsPanel { selected: index })));
         self.check_ports(Duration::ZERO);
     }
 
@@ -277,8 +273,8 @@ impl App {
         let row = usize::from(y - body.y);
         let ports = self.port_count();
         let mut load = None;
-        match &mut self.panel {
-            Some(Panel::Prs(PrPanel { open: Some(open), .. })) => {
+        match &mut self.mode {
+            Mode::Panel(Panel::Prs(PrPanel { open: Some(open), .. })) => {
                 let (list, _) = panel_view::split(body);
                 let count = open.files.ready().map_or(0, Vec::len);
                 let index = panel_view::first_shown(open.selected, list.height) + row;
@@ -287,7 +283,7 @@ impl App {
                     open.scroll = 0;
                 }
             }
-            Some(Panel::Prs(panel)) => {
+            Mode::Panel(Panel::Prs(panel)) => {
                 let prs = self.prs.get(&panel.dir).and_then(|l| l.prs.ready());
                 let index = panel_view::first_shown(panel.selected, body.height) + row;
                 if let Some(pr) = prs.and_then(|prs| prs.get(index)) {
@@ -297,14 +293,13 @@ impl App {
                     load = Some((panel.dir.clone(), number));
                 }
             }
-            Some(Panel::Ports(panel)) => {
+            Mode::Panel(Panel::Ports(panel)) => {
                 let index = panel_view::first_shown(panel.selected, body.height) + row;
                 if index < ports {
                     panel.selected = index;
-                    panel.confirm = None;
                 }
             }
-            None => {}
+            _ => {}
         }
         if let Some((dir, number)) = load {
             self.load_files(dir, number);
@@ -319,29 +314,28 @@ impl App {
         let ports = self.port_count();
         let (list, _) = panel_view::split(panel_view::body(self.layout.pane));
         let over_files = list.contains(Position::new(x, y));
-        match &mut self.panel {
-            Some(Panel::Prs(PrPanel { open: Some(open), .. })) if over_files => {
+        match &mut self.mode {
+            Mode::Panel(Panel::Prs(PrPanel { open: Some(open), .. })) if over_files => {
                 let count = open.files.ready().map_or(0, Vec::len);
                 open.selected = step_in(open.selected, step.signum(), count);
                 open.scroll = 0;
             }
-            Some(Panel::Prs(PrPanel { open: Some(open), .. })) => scroll_diff(open, step),
-            Some(Panel::Prs(panel)) => {
+            Mode::Panel(Panel::Prs(PrPanel { open: Some(open), .. })) => scroll_diff(open, step),
+            Mode::Panel(Panel::Prs(panel)) => {
                 let count = self.prs.get(&panel.dir).and_then(|l| l.prs.ready()).map_or(0, Vec::len);
                 panel.selected = step_in(panel.selected, step.signum(), count);
             }
-            Some(Panel::Ports(panel)) => panel.selected = step_in(panel.selected, step.signum(), ports),
-            None => {}
+            Mode::Panel(Panel::Ports(panel)) => panel.selected = step_in(panel.selected, step.signum(), ports),
+            _ => {}
         }
     }
 
     pub(super) fn panel_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let page = isize::try_from(self.layout.pane.height.saturating_sub(6).max(2)).unwrap_or(2);
-        let action = match &mut self.panel {
-            None => Some(Action::Close),
+        let action = match &mut self.mode {
             // A pull request's files and the selected one's diff.
-            Some(Panel::Prs(PrPanel { dir, open: Some(open), .. })) => {
+            Mode::Panel(Panel::Prs(PrPanel { dir, open: Some(open), .. })) => {
                 let count = open.files.ready().map_or(0, Vec::len);
                 match key.code {
                     KeyCode::Esc | KeyCode::Left | KeyCode::Char('q' | 'h') => Some(Action::Back),
@@ -366,7 +360,7 @@ impl App {
                 }
             }
             // The list of open pull requests.
-            Some(Panel::Prs(panel)) => {
+            Mode::Panel(Panel::Prs(panel)) => {
                 let prs = self.prs.get(&panel.dir).and_then(|l| l.prs.ready());
                 let selected = prs.and_then(|prs| prs.get(panel.selected)).cloned();
                 let count = prs.map_or(0, Vec::len);
@@ -395,13 +389,10 @@ impl App {
                     _ => None,
                 }
             }
-            Some(Panel::Ports(panel)) => {
+            Mode::Panel(Panel::Ports(panel)) => {
                 let ports = self.ports.ready();
                 let selected = ports.and_then(|ports| ports.get(panel.selected)).cloned();
                 let count = ports.map_or(0, Vec::len);
-                if key.code != KeyCode::Char('x') {
-                    panel.confirm = None;
-                }
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => Some(Action::Close),
                     KeyCode::Up | KeyCode::Char('k') => {
@@ -414,28 +405,20 @@ impl App {
                     }
                     // Force-killing needs a second press.
                     KeyCode::Char('x') => selected.and_then(|port| {
-                        if panel.confirm == Some(port.pid) {
-                            panel.confirm = None;
-                            Some(Action::Kill(port))
-                        } else {
-                            panel.confirm = Some(port.pid);
-                            None
-                        }
+                        self.pending.confirm(Confirm::KillPort(port.pid), Instant::now()).then_some(Action::Kill(port))
                     }),
                     KeyCode::Enter => selected.map(|port| Action::GoTo(port.tab)),
                     KeyCode::Char('r') => Some(Action::CheckPorts),
                     _ => None,
                 }
             }
+            _ => Some(Action::Close),
         };
         match action {
             None => {}
-            Some(Action::Close) => {
-                self.panel = None;
-                self.mode = Mode::Normal;
-            }
+            Some(Action::Close) => self.leave(),
             Some(Action::Back) => {
-                if let Some(Panel::Prs(panel)) = &mut self.panel {
+                if let Mode::Panel(Panel::Prs(panel)) = &mut self.mode {
                     panel.open = None;
                 }
             }
@@ -456,8 +439,7 @@ impl App {
                 self.check_ports(Duration::from_millis(300));
             }
             Some(Action::GoTo(tab)) => {
-                self.panel = None;
-                self.mode = Mode::Normal;
+                self.leave();
                 if let Some((w, t)) = self.find_tab(tab) {
                     self.go_to(w, t);
                 }

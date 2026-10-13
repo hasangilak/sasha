@@ -1,6 +1,8 @@
 //! Drawing the panels over the terminal pane: pull requests with their
 //! files and diffs, and the ports the tabs listen on.
 
+use std::time::Instant;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -8,13 +10,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Loadable, OpenPr, Panel, PortsPanel, PrPanel};
+use crate::app::{App, Confirm, Loadable, OpenPr, Panel, PortsPanel, PrPanel};
 use crate::github::Change;
 use crate::theme;
 use crate::ui::popup_block;
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let Some(panel) = &app.panel else { return };
+    let Some(panel) = app.panel() else { return };
     let area = app.layout.pane;
     if area.width < 24 || area.height < 6 {
         return;
@@ -47,7 +49,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
         Panel::Ports(panel) => {
             render_ports(buf, app, body, panel);
-            let confirm = panel.confirm.and_then(|pid| app.ports.ready()?.iter().find(|port| port.pid == pid));
+            let confirm = doomed(app).and_then(|pid| app.ports.ready()?.iter().find(|port| port.pid == pid));
             match confirm {
                 Some(port) => (format!("press x again to force-kill {} ({})", port.command, port.pid), p.red),
                 None => ("↑↓ choose · x force-kill · ⏎ go to tab · r refresh · esc close".to_owned(), p.text_dim),
@@ -55,6 +57,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     };
     buf.set_stringn(inner.x, hint_y, hint, inner.width as usize, Style::new().fg(hint_color).bg(p.popup_bg));
+}
+
+/// The program waiting for a second `x`, if any.
+fn doomed(app: &App) -> Option<i32> {
+    match app.pending.waiting(Instant::now()) {
+        Some(Confirm::KillPort(pid)) => Some(pid),
+        _ => None,
+    }
 }
 
 /// The list's contents, or what to say instead.
@@ -201,7 +211,7 @@ fn render_ports(buf: &mut Buffer, app: &App, area: Rect, panel: &PortsPanel) {
     for (i, port) in ports.iter().enumerate().skip(first).take(area.height as usize) {
         let y = area.y + (i - first) as u16;
         let selected = i == panel.selected;
-        let doomed = panel.confirm == Some(port.pid);
+        let doomed = doomed(app) == Some(port.pid);
         let bg = if selected { p.active_bg } else { p.popup_bg };
         buf.set_style(Rect::new(area.x, y, area.width, 1), Style::new().bg(bg));
 

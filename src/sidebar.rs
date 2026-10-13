@@ -5,7 +5,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::{App, Mode, Renaming};
+use crate::app::{App, Renaming};
 use crate::app::Activity;
 use crate::layout::{Hit, ListItem, Row};
 use crate::tab::Tab;
@@ -24,12 +24,13 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
     }
 
     let mut cursor = render_header(buf, app);
-    let renaming = app.mode == Mode::Rename && !layout.collapsed;
+    // What's being renamed in the list, if anything.
+    let renaming = app.rename().filter(|_| !layout.collapsed).map(|rename| rename.target);
     for (row_index, item) in app.sidebar_rows().into_iter().enumerate() {
         let Some(row) = layout.row_of(row_index, app.list_scroll) else { continue };
         let pill = layout.pill(row);
         let (w, item) = match item {
-            Row::Group(id) if renaming && app.renaming == Renaming::Group(id) => {
+            Row::Group(id) if renaming == Some(Renaming::Group(id)) => {
                 cursor = Some(render_group_rename(buf, app, id, pill));
                 continue;
             }
@@ -53,7 +54,7 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
             buf.set_string(layout.list.x, row, "▎", Style::new().fg(group.color()).bg(BG));
         }
         match item {
-            ListItem::Tab(index) if current && renaming && app.renaming == Renaming::Tab && index == ws.active => {
+            ListItem::Tab(index) if current && renaming == Some(Renaming::Tab) && index == ws.active => {
                 cursor = Some(render_rename(buf, app, pill));
             }
             ListItem::Tab(index) if current => {
@@ -125,10 +126,10 @@ fn render_header(buf: &mut Buffer, app: &App) -> Option<Position> {
         return None;
     }
     let style = Style::new().fg(p.text).bg(BG).add_modifier(Modifier::BOLD);
-    if app.mode == Mode::Rename && app.renaming == Renaming::Workspace {
+    if app.rename().is_some_and(|rename| rename.target == Renaming::Workspace) {
         let field = Style::new().fg(p.text).bg(p.active_bg).add_modifier(Modifier::BOLD);
         buf.set_style(name, field);
-        let (tail, width) = input_tail(&app.input, name.width.saturating_sub(1) as usize);
+        let (tail, width) = input_tail(app.typed(), name.width.saturating_sub(1) as usize);
         buf.set_string(name.x, name.y, &tail, field.add_modifier(Modifier::UNDERLINED));
         return Some(Position::new(name.x + width as u16, name.y));
     }
@@ -312,7 +313,7 @@ fn render_group(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect) {
 fn render_group_rename(buf: &mut Buffer, app: &App, id: GroupId, pill: Rect) -> Position {
     let Some(group) = app.group(id) else { return Position::new(pill.x, pill.y) };
     let chip = Style::new().fg(theme::palette().on_accent).bg(group.color()).add_modifier(Modifier::BOLD);
-    let (tail, width) = input_tail(&app.input, pill.width.saturating_sub(4) as usize);
+    let (tail, width) = input_tail(app.typed(), pill.width.saturating_sub(4) as usize);
     let end = pill.x + 1 + width as u16;
     buf.set_string(pill.x, pill.y, " ", chip);
     buf.set_string(pill.x + 1, pill.y, &tail, chip.add_modifier(Modifier::UNDERLINED));
@@ -326,7 +327,7 @@ fn render_rename(buf: &mut Buffer, app: &App, pill: Rect) -> Position {
     let style = Style::new().fg(p.text).bg(p.active_bg);
     buf.set_style(pill, style);
     buf.set_string(pill.x + 1, pill.y, "✎", Style::new().fg(p.green).bg(p.active_bg));
-    let (tail, width) = input_tail(&app.input, pill.width.saturating_sub(5) as usize);
+    let (tail, width) = input_tail(app.typed(), pill.width.saturating_sub(5) as usize);
     buf.set_string(pill.x + 3, pill.y, &tail, style.add_modifier(Modifier::UNDERLINED));
     Position::new(pill.x + 3 + width as u16, pill.y)
 }

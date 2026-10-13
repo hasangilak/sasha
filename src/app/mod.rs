@@ -1,8 +1,11 @@
 mod keys;
 mod mouse;
 mod panels;
+mod state;
 
 pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel};
+pub use state::{Confirm, Mode, Picker, PickerKind, Rename, Renaming};
+use state::Pending;
 
 use std::collections::HashMap;
 use std::io;
@@ -38,11 +41,6 @@ const INFO_REFRESH: Duration = Duration::from_millis(500);
 const BUSY: Duration = Duration::from_millis(800);
 const SPINNER_STEP: Duration = Duration::from_millis(80);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
-/// Pressing the prefix twice this quickly sends it to the program.
-const PREFIX_TWICE: Duration = Duration::from_millis(400);
-/// After a tab-mode key, tab mode stays this long for the next one (j j k…),
-/// then ends by itself.
-const TAB_MODE_REPEAT: Duration = Duration::from_secs(2);
 /// A click on a link opens it once this passes without a second click.
 const LINK_DELAY: Duration = Duration::from_millis(400);
 /// At most one notification per tab this often.
@@ -62,28 +60,6 @@ pub enum AppEvent {
     Prs(PathBuf, Result<Vec<Pr>, String>),
     PrFiles(u64, Result<Vec<FileDiff>, String>),
     Ports(Result<Vec<Port>, String>),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// Keys go to the shell.
-    Normal,
-    /// Entered with the prefix key: single keys manage tabs.
-    Tab,
-    /// Browsing the scrollback with vim-ish keys.
-    Scroll,
-    /// Editing the active tab's name in the sidebar (text in `App::input`).
-    Rename,
-    /// Finding a tab in any workspace (query in `App::input`).
-    Search,
-    /// Switching, adding and removing workspaces (query in `App::input`).
-    Workspaces,
-    /// Putting the active tab into a tab group (query in `App::input`).
-    Groups,
-    /// A panel over the pane: pull requests or ports (`App::panel`).
-    Panel,
-    Help,
-    ConfirmQuit,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -124,16 +100,6 @@ pub enum PickerEntry {
     AddFolder(PathBuf),
 }
 
-/// What rename mode is renaming.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Renaming {
-    /// The active tab's prefix.
-    Tab,
-    Group(GroupId),
-    /// The current workspace.
-    Workspace,
-}
-
 /// A row of the tab group picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupEntry {
@@ -156,8 +122,6 @@ pub struct App {
     client: Option<Attached>,
     /// Set while sasha keeps the computer from sleeping.
     pub(crate) awake: Option<Awake>,
-    /// The panel shown in `Mode::Panel`.
-    pub(crate) panel: Option<Panel>,
     /// Show the ports and pull request bars (where there's room).
     side_bars: bool,
     ports_width: u16,
@@ -192,10 +156,6 @@ pub struct App {
     /// A clicked link, opened once it's clear the click wasn't the start of
     /// a double-click.
     pending_link: Option<(String, Instant)>,
-    /// Text being typed in rename / search / workspace mode.
-    pub(crate) input: String,
-    /// Highlighted row in the search results or workspace picker.
-    pub(crate) picker_selected: usize,
     /// First visible item of the activity bar.
     pub(crate) activity_scroll: usize,
     /// First visible row of the tab sidebar.
@@ -209,19 +169,9 @@ pub struct App {
     last_group_click: Option<(Instant, GroupId)>,
     last_workspace_click: Option<(Instant, usize)>,
     last_name_click: Option<Instant>,
-    pub(crate) renaming: Renaming,
     status: Option<(String, Instant)>,
-    /// Workspace waiting for a second ^D before its tabs are closed.
-    confirm_remove: Option<WorkspaceId>,
-    /// Pinned tab waiting for a second `x` before it's closed.
-    confirm_close: Option<TabId>,
-    /// Workspace whose tabs wait for a second click on its heading's ×.
-    confirm_close_section: Option<WorkspaceId>,
-    /// When the prefix was last pressed.
-    prefix_at: Instant,
-    /// When tab mode ends by itself; `None` while it waits for its first
-    /// key.
-    tab_mode_until: Option<Instant>,
+    /// The one "press it again" question waiting for its answer.
+    pub(crate) pending: Pending,
     sidebar_width: u16,
     collapsed: bool,
     /// Width of the workspace bar; 0 hides it.
@@ -247,7 +197,6 @@ impl App {
             config,
             client: None,
             awake: None,
-            panel: None,
             side_bars: true,
             ports_width: layout::PORTS_WIDTH,
             prs_width: layout::PRS_WIDTH,
@@ -269,8 +218,6 @@ impl App {
             selection: None,
             hover_link: None,
             pending_link: None,
-            input: String::new(),
-            picker_selected: 0,
             activity_scroll: 0,
             list_scroll: 0,
             current_only: false,
@@ -279,13 +226,8 @@ impl App {
             last_group_click: None,
             last_workspace_click: None,
             last_name_click: None,
-            renaming: Renaming::Tab,
             status: None,
-            confirm_remove: None,
-            confirm_close: None,
-            confirm_close_section: None,
-            prefix_at: Instant::now(),
-            tab_mode_until: None,
+            pending: Pending::default(),
             sidebar_width: layout::DEFAULT_WIDTH,
             collapsed: false,
             activity_width: layout::ACTIVITY_COMPACT,
@@ -504,9 +446,7 @@ impl App {
     /// Leaves half-done interactions behind when a client goes.
     fn reset_modes(&mut self) {
         self.mode = Mode::Normal;
-        self.input.clear();
-        self.renaming = Renaming::Tab;
-        self.panel = None;
+        self.pending = Pending::default();
         self.hover = None;
         self.drag = None;
         self.selection = None;
@@ -611,7 +551,7 @@ impl App {
 
     /// Paint the active tab in the accent colour while keys drive the tabs.
     pub fn highlight_active(&self) -> bool {
-        self.mode == Mode::Tab
+        self.mode.is_tab()
     }
 
     fn set_status(&mut self, message: impl Into<String>) {
@@ -625,50 +565,48 @@ impl App {
         let prefix = self.config.prefix.label();
         if let Some((message, at)) = &self.status
             && at.elapsed() < STATUS_TIMEOUT
-            && matches!(self.mode, Mode::Normal | Mode::Tab)
+            && matches!(self.mode, Mode::Normal | Mode::Tab(_))
         {
-            let badge = (self.mode == Mode::Tab).then_some((if short { "TAB" } else { "TABS" }, p.accent));
+            let badge = self.mode.is_tab().then_some((if short { "TAB" } else { "TABS" }, p.accent));
             return (badge, message.clone());
         }
-        match self.mode {
+        match &self.mode {
             Mode::Normal => (None, format!("{prefix} tab keys · {prefix} ? help")),
             Mode::Scroll => (
                 Some((if short { "SCR" } else { "SCROLL" }, p.yellow)),
                 "j/k ^u/^d g/G · q exit".to_owned(),
             ),
-            Mode::Tab => (
+            Mode::Tab(_) => (
                 Some((if short { "TAB" } else { "TABS" }, p.accent)),
                 "j/k tabs · h/l spaces · p pin".to_owned(),
             ),
-            Mode::Rename if matches!(self.renaming, Renaming::Group(_)) => (
+            Mode::Rename(Rename { target: Renaming::Group(_), .. }) => (
                 Some((if short { "GRP" } else { "GROUP" }, p.green)),
                 "⏎ save · ⇥ colour · esc".to_owned(),
             ),
-            Mode::Rename if self.renaming == Renaming::Workspace => (
+            Mode::Rename(Rename { target: Renaming::Workspace, .. }) => (
                 Some((if short { "WS" } else { "SPACE" }, p.green)),
                 "⏎ save · empty = folder".to_owned(),
             ),
-            Mode::Rename => (
+            Mode::Rename(_) => (
                 Some((if short { "REN" } else { "RENAME" }, p.green)),
                 "⏎ save · esc".to_owned(),
             ),
-            Mode::Search => (
+            Mode::Picker(Picker { kind: PickerKind::Search, .. }) => (
                 Some((if short { "/" } else { "SEARCH" }, p.purple)),
                 "↑↓ ⏎ go · esc".to_owned(),
             ),
-            Mode::Workspaces => (
+            Mode::Picker(Picker { kind: PickerKind::Workspaces, .. }) => (
                 Some((if short { "WS" } else { "SPACES" }, p.orange)),
                 "⏎ open · ⇥ complete".to_owned(),
             ),
-            Mode::Groups => (
+            Mode::Picker(Picker { kind: PickerKind::Groups, .. }) => (
                 Some((if short { "GRP" } else { "GROUP" }, p.cyan)),
                 "⏎ add tab · ^D delete".to_owned(),
             ),
             Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
-            Mode::Panel => match self.panel {
-                Some(Panel::Ports(_)) => (Some((if short { "PRT" } else { "PORTS" }, p.cyan)), "esc closes".to_owned()),
-                _ => (Some((if short { "PR" } else { "PULLS" }, p.purple)), "esc closes".to_owned()),
-            },
+            Mode::Panel(Panel::Ports(_)) => (Some((if short { "PRT" } else { "PORTS" }, p.cyan)), "esc closes".to_owned()),
+            Mode::Panel(Panel::Prs(_)) => (Some((if short { "PR" } else { "PULLS" }, p.purple)), "esc closes".to_owned()),
             Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, p.red)), "y / n".to_owned()),
         }
     }
@@ -693,7 +631,12 @@ impl App {
             if let Some((_, at)) = &self.pending_link {
                 timeout = timeout.min(LINK_DELAY.saturating_sub(at.elapsed()));
             }
-            if let Some(until) = self.tab_mode_until {
+            if let Mode::Tab(tab) = &self.mode
+                && let Some(until) = tab.until()
+            {
+                timeout = timeout.min(until.saturating_duration_since(Instant::now()));
+            }
+            if let Some(until) = self.pending.deadline() {
                 timeout = timeout.min(until.saturating_duration_since(Instant::now()));
             }
             match self.events.recv_timeout(timeout) {
@@ -712,9 +655,14 @@ impl App {
             }
 
             // Tab mode ends a moment after its last key.
-            if self.mode == Mode::Tab && self.tab_mode_until.is_some_and(|until| Instant::now() >= until) {
-                self.mode = Mode::Normal;
-                self.tab_mode_until = None;
+            if let Mode::Tab(tab) = &self.mode
+                && tab.expired(Instant::now())
+            {
+                self.leave();
+                dirty = true;
+            }
+            // So does a "press it again" nobody answered.
+            if self.pending.expire(Instant::now()) {
                 dirty = true;
             }
             if self.pending_link.as_ref().is_some_and(|(_, at)| at.elapsed() >= LINK_DELAY)
@@ -884,7 +832,7 @@ impl App {
 
     fn request_quit(&mut self) {
         if self.tab_count() > 1 {
-            self.mode = Mode::ConfirmQuit;
+            self.enter(Mode::ConfirmQuit);
         } else {
             self.quit = true;
         }
@@ -983,7 +931,8 @@ impl App {
 
     /// Shown in the picker after one ^D on a workspace that has open tabs.
     pub fn remove_warning(&self) -> Option<String> {
-        let ws = self.workspaces.iter().find(|w| Some(w.id) == self.confirm_remove)?;
+        let Some(Confirm::RemoveWorkspace(id)) = self.pending.waiting(Instant::now()) else { return None };
+        let ws = self.workspaces.iter().find(|w| w.id == id)?;
         let count = ws.tabs.len();
         Some(format!("^D again closes {count} tab{} in {}", if count == 1 { "" } else { "s" }, ws.name))
     }
@@ -991,7 +940,7 @@ impl App {
     /// Rows of the workspace picker for the current query: matching
     /// workspaces, or folders to add when the query looks like a path.
     pub fn picker_entries(&self) -> Vec<PickerEntry> {
-        let query = self.input.trim();
+        let query = self.typed().trim();
         let base = self
             .active_tab()
             .and_then(Tab::cwd)
@@ -1213,12 +1162,10 @@ impl App {
         let Some(ws) = self.workspaces.get(w) else { return };
         let (id, name) = (ws.id, ws.name.clone());
         let tabs: Vec<TabId> = ws.tabs.iter().map(|t| t.id).collect();
-        if tabs.len() > 1 && self.confirm_close_section != Some(id) {
-            self.confirm_close_section = Some(id);
+        if tabs.len() > 1 && !self.pending.confirm(Confirm::CloseSection(id), Instant::now()) {
             self.set_status(format!("click × again to close {} tabs in {name}", tabs.len()));
             return;
         }
-        self.confirm_close_section = None;
         if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == id) {
             ws.section_hidden = true;
         }
@@ -1448,12 +1395,10 @@ impl App {
     /// Closes a tab, except that pinned tabs need a second press.
     fn close_tab_guarded(&mut self, index: usize) {
         let Some(tab) = self.ws().tabs.get(index) else { return };
-        if tab.pinned && self.confirm_close != Some(tab.id) {
-            self.confirm_close = Some(tab.id);
+        if tab.pinned && !self.pending.confirm(Confirm::CloseTab(tab.id), Instant::now()) {
             self.set_status("pinned tab · press x again to close");
             return;
         }
-        self.confirm_close = None;
         self.close_tab(index);
     }
 
@@ -1600,7 +1545,7 @@ impl App {
     /// Rows of the group picker: every group matching the query, and a new
     /// group named after it (first when nothing is typed yet).
     pub fn group_entries(&self) -> Vec<GroupEntry> {
-        let query = self.input.trim();
+        let query = self.typed().trim();
         let lower = query.to_lowercase();
         let groups = &self.groups;
         let matching = groups.iter().filter(|g| g.name.to_lowercase().contains(&lower)).map(|g| GroupEntry::Group(g.id));
@@ -1617,7 +1562,7 @@ impl App {
 
     /// Indices (workspace, tab) of the tabs matching the search query.
     pub fn search_results(&self) -> Vec<(usize, usize)> {
-        let query = self.input.to_lowercase();
+        let query = self.typed().to_lowercase();
         let terms: Vec<&str> = query.split_whitespace().collect();
         let mut results = Vec::new();
         for (w, ws) in self.workspaces.iter().enumerate() {
@@ -1702,18 +1647,34 @@ impl App {
     }
 
     fn handle(&mut self, event: AppEvent) {
+        let output = matches!(event, AppEvent::Output(..));
         match event {
             AppEvent::Attach(id, hello, stream) => self.attach(id, *hello, stream),
             // Input from a client that has since been replaced is dropped.
-            AppEvent::Input(id, event) if self.client.as_ref().is_some_and(|c| c.id == id) => match event {
-                Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
-                Event::Mouse(mouse) => self.handle_mouse(mouse),
-                Event::Paste(text) => self.paste(&text),
-                Event::Resize(cols, rows) => self.resize_client(Size::new(cols, rows)),
-                Event::FocusGained => self.focused = true,
-                Event::FocusLost => self.focused = false,
-                _ => {}
-            },
+            AppEvent::Input(id, event) if self.client.as_ref().is_some_and(|c| c.id == id) => {
+                // A key or click that doesn't answer a "press it again"
+                // question forgets it.
+                let asks = match &event {
+                    Event::Key(key) => key.kind != KeyEventKind::Release,
+                    Event::Mouse(mouse) => matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)),
+                    _ => false,
+                };
+                if asks {
+                    self.pending.begin();
+                }
+                match event {
+                    Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
+                    Event::Mouse(mouse) => self.handle_mouse(mouse),
+                    Event::Paste(text) => self.paste(&text),
+                    Event::Resize(cols, rows) => self.resize_client(Size::new(cols, rows)),
+                    Event::FocusGained => self.focused = true,
+                    Event::FocusLost => self.focused = false,
+                    _ => {}
+                }
+                if asks {
+                    self.pending.end();
+                }
+            }
             AppEvent::Input(..) => {}
             AppEvent::Gone(id) => {
                 if self.client.as_ref().is_some_and(|c| c.id == id) {
@@ -1732,6 +1693,95 @@ impl App {
                 }
             }
         }
+        // Output only changes what tabs show; anything else may have broken
+        // a rule.
+        if !output {
+            self.normalize();
+        }
+    }
+
+    // ── The state machine ───────────────────────────────────────────────
+
+    /// The only way the mode changes. Leaving scroll mode goes back to the
+    /// live screen; renaming needs the sidebar open.
+    pub(crate) fn enter(&mut self, mode: Mode) {
+        if matches!(self.mode, Mode::Scroll) && !matches!(mode, Mode::Scroll) {
+            self.scroll_active(isize::MIN);
+        }
+        if matches!(mode, Mode::Rename(_)) && self.collapsed {
+            self.set_collapsed(false);
+        }
+        self.mode = mode;
+    }
+
+    /// Back to typing into the tab.
+    pub(crate) fn leave(&mut self) {
+        self.enter(Mode::Normal);
+    }
+
+    pub fn picker(&self) -> Option<&Picker> {
+        match &self.mode {
+            Mode::Picker(picker) => Some(picker),
+            _ => None,
+        }
+    }
+
+    pub fn rename(&self) -> Option<&Rename> {
+        match &self.mode {
+            Mode::Rename(rename) => Some(rename),
+            _ => None,
+        }
+    }
+
+    pub fn panel(&self) -> Option<&Panel> {
+        match &self.mode {
+            Mode::Panel(panel) => Some(panel),
+            _ => None,
+        }
+    }
+
+    /// What's being typed: a picker's query or a new name.
+    pub fn typed(&self) -> &str {
+        match &self.mode {
+            Mode::Picker(picker) => &picker.query,
+            Mode::Rename(rename) => &rename.text,
+            _ => "",
+        }
+    }
+
+    /// The rules that hold after anything happens: a valid current
+    /// workspace and active tabs, pinned tabs first and never in a group,
+    /// tabs only in groups that exist, nothing being renamed that has gone,
+    /// and the lists scrolled into range.
+    fn normalize(&mut self) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        self.current = self.current.min(self.workspaces.len() - 1);
+        let groups: Vec<GroupId> = self.groups.iter().map(|g| g.id).collect();
+        for ws in &mut self.workspaces {
+            let active = ws.tabs.get(ws.active).map(|t| t.id);
+            for tab in &mut ws.tabs {
+                if tab.pinned || tab.group.is_some_and(|g| !groups.contains(&g)) {
+                    tab.group = None;
+                }
+            }
+            if !ws.tabs.is_sorted_by_key(|t| !t.pinned) {
+                ws.tabs.sort_by_key(|t| !t.pinned);
+            }
+            let found = active.and_then(|id| ws.tabs.iter().position(|t| t.id == id));
+            ws.active = found.unwrap_or(ws.active).min(ws.tabs.len().saturating_sub(1));
+        }
+        let gone = match &self.mode {
+            Mode::Rename(Rename { target: Renaming::Group(id), .. }) => self.group(*id).is_none(),
+            Mode::Rename(Rename { target: Renaming::Tab, .. }) => self.active_tab().is_none(),
+            _ => false,
+        };
+        if gone {
+            self.leave();
+        }
+        self.clamp_list_scroll(false);
+        self.clamp_bar_scroll(false);
     }
 
     fn handle_output(&mut self, id: TabId, bytes: &[u8]) {
@@ -1752,11 +1802,10 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
-        match self.mode {
-            Mode::Rename | Mode::Search | Mode::Workspaces | Mode::Groups => {
-                self.input.push_str(text.lines().next().unwrap_or_default());
-                return;
-            }
+        let line = text.lines().next().unwrap_or_default();
+        match &mut self.mode {
+            Mode::Rename(rename) => return rename.text.push_str(line),
+            Mode::Picker(picker) => return picker.query.push_str(line),
             _ => {}
         }
         let Some(tab) = self.ws_mut().active_tab_mut() else { return };
