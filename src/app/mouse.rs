@@ -92,12 +92,34 @@ impl App {
         }
     }
 
+    /// Whether this click on workspace `index` is the second of a
+    /// double-click.
+    fn workspace_double_click(&mut self, index: usize) -> bool {
+        let double = self.last_workspace_click.is_some_and(|(at, i)| i == index && at.elapsed() < MULTI_CLICK);
+        self.last_workspace_click = if double { None } else { Some((Instant::now(), index)) };
+        double
+    }
+
     fn click(&mut self, hit: Hit) {
         match hit {
-            // A double-click renames the workspace.
+            // In the workspace bar, the first click goes to the workspace
+            // and the next ones minimize and restore its section. A
+            // double-click renames it, with the section shown.
             Hit::Workspace(index) => {
-                let double = self.last_workspace_click.is_some_and(|(at, i)| i == index && at.elapsed() < MULTI_CLICK);
-                self.last_workspace_click = if double { None } else { Some((Instant::now(), index)) };
+                let double = self.workspace_double_click(index);
+                if double || index != self.current {
+                    self.switch_workspace(index);
+                } else {
+                    self.toggle_section(index);
+                }
+                if double {
+                    self.start_workspace_rename();
+                }
+            }
+            // A section's heading goes to its workspace; a double-click
+            // renames it.
+            Hit::Section(index) => {
+                let double = self.workspace_double_click(index);
                 self.switch_workspace(index);
                 if double {
                     self.start_workspace_rename();

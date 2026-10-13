@@ -129,7 +129,7 @@ impl App {
             Command::ToggleSidebar => self.set_collapsed(!self.collapsed),
             Command::CycleWorkspaceBar => self.cycle_activity_bar(),
             Command::ToggleStacked => self.toggle_stacked(),
-            Command::Minimize => self.minimize_section(self.current),
+            Command::Minimize => self.toggle_section(self.current),
             Command::KeepAwake => self.toggle_awake(),
             Command::PullRequests => self.open_prs(),
             Command::Ports => self.open_ports(0),

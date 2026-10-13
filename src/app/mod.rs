@@ -1170,6 +1170,18 @@ impl App {
         rows
     }
 
+    /// Minimizes a workspace's section, or brings it back.
+    fn toggle_section(&mut self, w: usize) {
+        let Some(ws) = self.workspaces.get_mut(w) else { return };
+        if !ws.section_hidden {
+            return self.minimize_section(w);
+        }
+        ws.section_hidden = false;
+        let name = ws.name.clone();
+        self.clamp_list_scroll(true);
+        self.set_status(format!("showing {name}"));
+    }
+
     /// Takes a workspace's section out of the stacked sidebar, its tabs
     /// still running; going to the workspace (its badge) brings it back.
     fn minimize_section(&mut self, w: usize) {

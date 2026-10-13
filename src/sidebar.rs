@@ -157,7 +157,8 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
     let current = w == app.current;
     let close_hot = app.hover == Some(Hit::CloseWorkspace(w));
     let minimize_hot = app.hover == Some(Hit::MinimizeWorkspace(w));
-    let hovered = close_hot || minimize_hot || app.hover == Some(Hit::Workspace(w));
+    // Hovering the workspace's badge lights its heading too.
+    let hovered = close_hot || minimize_hot || matches!(app.hover, Some(Hit::Section(i) | Hit::Workspace(i)) if i == w);
     let bg = if hovered { p.hover_bg } else { BG };
     buf.set_style(pill, Style::new().bg(bg));
     let mut badge = Style::new().fg(p.on_accent).bg(ws.color());

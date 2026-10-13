@@ -59,6 +59,8 @@ pub enum Hit {
     PrHeading,
     /// A tab (workspace, tab) of another workspace, in the tab sidebar.
     OtherTab(usize, usize),
+    /// A workspace's heading in the stacked tab sidebar.
+    Section(usize),
     Toggle,
     Search,
     Tab(usize),
@@ -343,7 +345,7 @@ impl Layout {
                 match from_right {
                     1..=3 if !self.collapsed => Some(Hit::CloseWorkspace(w)),
                     4..=5 if !self.collapsed => Some(Hit::MinimizeWorkspace(w)),
-                    _ => Some(Hit::Workspace(w)),
+                    _ => Some(Hit::Section(w)),
                 }
             }
             Row::Item(w, ListItem::Tab(index)) if w == current => {
