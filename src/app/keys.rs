@@ -275,8 +275,7 @@ impl App {
             KeyCode::Enter => {
                 self.leave();
                 if let Some(&(w, t)) = results.get(selected) {
-                    self.switch_workspace(w);
-                    self.activate(t);
+                    self.go_to(w, t);
                 }
             }
             _ => self.picker_key(&key, results.len()),

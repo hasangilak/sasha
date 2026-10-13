@@ -412,7 +412,7 @@ impl App {
         let at_home = std::env::home_dir().is_some_and(|home| home == launch);
         if at_home && !fresh {
             let current = self.current;
-            self.switch_workspace(current);
+            self.enter_workspace(current);
             return Ok(());
         }
         let index = match self.workspace_for(launch) {
@@ -874,12 +874,24 @@ impl App {
             self.current = self.current.saturating_sub(1);
         }
         let current = self.current;
-        self.switch_workspace(current);
+        self.enter_workspace(current);
+        self.reveal_active();
         self.save();
         self.set_status(format!("removed workspace {}", removed.name));
     }
 
+    /// Goes to a workspace, which shows its section again if it was
+    /// minimized.
     fn switch_workspace(&mut self, index: usize) {
+        if let Some(ws) = self.workspaces.get_mut(index) {
+            ws.section_hidden = false;
+        }
+        self.enter_workspace(index);
+    }
+
+    /// Makes a workspace current, leaving its section as it is: going to
+    /// one of its tabs from a group isn't asking to see the workspace.
+    fn enter_workspace(&mut self, index: usize) {
         if index >= self.workspaces.len() {
             return;
         }
@@ -888,8 +900,6 @@ impl App {
         }
         self.current = index;
         self.selection = None;
-        // Going to a workspace shows its section again.
-        self.workspaces[index].section_hidden = false;
         self.clamp_bar_scroll(true);
         self.wake(index);
         // A workspace never shows an empty pane.
@@ -924,7 +934,7 @@ impl App {
             .position(|w| Some(w.id) == self.previous_workspace && has_tabs(w))
             .or_else(|| self.workspaces.iter().position(has_tabs));
         match target {
-            Some(index) => self.switch_workspace(index),
+            Some(index) => self.go_to(index, self.workspaces[index].active),
             None => self.quit = true,
         }
     }
@@ -1032,7 +1042,11 @@ impl App {
         let mut tab = self.spawn_tab(&cwd)?;
         tab.group = group;
         let ws = self.ws_mut();
-        ws.section_hidden = false;
+        // A tab in a group is listed there; one outside every group needs
+        // its workspace's section, even a minimized one.
+        if group.is_none() {
+            ws.section_hidden = false;
+        }
         ws.tabs.push(tab);
         let last = ws.tabs.len() - 1;
         self.activate(last);
@@ -1062,12 +1076,23 @@ impl App {
         self.clamp_list_scroll(true);
     }
 
-    /// Shows tab `t` of workspace `w`.
+    /// Shows tab `t` of workspace `w`. A minimized section stays
+    /// minimized unless the tab is in no group, and so listed nowhere else.
     fn go_to(&mut self, w: usize, t: usize) {
         if w != self.current {
-            self.switch_workspace(w);
+            self.enter_workspace(w);
         }
         self.activate(t);
+        self.reveal_active();
+    }
+
+    /// The tab on screen, when it's in no group, is listed in its
+    /// workspace's section: that comes back if it was minimized.
+    fn reveal_active(&mut self) {
+        let ws = self.ws_mut();
+        if ws.active_tab().is_some_and(|tab| tab.group.is_none()) {
+            ws.section_hidden = false;
+        }
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -1627,6 +1652,7 @@ impl App {
         let on_screen = from == self.current && index == self.workspaces[from].active;
         let source = &mut self.workspaces[from];
         let tab = source.tabs.remove(index);
+        let grouped = tab.group.is_some();
         if index < source.active || source.active >= source.tabs.len() {
             source.active = source.active.saturating_sub(1);
         }
@@ -1640,7 +1666,9 @@ impl App {
             self.previous_workspace = Some(self.workspaces[from].id);
             self.current = to;
             self.workspaces[to].active = at;
-            self.workspaces[to].section_hidden = false;
+            if !grouped {
+                self.workspaces[to].section_hidden = false;
+            }
             self.clamp_bar_scroll(true);
         }
         self.clamp_list_scroll(on_screen);
