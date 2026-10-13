@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::AppEvent;
 use crate::{notify, procinfo};
@@ -395,7 +396,7 @@ impl Tab {
 
     /// The program in the foreground, when it isn't the shell: its own title
     /// (vim, ssh and claude set good ones) or else its name.
-    fn running(&self) -> Option<String> {
+    pub fn running(&self) -> Option<String> {
         if !self.is_running_command() {
             return None;
         }
@@ -421,6 +422,17 @@ impl Drop for Tab {
     }
 }
 
+/// Splits off the status glyph a program puts at the start of its title,
+/// like claude's ✳ and spinner or codex's ◐: one symbol, then a space.
+pub fn split_glyph(title: &str) -> (Option<&str>, &str) {
+    let Some((glyph, rest)) = title.split_once(' ') else { return (None, title) };
+    let mut chars = glyph.chars();
+    let symbol = chars.next().is_some_and(|c| c == '*' || (!c.is_ascii() && !c.is_alphanumeric()));
+    // A symbol, maybe with a variation selector, one or two columns wide.
+    let fits = chars.count() <= 1 && (1..=2).contains(&glyph.width());
+    if symbol && fits { (Some(glyph), rest.trim_start()) } else { (None, title) }
+}
+
 fn short_dir(path: &Path) -> String {
     if std::env::home_dir().is_some_and(|home| home == path) {
         return "~".to_owned();
@@ -428,5 +440,25 @@ fn short_dir(path: &Path) -> String {
     match path.file_name() {
         Some(name) => name.to_string_lossy().into_owned(),
         None => path.to_string_lossy().into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_glyph;
+
+    #[test]
+    fn splits_a_status_glyph_off_titles() {
+        assert_eq!(split_glyph("✳ Fix the build"), (Some("✳"), "Fix the build"));
+        assert_eq!(split_glyph("⠐ Fix the build"), (Some("⠐"), "Fix the build"));
+        assert_eq!(split_glyph("◐ Docker services startup"), (Some("◐"), "Docker services startup"));
+        assert_eq!(split_glyph("* Claude Code"), (Some("*"), "Claude Code"));
+        assert_eq!(split_glyph("✳️ Task"), (Some("✳️"), "Task"));
+        // Titles that start with a word, a path or ASCII punctuation stay.
+        assert_eq!(split_glyph("main.rs (~/src) - NVIM"), (None, "main.rs (~/src) - NVIM"));
+        assert_eq!(split_glyph("~/Work: zsh"), (None, "~/Work: zsh"));
+        assert_eq!(split_glyph("- dashes"), (None, "- dashes"));
+        assert_eq!(split_glyph("日本 text"), (None, "日本 text"));
+        assert_eq!(split_glyph("htop"), (None, "htop"));
     }
 }

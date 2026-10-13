@@ -81,6 +81,8 @@ pub enum Hit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListItem {
     Tab(usize),
+    /// The line under a tab that says what's running in it.
+    Running(usize),
     /// The line between pinned and regular tabs.
     Separator,
     NewTab,
@@ -356,7 +358,9 @@ impl Layout {
                     Some(Hit::Tab(index))
                 }
             }
-            Row::Item(w, ListItem::Tab(index)) => Some(Hit::OtherTab(w, index)),
+            // The line under a tab is part of it.
+            Row::Item(w, ListItem::Running(index)) if w == current => Some(Hit::Tab(index)),
+            Row::Item(w, ListItem::Tab(index) | ListItem::Running(index)) => Some(Hit::OtherTab(w, index)),
             // + and × left of a group header's chevron.
             Row::Group(id) => {
                 let from_right = self.pill(y).right().saturating_sub(x);

@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::{App, Renaming};
 use crate::app::Activity;
 use crate::layout::{Hit, ListItem, Row};
-use crate::tab::Tab;
+use crate::tab::{Tab, split_glyph};
 use crate::workspace::GroupId;
 use crate::theme::{self, BG};
 
@@ -48,7 +48,7 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
         let ws = &app.workspaces[w];
         let current = w == app.current;
         // Tabs in a group hang off a rail in the group's colour.
-        if let ListItem::Tab(index) = item
+        if let ListItem::Tab(index) | ListItem::Running(index) = item
             && let Some(group) = ws.tabs[index].group.and_then(|id| app.group(id))
         {
             buf.set_string(layout.list.x, row, "▎", Style::new().fg(group.color()).bg(BG));
@@ -71,6 +71,15 @@ pub fn render(buf: &mut Buffer, app: &App) -> Option<Position> {
                 let hovered = app.hover == Some(Hit::OtherTab(w, index));
                 let state = TabState { active: false, hovered, button_hot: false, closable: false };
                 render_tab(buf, app, &ws.tabs[index], pill, state);
+            }
+            ListItem::Running(index) => {
+                let active = current && index == ws.active;
+                let hovered = if current {
+                    matches!(app.hover, Some(Hit::Tab(i) | Hit::Close(i)) if i == index)
+                } else {
+                    app.hover == Some(Hit::OtherTab(w, index))
+                };
+                render_running(buf, app, &ws.tabs[index], pill, active, hovered);
             }
             ListItem::Separator => {
                 let line = "─".repeat(pill.width.saturating_sub(2) as usize);
@@ -197,22 +206,34 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
     }
 }
 
+/// A tab row's background and text colours.
+fn tab_colors(app: &App, active: bool, hovered: bool) -> (Color, Color) {
+    let p = theme::palette();
+    match (active, hovered) {
+        (true, _) if app.highlight_active() => (p.accent, p.on_accent),
+        (true, _) => (p.active_bg, p.text),
+        (false, true) => (p.hover_bg, p.text),
+        (false, false) => (BG, p.text),
+    }
+}
+
+/// A tab's name, with its icon and buttons; what runs in it goes on the
+/// line under it (`render_running`).
 fn render_tab(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, state: TabState) {
     let p = theme::palette();
     let TabState { active, hovered, button_hot, closable } = state;
     let highlight = app.highlight_active();
-    let (bg, fg) = match (active, hovered) {
-        (true, _) if highlight => (p.accent, p.on_accent),
-        (true, _) => (p.active_bg, p.text),
-        (false, true) => (p.hover_bg, p.text),
-        (false, false) => (BG, p.text),
-    };
+    let (bg, fg) = tab_colors(app, active, hovered);
     buf.set_style(pill, Style::new().bg(bg).fg(fg));
 
-    let (icon, icon_color) = if app.is_busy(tab) {
-        (SPINNER[app.spinner_frame() % SPINNER.len()], p.accent)
-    } else {
-        theme::process_icon(tab.process_name())
+    // The status glyph from a program's title (claude's ✳ or spinner)
+    // comes first, so even a narrow sidebar shows it working.
+    let running = tab.running();
+    let glyph = running.as_deref().and_then(|title| split_glyph(title).0);
+    let (icon, icon_color) = match glyph {
+        Some(glyph) => (glyph, theme::process_icon(tab.process_name()).1),
+        None if app.is_busy(tab) => (SPINNER[app.spinner_frame() % SPINNER.len()], p.accent),
+        None => theme::process_icon(tab.process_name()),
     };
     let icon_color = if active && highlight { fg } else { icon_color };
     // Icon only when collapsed (or squeezed by a tiny window).
@@ -249,7 +270,22 @@ fn render_tab(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, state: TabStat
         title_style = title_style.add_modifier(Modifier::BOLD);
     }
     let max_width = pill.width.saturating_sub(reserved) as usize;
-    render_faded(buf, pill.x + 3, pill.y, &tab.title(), max_width, title_style, bg);
+    render_faded(buf, pill.x + 3, pill.y, &tab.prefix(), max_width, title_style, bg);
+}
+
+/// The line under a tab: ↳ and what's running in it, without the status
+/// glyph shown on the line above.
+fn render_running(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, active: bool, hovered: bool) {
+    let p = theme::palette();
+    let (bg, fg) = tab_colors(app, active, hovered);
+    buf.set_style(pill, Style::new().bg(bg).fg(fg));
+    let Some(running) = tab.running() else { return };
+    let text = split_glyph(&running).1;
+    let dim = if active && app.highlight_active() { fg } else { p.text_dim };
+    buf.set_string(pill.x + 3, pill.y, "↳", Style::new().fg(dim).bg(bg));
+    let room = pill.width.saturating_sub(6) as usize;
+    let style = Style::new().fg(if active { fg } else { p.text_dim }).bg(bg);
+    render_faded(buf, pill.x + 5, pill.y, text, room, style, bg);
 }
 
 /// A group's header: a chip with its name in its colour, like Chrome's.

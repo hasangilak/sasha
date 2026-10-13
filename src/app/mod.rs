@@ -1143,7 +1143,9 @@ impl App {
             }
             rows.push(Row::Group(group.id));
             let visible = members.into_iter().filter(|&tab| !group.collapsed || tab == on_screen);
-            rows.extend(visible.map(|(w, t)| Row::Item(w, ListItem::Tab(t))));
+            for (w, t) in visible {
+                self.push_tab_rows(&mut rows, w, t);
+            }
         }
         // The current workspace (unless its section was closed), and others
         // with tabs of their own, outside groups.
@@ -1164,10 +1166,24 @@ impl App {
             if headings {
                 rows.push(Row::Workspace(w));
             }
-            let items = self.workspaces[w].list_items().into_iter();
-            rows.extend(items.filter(|item| w == self.current || *item != ListItem::NewTab).map(|item| Row::Item(w, item)));
+            for item in self.workspaces[w].list_items() {
+                match item {
+                    ListItem::Tab(t) => self.push_tab_rows(&mut rows, w, t),
+                    ListItem::NewTab if w != self.current => {}
+                    item => rows.push(Row::Item(w, item)),
+                }
+            }
         }
         rows
+    }
+
+    /// A tab's rows: its name, and under it what's running, when something
+    /// is and the sidebar is wide enough to say.
+    fn push_tab_rows(&self, rows: &mut Vec<Row>, w: usize, t: usize) {
+        rows.push(Row::Item(w, ListItem::Tab(t)));
+        if !self.layout.collapsed && self.workspaces[w].tabs[t].running().is_some() {
+            rows.push(Row::Item(w, ListItem::Running(t)));
+        }
     }
 
     /// Minimizes a workspace's section, or brings it back.
@@ -1243,9 +1259,11 @@ impl App {
     fn clamp_list_scroll(&mut self, reveal: bool) {
         let Some(ws) = self.workspaces.get(self.current) else { return };
         let rows = self.sidebar_rows();
-        let target = Row::Item(self.current, ListItem::Tab(ws.active));
-        let row = reveal.then(|| rows.iter().position(|r| *r == target)).flatten();
-        self.list_scroll = self.layout.clamp_scroll(self.list_scroll, rows.len(), row);
+        let find = |item| reveal.then(|| rows.iter().position(|r| *r == Row::Item(self.current, item))).flatten();
+        // Both of the tab's lines: the one under it first, so that its
+        // name stays in view.
+        let scroll = self.layout.clamp_scroll(self.list_scroll, rows.len(), find(ListItem::Running(ws.active)));
+        self.list_scroll = self.layout.clamp_scroll(scroll, rows.len(), find(ListItem::Tab(ws.active)));
     }
 
     /// Keeps the workspace bar scrolled into range, showing the current
