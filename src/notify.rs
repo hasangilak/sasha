@@ -1,18 +1,40 @@
 //! Desktop notifications, for tabs that need you while you look elsewhere.
 
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use crate::agents::Agent;
+
+fn enabled() -> bool {
+    std::env::var_os("SASHA_NOTIFY").is_none_or(|value| value != "0")
+}
+
 /// Shows a notification, unless `SASHA_NOTIFY=0`.
 pub fn send(title: &str, body: &str) {
-    if std::env::var_os("SASHA_NOTIFY").is_some_and(|value| value == "0") {
+    if !enabled() {
         return;
     }
     let mut command = command(title, body);
     // Starting osascript takes a moment; don't hold up the tabs.
+    std::thread::spawn(move || show(&mut command));
+}
+
+/// A notification about the turn an agent just finished (or is stuck in)
+/// in `cwd`, told from its session log, in the tab called `place`; the
+/// plain `title` and `body` when the log has nothing to say.
+pub fn send_agent(agent: Agent, cwd: PathBuf, place: String, title: String, body: String) {
+    if !enabled() {
+        return;
+    }
     std::thread::spawn(move || {
-        let _ = command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        let (title, body) = agent.report(&cwd).map_or((title, body), |report| agent.message(&report, &place));
+        show(&mut command(&title, &body));
     });
+}
+
+fn show(command: &mut Command) {
+    let _ = command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 #[cfg(target_os = "macos")]

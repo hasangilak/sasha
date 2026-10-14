@@ -56,8 +56,9 @@ link to open it, and drag any bar's edge to resize it.
   (`×` on its header; `+` opens a terminal in it).
 - **Sessions that last**: close the window or detach, then run `sasha` again and everything is
   still there. After a restart, your tabs come back as fresh shells.
-- **Notifications** when a background tab finishes, rings the bell, or goes quiet (say, Claude
-  is done).
+- **Notifications** when a background tab finishes, rings the bell, or goes quiet. For Claude
+  Code and Codex they say what happened, read from the agent's own session log: the gist of its
+  answer and how many files it changed, or the command waiting for your OK.
 - **Pull requests**: a bar right of the terminal lists the open PRs of the tab's repo (↻
   refreshes). Open one to see each file marked added, modified or deleted, with its diff. Needs the
   [GitHub CLI](https://cli.github.com), signed in.

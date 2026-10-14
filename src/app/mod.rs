@@ -22,6 +22,7 @@ use crossterm::event::{Event, KeyEventKind};
 use ratatui::layout::{Rect, Size};
 use ratatui::style::Color;
 
+use crate::agents::Agent;
 use crate::config::Config;
 use crate::awake::Awake;
 use crate::github::{FileDiff, Pr};
@@ -1511,7 +1512,11 @@ impl App {
                     continue;
                 }
                 tab.last_notified = Some(Instant::now());
-                notify::send(&tab.title(), &news);
+                // Claude and Codex get told from what they did.
+                match (Agent::of(tab.process_name()), tab.program_cwd()) {
+                    (Some(agent), Some(cwd)) => notify::send_agent(agent, cwd, tab.prefix(), tab.title(), news),
+                    _ => notify::send(&tab.title(), &news),
+                }
             }
         }
     }

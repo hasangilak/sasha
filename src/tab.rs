@@ -364,6 +364,11 @@ impl Tab {
         self.cwd.as_deref()
     }
 
+    /// Where the program in the foreground runs, else the shell's folder.
+    pub fn program_cwd(&self) -> Option<PathBuf> {
+        self.fg_pgid.and_then(procinfo::cwd).or_else(|| self.cwd.clone())
+    }
+
     pub fn process_name(&self) -> &str {
         &self.fg_name
     }
