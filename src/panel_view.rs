@@ -12,7 +12,9 @@ use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Confirm, Loadable, OpenPr, Panel, PortsPanel, PrPanel};
+use crate::files::printable;
 use crate::github::Change;
+use crate::highlight::{Kind, Span};
 use crate::theme;
 use crate::ui::popup_block;
 
@@ -70,10 +72,11 @@ pub fn render_preview(frame: &mut Frame, app: &App) {
     let root = &app.ws().path;
     let name = preview.path.strip_prefix(root).unwrap_or(&preview.path).display().to_string();
     let lines = preview.lines.as_ref().map_or(0, Vec::len);
+    let lang = preview.lang.map_or_else(String::new, |lang| format!(" · {}", lang.name()));
     let title = match lines {
-        0 => format!(" {name} "),
-        1 => format!(" {name} · 1 line "),
-        n => format!(" {name} · {n} lines "),
+        0 => format!(" {name}{lang} "),
+        1 => format!(" {name}{lang} · 1 line "),
+        n => format!(" {name}{lang} · {n} lines "),
     };
     frame.render_widget(Clear, area);
     let block = popup_block(&title);
@@ -102,17 +105,58 @@ pub fn render_preview(frame: &mut Frame, app: &App) {
     let gutter = text.len().to_string().len() as u16;
     let x = body.x + gutter + 2;
     let room = body.right().saturating_sub(x) as usize;
-    for (row, (number, line)) in text.iter().enumerate().skip(preview.scroll).take(body.height as usize).enumerate() {
+    for (row, (index, line)) in text.iter().enumerate().skip(preview.scroll).take(body.height as usize).enumerate() {
         let y = body.y + row as u16;
-        let number = format!("{:>width$}", number + 1, width = gutter as usize);
+        let number = format!("{:>width$}", index + 1, width = gutter as usize);
         buf.set_string(body.x, y, number, Style::new().fg(p.border).bg(p.popup_bg));
-        buf.set_stringn(x, y, printable(line), room, Style::new().fg(p.text).bg(p.popup_bg));
+        let spans = preview.spans.get(index).map_or(&[][..], Vec::as_slice);
+        render_code(buf, x, y, room, line, spans);
     }
     let last_shown = preview.scroll + body.height as usize;
     if preview.truncated && last_shown >= text.len() {
         let note = "… only the first megabyte is shown";
         let y = body.y + (text.len() - preview.scroll).min(body.height as usize - 1) as u16;
         buf.set_stringn(x, y, note, room, Style::new().fg(p.text_dim).bg(p.popup_bg));
+    }
+}
+
+/// A line of code, in its colours.
+fn render_code(buf: &mut Buffer, x: u16, y: u16, room: usize, line: &str, spans: &[Span]) {
+    let right = x.saturating_add(u16::try_from(room).unwrap_or(u16::MAX));
+    // Plain stretches between the coloured ones.
+    let mut pieces = Vec::with_capacity(spans.len() * 2 + 1);
+    let mut at = 0;
+    for span in spans {
+        pieces.push((at, span.start, None));
+        pieces.push((span.start, span.end, Some(span.kind)));
+        at = span.end;
+    }
+    pieces.push((at, line.len(), None));
+    let mut x = x;
+    for (start, end, kind) in pieces {
+        let Some(text) = line.get(start..end).filter(|text| !text.is_empty()) else { continue };
+        if x >= right {
+            break;
+        }
+        (x, _) = buf.set_stringn(x, y, text, usize::from(right - x), code_style(kind));
+    }
+}
+
+fn code_style(kind: Option<Kind>) -> Style {
+    let p = theme::palette();
+    let style = Style::new().bg(p.popup_bg);
+    let Some(kind) = kind else { return style.fg(p.text) };
+    match kind {
+        Kind::Comment => style.fg(p.text_dim).add_modifier(Modifier::ITALIC),
+        Kind::String => style.fg(p.green),
+        Kind::Number | Kind::Constant => style.fg(p.orange),
+        Kind::Keyword => style.fg(p.purple),
+        Kind::Type => style.fg(p.yellow),
+        Kind::Function => style.fg(p.blue),
+        Kind::Macro => style.fg(p.cyan),
+        Kind::Key | Kind::Tag => style.fg(p.red),
+        Kind::Variable => style.fg(p.pink),
+        Kind::Heading => style.fg(p.blue).add_modifier(Modifier::BOLD),
     }
 }
 
@@ -293,7 +337,3 @@ fn render_ports(buf: &mut Buffer, app: &App, area: Rect, panel: &PortsPanel) {
     }
 }
 
-/// A diff line made safe to draw: tabs become spaces, control characters go.
-fn printable(line: &str) -> String {
-    line.replace('\t', "    ").chars().filter(|c| !c.is_control()).collect()
-}

@@ -63,8 +63,9 @@ link to open it, and drag any bar's edge to resize it.
   refreshes). Open one to see each file marked added, modified or deleted, with its diff. Needs the
   [GitHub CLI](https://cli.github.com), signed in.
 - **Files**: a bar right of the terminal shows the workspace's folder as a tree, with changed
-  files marked as git sees them. Click a file to read it over the terminal, or press `e` to open
-  it in your `$EDITOR` in a new tab. `×` hides the bar; `Ctrl+B F` brings it back.
+  files marked as git sees them. Click a file to read it over the terminal, in colour for Rust,
+  Python, Go, JavaScript, TypeScript, shell, CSS, HTML, JSON, YAML, TOML, Dockerfiles and
+  Markdown, or press `e` to open it in your `$EDITOR` in a new tab. `×` hides the bar; `Ctrl+B F` brings it back.
 - **Ports**: a slim bar lists what the programs in your tabs listen on; click one to see which
   tab runs it, jump there, or force-kill it.
 - **Keep awake**: click ☾ at the top of the workspace bar (☀ while it's on) and the computer

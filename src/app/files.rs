@@ -123,7 +123,7 @@ impl App {
         }
         self.clamp_files_scroll(false);
         // The file being read may have changed too.
-        if let Some(preview) = self.preview_mut() {
+        if let Some(preview) = self.preview_mut().filter(|preview| preview.stale()) {
             let scroll = preview.scroll;
             *preview = Preview::read(&preview.path);
             preview.scroll_by(scroll as isize);

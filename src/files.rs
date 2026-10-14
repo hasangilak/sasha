@@ -6,6 +6,9 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::SystemTime;
+
+use crate::highlight::{self, Lang, Span};
 
 /// Never listed.
 const HIDDEN: [&str; 2] = [".git", ".DS_Store"];
@@ -280,17 +283,35 @@ fn upgrade(paths: &mut HashMap<PathBuf, Mark>, path: PathBuf, mark: Mark) {
 /// A file shown over the pane.
 pub struct Preview {
     pub path: PathBuf,
-    /// Its lines, or why there are none to show.
+    /// Its lines, ready to draw, or why there are none to show.
     pub lines: Result<Vec<String>, String>,
+    /// Its language, and each line's colours in it.
+    pub lang: Option<Lang>,
+    pub spans: Vec<Vec<Span>>,
     /// Only the first `PREVIEW_MAX` bytes were read.
     pub truncated: bool,
     /// First line shown.
     pub scroll: usize,
+    /// When it was changed, and its size, as read.
+    stamp: Option<(SystemTime, u64)>,
+}
+
+fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 impl Preview {
     pub fn read(path: &Path) -> Self {
-        let mut preview = Self { path: path.to_path_buf(), lines: Ok(Vec::new()), truncated: false, scroll: 0 };
+        let mut preview = Self {
+            path: path.to_path_buf(),
+            lines: Ok(Vec::new()),
+            lang: None,
+            spans: Vec::new(),
+            truncated: false,
+            scroll: 0,
+            stamp: stamp(path),
+        };
         let mut bytes = Vec::new();
         let read = File::open(path).and_then(|file| file.take(PREVIEW_MAX + 1).read_to_end(&mut bytes));
         if let Err(err) = read {
@@ -305,8 +326,18 @@ impl Preview {
         preview.truncated = bytes.len() as u64 > PREVIEW_MAX;
         bytes.truncate(PREVIEW_MAX as usize);
         let text = String::from_utf8_lossy(&bytes);
-        preview.lines = Ok(text.lines().map(str::to_owned).collect());
+        let lines: Vec<String> = text.lines().map(printable).collect();
+        preview.lang = Lang::detect(path, lines.first().map_or("", String::as_str));
+        if let Some(lang) = preview.lang {
+            preview.spans = highlight::highlight(lang, &lines);
+        }
+        preview.lines = Ok(lines);
         preview
+    }
+
+    /// Whether the file has changed since it was read.
+    pub fn stale(&self) -> bool {
+        stamp(&self.path) != self.stamp
     }
 
     pub fn line_count(&self) -> usize {
@@ -317,6 +348,11 @@ impl Preview {
     pub fn scroll_by(&mut self, delta: isize) {
         self.scroll = self.scroll.saturating_add_signed(delta).min(self.line_count().saturating_sub(1));
     }
+}
+
+/// A line made safe to draw: tabs become spaces, control characters go.
+pub fn printable(line: &str) -> String {
+    line.replace('\t', "    ").chars().filter(|c| !c.is_control()).collect()
 }
 
 fn human_size(bytes: u64) -> String {
