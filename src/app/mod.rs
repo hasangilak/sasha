@@ -417,6 +417,7 @@ impl App {
             self.quit = self.tab_count() == 0;
             return;
         }
+        self.show_only_groups();
         if hello.build != self.build {
             let prefix = self.config.prefix.label();
             self.set_status(format!("sasha was rebuilt · {prefix} q and reopen to update"));
@@ -455,6 +456,27 @@ impl App {
             self.switch_workspace(index);
         }
         Ok(())
+    }
+
+    /// Opening sasha shows the groups and no workspace: each comes back
+    /// when its badge is clicked. A terminal in a group goes on screen. With
+    /// no terminal in any group, the launch folder's workspace stays.
+    fn show_only_groups(&mut self) {
+        let on_screen_grouped = self.active_tab().is_some_and(|t| t.group.is_some());
+        let grouped = self.groups.iter().find_map(|group| {
+            let members = self.members(group.id);
+            let last = members.iter().find(|&&(w, t)| Some(self.workspaces[w].tabs[t].id) == group.last_active);
+            last.or(members.first()).copied()
+        });
+        let Some((w, t)) = grouped else { return };
+        for ws in &mut self.workspaces {
+            ws.section_hidden = true;
+        }
+        if !on_screen_grouped {
+            self.go_to(w, t);
+        }
+        self.list_scroll = 0;
+        self.clamp_list_scroll(true);
     }
 
     /// Lets the client go; the tabs keep running.
