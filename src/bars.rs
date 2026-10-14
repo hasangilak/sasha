@@ -1,5 +1,5 @@
 //! The slim bars: the ports the tabs listen on, left of the tab sidebar,
-//! and right of the pane the workspace's files and the open pull requests
+//! and right of the pane the terminal's files and the open pull requests
 //! of the tab's repository.
 
 use ratatui::buffer::Buffer;
@@ -163,7 +163,14 @@ fn render_files(buf: &mut Buffer, app: &App) {
     let x = area.x + 2;
     let width = area.width.saturating_sub(3);
     let focused = app.files_focused();
-    heading(buf, area, x, width, &format!("files · {}", app.ws().name), focused);
+    // The folder, its end if it's long.
+    let label = app.files_label();
+    let room = (width as usize).saturating_sub("files · ".len() + 3);
+    let label = match label.chars().count().checked_sub(room) {
+        Some(over) if over > 0 => format!("…{}", label.chars().skip(over + 1).collect::<String>()),
+        _ => label,
+    };
+    heading(buf, area, x, width, &format!("files · {label}"), focused);
     // The × that hides the bar, over the end of the heading.
     let hide_x = app.layout.files_hide_x();
     let hot = app.hover == Some(Hit::FilesHide);

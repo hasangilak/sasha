@@ -1,4 +1,4 @@
-//! The files bar's tree of a workspace's folder: folders are read as they're
+//! The files bar's tree of a terminal's folder: folders are read as they're
 //! opened, git says which paths changed, and files are read for the preview.
 
 use std::collections::{HashMap, HashSet};

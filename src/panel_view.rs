@@ -69,7 +69,7 @@ pub fn render_preview(frame: &mut Frame, app: &App) {
     if area.width < 24 || area.height < 6 {
         return;
     }
-    let root = &app.ws().path;
+    let root = app.tree().map_or(&app.ws().path, |tree| &tree.root);
     let name = preview.path.strip_prefix(root).unwrap_or(&preview.path).display().to_string();
     let lines = preview.lines.as_ref().map_or(0, Vec::len);
     let lang = preview.lang.map_or_else(String::new, |lang| format!(" · {}", lang.name()));

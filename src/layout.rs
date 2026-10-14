@@ -121,7 +121,7 @@ pub struct Layout {
     pub activity_divider: Rect,
     /// The slim bar of open ports, right of the workspace bar.
     pub ports_bar: Rect,
-    /// The workspace's files, right of the terminal pane.
+    /// The files of the terminal's folder, right of the terminal pane.
     pub files_bar: Rect,
     /// The open pull requests, right of the files.
     pub pr_bar: Rect,

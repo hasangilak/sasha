@@ -83,7 +83,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("C", "keep the computer awake, or let it sleep (☀ / ☾)"),
         ("P", "open pull requests (gh) and their diffs"),
         ("O", "open ports in your tabs; x x force-kills"),
-        ("F", "browse the workspace's files: ↑↓ ← →, ⏎ read, e edit, y copy path"),
+        ("F", "browse the terminal's folder: ↑↓ ← →, ⏎ read, e edit, y copy path"),
         ("i", "show / hide the ports and pull request bars"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),

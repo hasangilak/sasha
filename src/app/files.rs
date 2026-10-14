@@ -1,6 +1,6 @@
-//! The files bar: the current workspace's folder as a tree, browsed with
-//! the mouse or with keys, a file shown over the pane, and opened in the
-//! editor in a tab of its own.
+//! The files bar: the folder the terminal on screen is in, as a tree,
+//! browsed with the mouse or with keys, a file shown over the pane, and
+//! opened in the editor in a tab of its own.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -13,19 +13,42 @@ use super::state::{Browse, TabMode};
 use super::{App, AppEvent, Mode};
 use crate::files::{self, Preview, Scan, Tree};
 use crate::layout;
+use crate::tab::Tab;
+use crate::workspace;
 
 /// How often the open folders, and what git says, are looked at again.
 const FILES_EVERY: Duration = Duration::from_secs(3);
+/// Trees of folders no terminal is in anymore are let go past this many.
+const TREES_KEPT: usize = 32;
 
 impl App {
-    /// The tree of the workspace on screen.
+    /// The folder the files bar shows: the one the terminal on screen is
+    /// in (it follows `cd`), else the workspace's.
+    fn files_root(&self) -> Option<&Path> {
+        let ws = self.workspaces.get(self.current)?;
+        Some(ws.active_tab().and_then(Tab::cwd).unwrap_or(&ws.path))
+    }
+
+    /// The folder's name for the bar's heading: inside the workspace, the
+    /// way down from it.
+    pub fn files_label(&self) -> String {
+        let Some(root) = self.files_root() else { return String::new() };
+        let ws = self.ws();
+        match root.strip_prefix(&ws.path) {
+            Ok(rest) if rest.as_os_str().is_empty() => ws.name.clone(),
+            Ok(rest) => format!("{}/{}", ws.name, rest.display()),
+            Err(_) => workspace::pretty_path(root),
+        }
+    }
+
+    /// The tree of the folder the bar shows.
     pub fn tree(&self) -> Option<&Tree> {
-        self.trees.get(&self.workspaces.get(self.current)?.path)
+        self.trees.get(self.files_root()?)
     }
 
     fn tree_mut(&mut self) -> Option<&mut Tree> {
-        let root = &self.workspaces.get(self.current)?.path;
-        self.trees.get_mut(root)
+        let root = self.files_root()?.to_path_buf();
+        self.trees.get_mut(&root)
     }
 
     pub fn file_rows(&self) -> usize {
@@ -64,18 +87,24 @@ impl App {
         Some((row.entry.path.clone(), row.entry.dir))
     }
 
-    /// The rules for the files bar: the workspace on screen has a tree,
+    /// The rules for the files bar: the folder it shows has a tree,
     /// scrolled into range, and keys only go to a bar that's shown.
     pub(super) fn normalize_files(&mut self) {
-        let Some(ws) = self.workspaces.get(self.current) else { return };
         if self.layout.files_bar.is_empty() {
             if self.files_focused() {
                 self.leave();
             }
             return;
         }
-        if !self.trees.contains_key(&ws.path) {
-            let root = ws.path.clone();
+        let Some(root) = self.files_root().map(Path::to_path_buf) else { return };
+        if !self.trees.contains_key(&root) {
+            if self.trees.len() >= TREES_KEPT {
+                // Keep the trees of folders terminals are in, with what's
+                // open in them.
+                let in_use: Vec<PathBuf> =
+                    self.workspaces.iter().flat_map(|ws| &ws.tabs).filter_map(|t| t.cwd().map(Path::to_path_buf)).collect();
+                self.trees.retain(|dir, _| in_use.contains(dir));
+            }
             self.trees.insert(root.clone(), Tree::new(root));
             // What git says about it, straight away.
             self.files_scanned = None;
@@ -96,6 +125,8 @@ impl App {
 
     /// Looks at the open folders again, and asks git, while the bar shows.
     pub(super) fn refresh_files(&mut self) {
+        // The terminal on screen may have gone to another folder.
+        self.normalize_files();
         let due = self.files_scanned.is_none_or(|at| at.elapsed() >= FILES_EVERY);
         if self.client.is_some() && !self.layout.files_bar.is_empty() && due {
             self.scan_files();
@@ -319,10 +350,10 @@ impl App {
         }
     }
 
-    /// Copies the highlighted path, relative to the workspace's folder.
+    /// Copies the highlighted path, relative to the terminal's folder.
     fn copy_selected_path(&mut self) {
         let Some((path, _)) = self.selected_file() else { return };
-        let root = &self.ws().path;
+        let root = self.files_root().unwrap_or(Path::new(""));
         let text = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
         self.copy_to_clipboard(&text);
         self.set_status(format!("copied {text}"));
