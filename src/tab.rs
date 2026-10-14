@@ -1,6 +1,7 @@
 //! A tab is one shell running in its own pseudo-terminal, plus the vt100
 //! emulator state that mirrors what the shell has drawn.
 
+use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
@@ -148,17 +149,20 @@ pub struct Tab {
 }
 
 impl Tab {
+    /// Starts the user's shell in a new tab, or `program` (its arguments)
+    /// in its place.
     pub fn spawn(
         id: TabId,
         (rows, cols): (u16, u16),
         cwd: Option<&Path>,
+        program: Option<Vec<OsString>>,
         events: Sender<AppEvent>,
     ) -> Result<Self> {
         let pair = native_pty_system()
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .context("failed to open a pty")?;
 
-        let mut cmd = CommandBuilder::new_default_prog();
+        let mut cmd = program.map_or_else(CommandBuilder::new_default_prog, CommandBuilder::from_argv);
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }

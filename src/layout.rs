@@ -22,9 +22,18 @@ pub const PORTS_MAX: u16 = 40;
 pub const PRS_WIDTH: u16 = 32;
 pub const PRS_MIN: u16 = 16;
 pub const PRS_MAX: u16 = 100;
-/// Narrower windows leave out the ports bar, and then the pull request bar.
+/// The files bar, with its edge.
+pub const FILES_WIDTH: u16 = 30;
+pub const FILES_MIN: u16 = 16;
+pub const FILES_MAX: u16 = 100;
+/// Narrower windows leave out the ports bar, the files bar, and then the
+/// pull request bar.
 const PORTS_MIN_AREA: u16 = 80;
+const FILES_MIN_AREA: u16 = 100;
 const PRS_MIN_AREA: u16 = 120;
+/// What the bars leave the tab sidebar and the terminal pane, at least:
+/// past that, the pull request bar gives way, then the ports and the files.
+const KEEP: u16 = 60;
 pub const DEFAULT_WIDTH: u16 = 30;
 pub const MIN_WIDTH: u16 = 16;
 pub const COLLAPSED_WIDTH: u16 = 6;
@@ -55,6 +64,12 @@ pub enum Hit {
     PrsDivider,
     /// A pull request (by position) in the pull request bar.
     Pr(usize),
+    /// A row (by position in the whole tree) of the files bar.
+    File(usize),
+    /// The × on the files bar's heading: hides it.
+    FilesHide,
+    /// The files bar's left edge, dragged to resize it.
+    FilesDivider,
     /// The pull request bar's heading: refreshes the list.
     PrHeading,
     /// A tab (workspace, tab) of another workspace, in the tab sidebar.
@@ -106,7 +121,9 @@ pub struct Layout {
     pub activity_divider: Rect,
     /// The slim bar of open ports, right of the workspace bar.
     pub ports_bar: Rect,
-    /// The open pull requests, right of the terminal pane.
+    /// The workspace's files, right of the terminal pane.
+    pub files_bar: Rect,
+    /// The open pull requests, right of the files.
     pub pr_bar: Rect,
     pub sidebar: Rect,
     pub header: Rect,
@@ -117,11 +134,19 @@ pub struct Layout {
     pub collapsed: bool,
 }
 
+/// The widths of the slim bars beside the sidebar and the pane; 0 hides
+/// one.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Bars {
+    pub ports: u16,
+    pub files: u16,
+    pub prs: u16,
+}
+
 impl Layout {
-    /// `activity_width` 0 hides the workspace bar.
-    /// `bars` are the widths of the ports and pull request bars (0 hides
-    /// one); they're left out where there isn't room.
-    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool, bars: (u16, u16)) -> Self {
+    /// `activity_width` 0 hides the workspace bar. The `bars` are left out
+    /// where there isn't room.
+    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool, bars: Bars) -> Self {
         // Wide workspace bars give way to the sidebar and terminal first.
         let activity_width = activity_width
             .min(area.width.saturating_sub(26).max(ACTIVITY_COMPACT))
@@ -129,11 +154,21 @@ impl Layout {
         let activity = Rect { width: activity_width, ..area };
         let activity_divider = Rect { x: activity.right().saturating_sub(1), width: activity_width.min(1), ..area };
         let rest = Rect { x: area.x + activity_width, width: area.width - activity_width, ..area };
-        let ports_width = if area.width >= PORTS_MIN_AREA { bars.0.min(rest.width / 4) } else { 0 };
+        let fits = |min_area: u16, width: u16, share: u16| {
+            if area.width >= min_area { width.min(rest.width / share) } else { 0 }
+        };
+        let mut widths = [fits(PORTS_MIN_AREA, bars.ports, 4), fits(FILES_MIN_AREA, bars.files, 3), fits(PRS_MIN_AREA, bars.prs, 2)];
+        // Pull requests give way first, then ports, then files.
+        for bar in [2, 0, 1] {
+            if rest.width.saturating_sub(widths.iter().sum()) < KEEP {
+                widths[bar] = 0;
+            }
+        }
+        let [ports_width, files_width, prs_width] = widths;
         let ports_bar = Rect { width: ports_width, ..rest };
-        let prs_width = if area.width >= PRS_MIN_AREA { bars.1.min(rest.width / 2) } else { 0 };
-        let rest = Rect { x: rest.x + ports_width, width: rest.width - ports_width - prs_width, ..rest };
-        let pr_bar = Rect { x: rest.right(), width: prs_width, ..rest };
+        let rest = Rect { x: rest.x + ports_width, width: rest.width - ports_width - files_width - prs_width, ..rest };
+        let files_bar = Rect { x: rest.right(), width: files_width, ..rest };
+        let pr_bar = Rect { x: files_bar.right(), width: prs_width, ..rest };
 
         let width = if collapsed { COLLAPSED_WIDTH } else { width };
         // Always leave the terminal pane a usable amount of room.
@@ -157,6 +192,7 @@ impl Layout {
             activity,
             activity_divider,
             ports_bar,
+            files_bar,
             pr_bar,
             sidebar,
             header,
@@ -166,6 +202,21 @@ impl Layout {
             pane,
             collapsed,
         }
+    }
+
+    /// Column of the × that hides the files bar.
+    pub fn files_hide_x(&self) -> u16 {
+        self.files_bar.right().saturating_sub(2)
+    }
+
+    /// Rows of the files bar's tree.
+    pub fn files_rows(&self) -> usize {
+        self.files_bar.height.saturating_sub(2) as usize
+    }
+
+    /// The × that closes a file shown over the pane.
+    pub fn preview_close(&self) -> Rect {
+        Rect::new(self.pane.right().saturating_sub(4), self.pane.y, 3.min(self.pane.width), 1.min(self.pane.height))
     }
 
     pub fn toggle_button(&self) -> Rect {
@@ -218,17 +269,7 @@ impl Layout {
     /// Scroll offset of a tab list of `items` rows, clamped and moved to
     /// reveal item `reveal`.
     pub fn clamp_scroll(&self, scroll: usize, items: usize, reveal: Option<usize>) -> usize {
-        let rows = (self.list.height as usize).max(1);
-        let max = items.saturating_sub(rows);
-        let mut scroll = scroll.min(max);
-        if let Some(item) = reveal {
-            if item < scroll {
-                scroll = item;
-            } else if item >= scroll + rows {
-                scroll = item + 1 - rows;
-            }
-        }
-        scroll
+        scrolled(scroll, items, self.list.height as usize, reveal)
     }
 
     /// Last row (exclusive) usable for workspace badges; the bottom rows
@@ -308,6 +349,16 @@ impl Layout {
         }
         if self.pr_bar.width > 0 && x == self.pr_bar.x && y > self.pr_bar.y {
             return Some(Hit::PrsDivider);
+        }
+        if self.files_bar.width > 0 && x == self.files_bar.x && y > self.files_bar.y {
+            return Some(Hit::FilesDivider);
+        }
+        if self.files_bar.contains(pos) {
+            if y == self.files_bar.y {
+                return (x == self.files_hide_x()).then_some(Hit::FilesHide);
+            }
+            let index = app.files_scroll() + (y.checked_sub(self.files_bar.y + 2)?) as usize;
+            return (index < app.file_rows()).then_some(Hit::File(index));
         }
         if self.ports_bar.contains(pos) {
             let index = (y.checked_sub(self.ports_bar.y + 2)?) as usize;
@@ -393,4 +444,19 @@ impl Layout {
             std::cmp::Ordering::Greater => None,
         }
     }
+}
+
+/// Scroll offset of a list of `items` in `rows` rows, clamped and moved to
+/// reveal item `reveal`.
+pub fn scrolled(scroll: usize, items: usize, rows: usize, reveal: Option<usize>) -> usize {
+    let rows = rows.max(1);
+    let mut scroll = scroll.min(items.saturating_sub(rows));
+    if let Some(item) = reveal {
+        if item < scroll {
+            scroll = item;
+        } else if item >= scroll + rows {
+            scroll = item + 1 - rows;
+        }
+    }
+    scroll
 }

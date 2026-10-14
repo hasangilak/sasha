@@ -41,6 +41,11 @@ pub struct SavedLayout {
     pub ports_width: u16,
     #[serde(default)]
     pub prs_width: u16,
+    /// The files bar is hidden.
+    #[serde(default)]
+    pub hide_files: bool,
+    #[serde(default)]
+    pub files_width: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

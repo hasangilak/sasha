@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 
 use super::state::{Mode, Picker, PickerKind};
 use super::{App, Drag, Selection};
@@ -30,6 +31,21 @@ impl App {
             }
             return;
         }
+        // A file shown over the pane: the wheel scrolls it, its × closes it.
+        if self.preview().is_some() && hit == Some(Hit::Pane) {
+            self.hover = None;
+            match mouse.kind {
+                MouseEventKind::ScrollDown => self.scroll_preview(WHEEL_LINES as isize),
+                MouseEventKind::ScrollUp => self.scroll_preview(-(WHEEL_LINES as isize)),
+                MouseEventKind::Down(MouseButton::Left)
+                    if self.layout.preview_close().contains(Position::new(mouse.column, mouse.row)) =>
+                {
+                    self.leave();
+                }
+                _ => {}
+            }
+            return;
+        }
         self.hover = hit.filter(|h| *h != Hit::Pane);
         if hit != Some(Hit::Pane) {
             self.hover_link = None;
@@ -47,6 +63,8 @@ impl App {
                 // Clicking away saves the name, like leaving a text field.
                 Mode::Rename(_) => self.finish_rename(),
                 Mode::Tab(_) if hit == Some(Hit::Pane) => self.leave(),
+                // Clicking away from the files bar gives the keys back.
+                Mode::Files(_) if !matches!(hit, Some(Hit::File(_))) => self.leave(),
                 _ => {}
             }
         }
@@ -80,9 +98,12 @@ impl App {
             (MouseEventKind::ScrollDown | MouseEventKind::ScrollUp, Some(_)) => {
                 let down = mouse.kind == MouseEventKind::ScrollDown;
                 let step = |scroll: usize| if down { scroll + 1 } else { scroll.saturating_sub(1) };
-                if self.layout.activity.contains(ratatui::layout::Position::new(mouse.column, mouse.row)) {
+                let pos = Position::new(mouse.column, mouse.row);
+                if self.layout.activity.contains(pos) {
                     self.activity_scroll = step(self.activity_scroll);
                     self.clamp_bar_scroll(false);
+                } else if self.layout.files_bar.contains(pos) {
+                    self.scroll_files(if down { WHEEL_LINES as isize } else { -(WHEEL_LINES as isize) });
                 } else {
                     self.list_scroll = step(self.list_scroll);
                     self.clamp_list_scroll(false);
@@ -135,6 +156,9 @@ impl App {
             Hit::ActivityDivider => self.drag = Some(Drag::ActivityDivider),
             Hit::PortsDivider => self.drag = Some(Drag::PortsDivider),
             Hit::PrsDivider => self.drag = Some(Drag::PrsDivider),
+            Hit::FilesDivider => self.drag = Some(Drag::FilesDivider),
+            Hit::File(index) => self.click_file(index),
+            Hit::FilesHide => self.hide_files(),
             // Another workspace's tab or group, stacked in the sidebar.
             Hit::OtherTab(w, t) => self.go_to(w, t),
             Hit::AddWorkspace => self.start_workspaces("~/".to_owned()),
@@ -197,6 +221,7 @@ impl App {
                 self.prs_width = width.clamp(layout::PRS_MIN, layout::PRS_MAX);
                 self.relayout_now();
             }
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::FilesDivider)) => self.resize_files_bar(mouse.column),
             (MouseEventKind::Drag(MouseButton::Left), Some(Drag::ActivityDivider)) => {
                 self.resize_activity_bar(mouse.column.saturating_sub(self.layout.activity.x) + 1);
             }

@@ -1,17 +1,20 @@
 //! The slim bars: the ports the tabs listen on, left of the tab sidebar,
-//! and the open pull requests of the tab's repository, right of the pane.
+//! and right of the pane the workspace's files and the open pull requests
+//! of the tab's repository.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::app::{App, Loadable};
+use crate::files::Mark;
 use crate::layout::Hit;
 use crate::sidebar::{SPINNER, render_faded};
 use crate::theme::{self, BG};
 
 pub fn render(buf: &mut Buffer, app: &App) {
     render_ports(buf, app);
+    render_files(buf, app);
     render_prs(buf, app);
 }
 
@@ -143,6 +146,84 @@ fn render_prs(buf: &mut Buffer, app: &App) {
         let room = (x + width).saturating_sub(title_x) as usize;
         let color = if pr.draft { p.text_dim } else { p.text };
         render_faded(buf, title_x, y, &pr.title, room, Style::new().fg(color).bg(bg), bg);
+    }
+}
+
+fn render_files(buf: &mut Buffer, app: &App) {
+    let area = app.layout.files_bar;
+    if area.is_empty() {
+        return;
+    }
+    let p = theme::palette();
+    buf.set_style(area, Style::new().bg(BG).fg(p.text));
+    let edge = if app.edge_hot(Hit::FilesDivider) { p.accent } else { p.border };
+    for y in area.top()..area.bottom() {
+        buf.set_string(area.x, y, "│", Style::new().fg(edge).bg(BG));
+    }
+    let x = area.x + 2;
+    let width = area.width.saturating_sub(3);
+    let focused = app.files_focused();
+    heading(buf, area, x, width, &format!("files · {}", app.ws().name), focused);
+    // The × that hides the bar, over the end of the heading.
+    let hide_x = app.layout.files_hide_x();
+    let hot = app.hover == Some(Hit::FilesHide);
+    buf.set_string(hide_x - 1, area.y, " ×", Style::new().fg(if hot { p.accent } else { p.text_dim }).bg(BG));
+
+    let first = area.y + 2;
+    let Some(tree) = app.tree() else { return };
+    if let Some(err) = &tree.error {
+        return say(buf, area, x, first, width, err, p.red);
+    }
+    let rows = tree.rows();
+    if rows.is_empty() {
+        return say(buf, area, x, first, width, "an empty folder", p.text_dim);
+    }
+    let selected = tree.selected_row(&rows).filter(|_| focused);
+    for (i, row) in rows.iter().enumerate().skip(tree.scroll) {
+        let y = first + (i - tree.scroll) as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        let bg = if selected == Some(i) {
+            p.active_bg
+        } else if app.hover == Some(Hit::File(i)) {
+            p.hover_bg
+        } else {
+            BG
+        };
+        buf.set_style(Rect::new(x - 1, y, width + 1, 1), Style::new().bg(bg));
+        let entry = row.entry;
+        let mark = tree.marks.of(&entry.path);
+        let color = match mark {
+            Some(Mark::Modified) => p.yellow,
+            Some(Mark::Added | Mark::Untracked) => p.green,
+            Some(Mark::Conflict) => p.red,
+            Some(Mark::Ignored) => p.text_dim,
+            None if entry.name.starts_with('.') => p.text_dim,
+            None => p.text,
+        };
+        // Deep folders keep room for their names.
+        let indent = (row.depth as u16 * 2).min(width.saturating_sub(8) / 2 * 2);
+        let chevron_x = x + indent;
+        if entry.dir {
+            let chevron = if tree.is_open(&entry.path) { "▾" } else { "▸" };
+            buf.set_string(chevron_x, y, chevron, Style::new().fg(p.text_dim).bg(bg));
+        }
+        // A changed file's letter, or a dot on a folder with changes in it.
+        let badge = match mark {
+            Some(mark) if mark != Mark::Ignored && entry.dir => "•",
+            Some(mark) => mark.letter(),
+            None => "",
+        };
+        let badge_x = (x + width).saturating_sub(badge.chars().count() as u16 + 1);
+        buf.set_string(badge_x, y, badge, Style::new().fg(color).bg(bg));
+        let name_x = chevron_x + 2;
+        let room = badge_x.saturating_sub(name_x + 1) as usize;
+        let mut style = Style::new().fg(color).bg(bg);
+        if selected == Some(i) {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        render_faded(buf, name_x, y, &entry.name, room, style, bg);
     }
 }
 

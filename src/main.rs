@@ -5,6 +5,7 @@ mod bars;
 mod client;
 mod clipboard;
 mod config;
+mod files;
 mod github;
 mod input;
 mod layout;

@@ -1,3 +1,4 @@
+mod files;
 mod keys;
 mod mouse;
 mod panels;
@@ -8,6 +9,7 @@ pub use state::{Confirm, Mode, Picker, PickerKind, Rename, Renaming};
 use state::Pending;
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -24,7 +26,8 @@ use crate::config::Config;
 use crate::awake::Awake;
 use crate::github::{FileDiff, Pr};
 use crate::ports::Port;
-use crate::layout::{self, Hit, Layout, ListItem, Row};
+use crate::files::{Scan, Tree};
+use crate::layout::{self, Bars, Hit, Layout, ListItem, Row};
 use crate::links::{self, Link};
 use crate::protocol::{self, Hello};
 use crate::server::{self, Attached, ClientId};
@@ -60,6 +63,7 @@ pub enum AppEvent {
     Prs(PathBuf, Result<Vec<Pr>, String>),
     PrFiles(u64, Result<Vec<FileDiff>, String>),
     Ports(Result<Vec<Port>, String>),
+    Files(Box<Scan>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,6 +72,7 @@ enum Drag {
     Divider,
     ActivityDivider,
     PortsDivider,
+    FilesDivider,
     PrsDivider,
     Select,
 }
@@ -132,6 +137,13 @@ pub struct App {
     ports_checked: Option<Instant>,
     /// Open pull requests by repository folder, as last fetched.
     pub(crate) prs: HashMap<PathBuf, PrList>,
+    /// Show the files bar (where there's room).
+    files_shown: bool,
+    files_width: u16,
+    /// The files bar's tree of each workspace folder looked at so far.
+    trees: HashMap<PathBuf, Tree>,
+    files_scanning: bool,
+    files_scanned: Option<Instant>,
     /// Whether the client's window has focus (when its terminal says).
     focused: bool,
     /// This server's `protocol::build_id`.
@@ -204,6 +216,11 @@ impl App {
             ports_checking: false,
             ports_checked: None,
             prs: HashMap::new(),
+            files_shown: true,
+            files_width: layout::FILES_WIDTH,
+            trees: HashMap::new(),
+            files_scanning: false,
+            files_scanned: None,
             focused: true,
             build: protocol::build_id(),
             attached_before: false,
@@ -268,6 +285,10 @@ impl App {
             }
             if layout.prs_width > 0 {
                 self.prs_width = layout.prs_width.clamp(layout::PRS_MIN, layout::PRS_MAX);
+            }
+            self.files_shown = !layout.hide_files;
+            if layout.files_width > 0 {
+                self.files_width = layout.files_width.clamp(layout::FILES_MIN, layout::FILES_MAX);
             }
             self.relayout_now();
         }
@@ -543,6 +564,7 @@ impl App {
     pub fn edge_hot(&self, edge: Hit) -> bool {
         let dragging = match edge {
             Hit::PortsDivider => self.drag == Some(Drag::PortsDivider),
+            Hit::FilesDivider => self.drag == Some(Drag::FilesDivider),
             Hit::PrsDivider => self.drag == Some(Drag::PrsDivider),
             _ => false,
         };
@@ -607,6 +629,7 @@ impl App {
             Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
             Mode::Panel(Panel::Ports(_)) => (Some((if short { "PRT" } else { "PORTS" }, p.cyan)), "esc closes".to_owned()),
             Mode::Panel(Panel::Prs(_)) => (Some((if short { "PR" } else { "PULLS" }, p.purple)), "esc closes".to_owned()),
+            Mode::Files(_) => (Some((if short { "FIL" } else { "FILES" }, p.green)), "↑↓ ⏎ · e edit · q".to_owned()),
             Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, p.red)), "y / n".to_owned()),
         }
     }
@@ -676,6 +699,7 @@ impl App {
                 last_refresh = Instant::now();
                 self.refresh_tabs();
                 self.refresh_bars();
+                self.refresh_files();
                 self.check_awake();
                 self.notify();
                 self.save();
@@ -734,6 +758,8 @@ impl App {
                 hide_side_bars: !self.side_bars,
                 ports_width: self.ports_width,
                 prs_width: self.prs_width,
+                hide_files: !self.files_shown,
+                files_width: self.files_width,
             }),
         };
         let result = store::encode(&state).and_then(|json| {
@@ -752,7 +778,10 @@ impl App {
     /// Recomputes the layout and keeps every pty sized to the pane.
     fn relayout(&mut self, size: Size) {
         let area = Rect::new(0, 0, size.width, size.height);
-        let bars = if self.side_bars { (self.ports_width, self.prs_width) } else { (0, 0) };
+        let mut bars = Bars { files: if self.files_shown { self.files_width } else { 0 }, ..Bars::default() };
+        if self.side_bars {
+            (bars.ports, bars.prs) = (self.ports_width, self.prs_width);
+        }
         self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed, bars);
         self.clamp_bar_scroll(false);
         self.clamp_list_scroll(false);
@@ -1013,9 +1042,14 @@ impl App {
     // ── Tabs ────────────────────────────────────────────────────────────
 
     fn spawn_tab(&mut self, cwd: &Path) -> Result<Tab> {
+        self.spawn_program(cwd, None)
+    }
+
+    /// A tab running `program` (the user's shell if `None`).
+    fn spawn_program(&mut self, cwd: &Path, program: Option<Vec<OsString>>) -> Result<Tab> {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        Tab::spawn(id, self.pty_size(), Some(cwd), self.events_tx.clone())
+        Tab::spawn(id, self.pty_size(), Some(cwd), program, self.events_tx.clone())
     }
 
     /// Opens a tab in the current workspace.
@@ -1039,7 +1073,14 @@ impl App {
             .and_then(Tab::cwd)
             .filter(|cwd| cwd.starts_with(&ws.path))
             .map_or_else(|| ws.path.clone(), Path::to_path_buf);
-        let mut tab = self.spawn_tab(&cwd)?;
+        let tab = self.spawn_tab(&cwd)?;
+        self.add_tab(tab, group);
+        Ok(())
+    }
+
+    /// Puts a new tab at the end of the current workspace, in `group`, and
+    /// shows it.
+    fn add_tab(&mut self, mut tab: Tab, group: Option<GroupId>) {
         tab.group = group;
         let ws = self.ws_mut();
         // A tab in a group is listed there; one outside every group needs
@@ -1050,7 +1091,6 @@ impl App {
         ws.tabs.push(tab);
         let last = ws.tabs.len() - 1;
         self.activate(last);
-        Ok(())
     }
 
     fn activate(&mut self, index: usize) {
@@ -1744,6 +1784,7 @@ impl App {
             AppEvent::Prs(dir, prs) => self.prs_loaded(dir, prs),
             AppEvent::PrFiles(number, files) => self.pr_files_loaded(number, files),
             AppEvent::Ports(ports) => self.ports_loaded(ports),
+            AppEvent::Files(scan) => self.files_loaded(*scan),
             AppEvent::Output(id, bytes) => self.handle_output(id, &bytes),
             AppEvent::Exited(id) => {
                 if let Some((w, t)) = self.find_tab(id) {
@@ -1840,6 +1881,7 @@ impl App {
         }
         self.clamp_list_scroll(false);
         self.clamp_bar_scroll(false);
+        self.normalize_files();
     }
 
     fn handle_output(&mut self, id: TabId, bytes: &[u8]) {

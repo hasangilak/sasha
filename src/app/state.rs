@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::panels::Panel;
+use crate::files::Preview;
 use crate::tab::TabId;
 use crate::workspace::{GroupId, WorkspaceId};
 
@@ -33,6 +34,8 @@ pub enum Mode {
     Picker(Picker),
     /// Pull requests or ports, over the pane.
     Panel(Panel),
+    /// Keys move through the files bar; a file can be shown over the pane.
+    Files(Browse),
     Help,
     ConfirmQuit,
 }
@@ -41,6 +44,13 @@ impl Mode {
     pub fn is_tab(&self) -> bool {
         matches!(self, Mode::Tab(_))
     }
+}
+
+/// Browsing the files bar.
+#[derive(Default)]
+pub struct Browse {
+    /// The file shown over the pane, if one is.
+    pub preview: Option<Preview>,
 }
 
 // ── Tab mode ────────────────────────────────────────────────────────────
@@ -119,6 +129,7 @@ pub enum Command {
     KeepAwake,
     PullRequests,
     Ports,
+    Files,
     SideBars,
     Narrower,
     Wider,
@@ -176,6 +187,7 @@ impl Command {
             KeyCode::Char('C') => Command::KeepAwake,
             KeyCode::Char('P') => Command::PullRequests,
             KeyCode::Char('O') => Command::Ports,
+            KeyCode::Char('F') => Command::Files,
             KeyCode::Char('i') => Command::SideBars,
             KeyCode::Char('<') => Command::Narrower,
             KeyCode::Char('>') => Command::Wider,
@@ -200,6 +212,7 @@ impl Command {
             | Command::RenameWorkspace
             | Command::PullRequests
             | Command::Ports
+            | Command::Files
             | Command::Scroll
             | Command::Rename
             | Command::Search

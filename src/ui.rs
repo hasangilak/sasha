@@ -43,6 +43,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             PickerKind::Groups => render_groups(frame, app),
         },
         Mode::Panel(_) => panel_view::render(frame, app),
+        Mode::Files(_) => panel_view::render_preview(frame, app),
         Mode::Normal | Mode::Tab(_) => {
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
@@ -82,6 +83,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("C", "keep the computer awake, or let it sleep (☀ / ☾)"),
         ("P", "open pull requests (gh) and their diffs"),
         ("O", "open ports in your tabs; x x force-kills"),
+        ("F", "browse the workspace's files: ↑↓ ← →, ⏎ read, e edit, y copy path"),
         ("i", "show / hide the ports and pull request bars"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
@@ -109,6 +111,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("badge again", "minimize / restore its section"),
         ("2×-click badge", "rename the workspace (or 2× its name)"),
         ("heading – ×", "minimize / close a workspace's section"),
+        ("files bar", "click a folder to open it, a file to read it; × hides"),
         ("drag an edge", "resize that bar (wide workspace bar: names)"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
         ("⇧ drag", "select even when an app uses the mouse"),

@@ -1,5 +1,6 @@
 //! Drawing the panels over the terminal pane: pull requests with their
-//! files and diffs, and the ports the tabs listen on.
+//! files and diffs, the ports the tabs listen on, and a file from the files
+//! bar.
 
 use std::time::Instant;
 
@@ -57,6 +58,62 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     };
     buf.set_stringn(inner.x, hint_y, hint, inner.width as usize, Style::new().fg(hint_color).bg(p.popup_bg));
+}
+
+/// The file picked in the files bar, with line numbers.
+pub fn render_preview(frame: &mut Frame, app: &App) {
+    let Some(preview) = app.preview() else { return };
+    let area = app.layout.pane;
+    if area.width < 24 || area.height < 6 {
+        return;
+    }
+    let root = &app.ws().path;
+    let name = preview.path.strip_prefix(root).unwrap_or(&preview.path).display().to_string();
+    let lines = preview.lines.as_ref().map_or(0, Vec::len);
+    let title = match lines {
+        0 => format!(" {name} "),
+        1 => format!(" {name} · 1 line "),
+        n => format!(" {name} · {n} lines "),
+    };
+    frame.render_widget(Clear, area);
+    let block = popup_block(&title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let p = theme::palette();
+    let buf = frame.buffer_mut();
+    let close = app.layout.preview_close();
+    buf.set_string(close.x, close.y, " × ", Style::new().fg(p.text).bg(p.popup_bg).add_modifier(Modifier::BOLD));
+    let body = body(area);
+    let hint = "↑↓ files · PgUp PgDn ^u ^d g G scroll · e edit · y copy path · esc";
+    let hint_y = inner.bottom().saturating_sub(1);
+    buf.set_stringn(inner.x, hint_y, hint, inner.width as usize, Style::new().fg(p.text_dim).bg(p.popup_bg));
+    let text = match &preview.lines {
+        Ok(text) => text,
+        Err(why) => {
+            buf.set_stringn(body.x, body.y, why, body.width as usize, Style::new().fg(p.text_dim).bg(p.popup_bg));
+            return;
+        }
+    };
+    if text.is_empty() {
+        buf.set_string(body.x, body.y, "an empty file", Style::new().fg(p.text_dim).bg(p.popup_bg));
+        return;
+    }
+    let gutter = text.len().to_string().len() as u16;
+    let x = body.x + gutter + 2;
+    let room = body.right().saturating_sub(x) as usize;
+    for (row, (number, line)) in text.iter().enumerate().skip(preview.scroll).take(body.height as usize).enumerate() {
+        let y = body.y + row as u16;
+        let number = format!("{:>width$}", number + 1, width = gutter as usize);
+        buf.set_string(body.x, y, number, Style::new().fg(p.border).bg(p.popup_bg));
+        buf.set_stringn(x, y, printable(line), room, Style::new().fg(p.text).bg(p.popup_bg));
+    }
+    let last_shown = preview.scroll + body.height as usize;
+    if preview.truncated && last_shown >= text.len() {
+        let note = "… only the first megabyte is shown";
+        let y = body.y + (text.len() - preview.scroll).min(body.height as usize - 1) as u16;
+        buf.set_stringn(x, y, note, room, Style::new().fg(p.text_dim).bg(p.popup_bg));
+    }
 }
 
 /// The program waiting for a second `x`, if any.

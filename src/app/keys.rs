@@ -28,6 +28,7 @@ impl App {
                 PickerKind::Groups => self.groups_key(key),
             },
             Mode::Panel(_) => self.panel_key(key),
+            Mode::Files(_) => self.files_key(key),
             Mode::Help => self.leave(),
             Mode::ConfirmQuit => {
                 self.leave();
@@ -133,6 +134,7 @@ impl App {
             Command::KeepAwake => self.toggle_awake(),
             Command::PullRequests => self.open_prs(),
             Command::Ports => self.open_ports(0),
+            Command::Files => self.browse_files(),
             Command::SideBars => self.toggle_side_bars(),
             Command::Narrower => self.resize_sidebar(-2),
             Command::Wider => self.resize_sidebar(2),
