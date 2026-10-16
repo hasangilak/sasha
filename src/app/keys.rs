@@ -26,6 +26,7 @@ impl App {
                 PickerKind::Search => self.search_key(key),
                 PickerKind::Workspaces => self.workspaces_key(key),
                 PickerKind::Groups => self.groups_key(key),
+                PickerKind::Menu(menu) => self.menu_key(key, menu),
             },
             Mode::Panel(_) => self.panel_key(key),
             Mode::Files(_) => self.files_key(key),
@@ -92,8 +93,8 @@ impl App {
         }
     }
 
-    /// Does what a tab-mode key asks.
-    fn run_command(&mut self, command: Command) {
+    /// Does what a tab-mode key (or a menu's row) asks.
+    pub(super) fn run_command(&mut self, command: Command) {
         match command {
             Command::NextTab => self.cycle(1),
             Command::PrevTab => self.cycle(-1),
@@ -261,7 +262,7 @@ impl App {
 
     /// Moves the highlight or types into the query: what every picker does
     /// with keys it has no use of its own for.
-    fn picker_key(&mut self, key: &KeyEvent, rows: usize) {
+    pub(super) fn picker_key(&mut self, key: &KeyEvent, rows: usize) {
         if let Some(picker) = self.picker_mut()
             && !picker.step(key, rows)
         {

@@ -6,12 +6,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, GroupEntry, Mode, PickerEntry, PickerKind, Selection};
+use crate::app::{App, GroupEntry, Menu, Mode, PickerEntry, PickerKind, Selection};
 use crate::links::Link;
 use crate::workspace::pretty_path;
-use crate::{activity, bars, panel_view, sidebar, theme};
+use crate::{activity, bars, header, panel_view, sidebar, theme};
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    header::render(frame.buffer_mut(), app);
     activity::render(frame.buffer_mut(), app);
     bars::render(frame.buffer_mut(), app);
     let rename_cursor = sidebar::render(frame.buffer_mut(), app);
@@ -27,6 +28,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     activity::render_tooltip(frame.buffer_mut(), app);
     bars::render_tooltip(frame.buffer_mut(), app);
+    header::render_tooltip(frame.buffer_mut(), app);
 
     match &app.mode {
         Mode::Help => render_help(frame, app),
@@ -41,6 +43,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             PickerKind::Search => render_search(frame, app),
             PickerKind::Workspaces => render_workspaces(frame, app),
             PickerKind::Groups => render_groups(frame, app),
+            PickerKind::Menu(menu) => render_menu(frame, app, menu),
         },
         Mode::Panel(_) => panel_view::render(frame, app),
         Mode::Files(_) => panel_view::render_preview(frame, app),
@@ -111,6 +114,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("badge again", "minimize / restore its section"),
         ("2×-click badge", "rename the workspace (or 2× its name)"),
         ("heading – ×", "minimize / close a workspace's section"),
+        ("header title", "this terminal's menu: rename, pin, group, close"),
+        ("header icons", "sidebar · new terminal · PR, ports, files bars · ⋮ all"),
         ("files bar", "click a folder to open it, a file to read it; × hides"),
         ("drag an edge", "resize that bar (wide workspace bar: names)"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
@@ -277,18 +282,72 @@ fn render_groups(frame: &mut Frame, app: &App) {
     });
 }
 
+/// Where the open picker is drawn: its box, its list's rows, and the first
+/// row shown (the highlighted one kept in view).
+pub struct PickerFrame {
+    pub area: Rect,
+    pub list: Rect,
+    pub first: usize,
+}
+
+/// Pickers drop down at the top of the pane; the header's menus drop from
+/// their title or button.
+pub fn picker_frame(app: &App) -> Option<PickerFrame> {
+    let picker = app.picker()?;
+    let layout = &app.layout;
+    let pane = layout.pane;
+    let screen = layout.area;
+    let hint_rows = u16::from(matches!(picker.kind, PickerKind::Workspaces | PickerKind::Groups));
+    let (x, y, width, most) = match picker.kind {
+        PickerKind::Menu(Menu::Terminal) => (layout.top.x + 1, layout.top.bottom(), 46, 16),
+        PickerKind::Menu(Menu::More) => (screen.right().saturating_sub(47), layout.top.bottom(), 46, 16),
+        _ => (pane.x + 1, pane.y, pane.width.saturating_sub(2).min(72), 12),
+    };
+    let visible = app.picker_len().clamp(1, most) as u16;
+    let width = width.min(screen.right().saturating_sub(x));
+    let height = (visible + 4 + hint_rows).min(screen.bottom().saturating_sub(y));
+    let area = Rect::new(x, y, width, height);
+    if area.width < 16 || area.height < 5 {
+        return None;
+    }
+    let inner = popup_block("").inner(area);
+    let list = Rect { y: inner.y + 2, height: inner.height.saturating_sub(2 + hint_rows), ..inner };
+    let first = picker.selected.saturating_sub((list.height as usize).saturating_sub(1));
+    Some(PickerFrame { area, list, first })
+}
+
+/// The terminal's menu or everything else, as rows with their keys.
+fn render_menu(frame: &mut Frame, app: &App, menu: Menu) {
+    let p = theme::palette();
+    let prefix = app.config.prefix.label();
+    let rows = app
+        .menu_entries(menu)
+        .into_iter()
+        .map(|entry| PickerRow {
+            badge: None,
+            icon: (" ", p.text),
+            title: entry.label,
+            detail: format!("{prefix} {}", entry.key),
+        })
+        .collect();
+    let title = match menu {
+        Menu::Terminal => format!(" {} ", app.active_tab().map(|t| t.prefix()).unwrap_or_default()),
+        Menu::More => " sasha ".to_owned(),
+    };
+    render_picker(frame, app, Picker {
+        title: &title,
+        prompt: ("⌕", p.text_dim),
+        placeholder: "type to filter",
+        empty: "nothing matches",
+        rows,
+        hint: None,
+    });
+}
+
 /// A dropdown at the top of the terminal pane with a query line and rows.
 fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
     let p = theme::palette();
-    let pane = app.layout.pane;
-    let visible = picker.rows.len().clamp(1, 12);
-    let hint_rows = u16::from(picker.hint.is_some());
-    let width = pane.width.saturating_sub(2).min(72);
-    let height = (visible as u16 + 4 + hint_rows).min(pane.height);
-    let area = Rect::new(pane.x + 1, pane.y, width, height);
-    if area.width < 16 || area.height < 5 {
-        return;
-    }
+    let Some(PickerFrame { area, list, first }) = picker_frame(app) else { return };
     frame.render_widget(Clear, area);
     let block = popup_block(picker.title);
     let inner = block.inner(area);
@@ -311,14 +370,12 @@ fn render_picker(frame: &mut Frame, app: &App, picker: Picker) {
     let separator = "─".repeat(inner.width as usize);
     buf.set_string(inner.x, inner.y + 1, &separator, Style::new().fg(p.border).bg(p.popup_bg));
 
-    let list_y = inner.y + 2;
-    let list_rows = inner.height.saturating_sub(2 + hint_rows) as usize;
+    let list_y = list.y;
+    let list_rows = list.height as usize;
     if picker.rows.is_empty() {
         buf.set_string(inner.x, list_y, picker.empty, Style::new().fg(p.text_dim).bg(p.popup_bg));
     }
-    // Keep the highlighted row in view.
     let selected = app.picker().map_or(0, |picker| picker.selected);
-    let first = selected.saturating_sub(list_rows.saturating_sub(1));
     for (index, row) in picker.rows.iter().enumerate().skip(first).take(list_rows) {
         let y = list_y + (index - first) as u16;
         let bg = if index == selected { p.active_bg } else { p.popup_bg };

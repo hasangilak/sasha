@@ -8,6 +8,7 @@ mod clipboard;
 mod config;
 mod files;
 mod github;
+mod header;
 mod highlight;
 mod input;
 mod layout;

@@ -1,11 +1,12 @@
 mod files;
+mod header;
 mod keys;
 mod mouse;
 mod panels;
 mod state;
 
 pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel};
-pub use state::{Confirm, Mode, Picker, PickerKind, Rename, Renaming};
+pub use state::{Confirm, Menu, Mode, Picker, PickerKind, Rename, Renaming};
 use state::Pending;
 
 use std::collections::HashMap;
@@ -128,8 +129,9 @@ pub struct App {
     client: Option<Attached>,
     /// Set while sasha keeps the computer from sleeping.
     pub(crate) awake: Option<Awake>,
-    /// Show the ports and pull request bars (where there's room).
-    side_bars: bool,
+    /// Show the ports bar and the pull request bar (where there's room).
+    ports_shown: bool,
+    prs_shown: bool,
     ports_width: u16,
     prs_width: u16,
     /// The ports programs in the tabs listen on, as last checked.
@@ -210,7 +212,8 @@ impl App {
             config,
             client: None,
             awake: None,
-            side_bars: true,
+            ports_shown: true,
+            prs_shown: true,
             ports_width: layout::PORTS_WIDTH,
             prs_width: layout::PRS_WIDTH,
             ports: Loadable::Loading,
@@ -280,7 +283,8 @@ impl App {
             self.activity_width = layout.activity_width.min(layout::ACTIVITY_MAX);
             self.wide_activity_width = layout.wide_activity_width.clamp(layout::ACTIVITY_WIDE_MIN, layout::ACTIVITY_MAX);
             self.current_only = layout.current_only;
-            self.side_bars = !layout.hide_side_bars;
+            self.ports_shown = !layout.hide_side_bars && !layout.hide_ports;
+            self.prs_shown = !layout.hide_side_bars && !layout.hide_prs;
             if layout.ports_width > 0 {
                 self.ports_width = layout.ports_width.clamp(layout::PORTS_MIN, layout::PORTS_MAX);
             }
@@ -649,6 +653,10 @@ impl App {
                 Some((if short { "GRP" } else { "GROUP" }, p.cyan)),
                 "⏎ add tab · ^D delete".to_owned(),
             ),
+            Mode::Picker(Picker { kind: PickerKind::Menu(_), .. }) => (
+                Some((if short { "≡" } else { "MENU" }, p.accent)),
+                "↑↓ ⏎ · type to filter".to_owned(),
+            ),
             Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
             Mode::Panel(Panel::Ports(_)) => (Some((if short { "PRT" } else { "PORTS" }, p.cyan)), "esc closes".to_owned()),
             Mode::Panel(Panel::Prs(_)) => (Some((if short { "PR" } else { "PULLS" }, p.purple)), "esc closes".to_owned()),
@@ -778,7 +786,9 @@ impl App {
                 activity_width: self.activity_width,
                 wide_activity_width: self.wide_activity_width,
                 current_only: self.current_only,
-                hide_side_bars: !self.side_bars,
+                hide_side_bars: !self.ports_shown && !self.prs_shown,
+                hide_ports: !self.ports_shown,
+                hide_prs: !self.prs_shown,
                 ports_width: self.ports_width,
                 prs_width: self.prs_width,
                 hide_files: !self.files_shown,
@@ -801,10 +811,12 @@ impl App {
     /// Recomputes the layout and keeps every pty sized to the pane.
     fn relayout(&mut self, size: Size) {
         let area = Rect::new(0, 0, size.width, size.height);
-        let mut bars = Bars { files: if self.files_shown { self.files_width } else { 0 }, ..Bars::default() };
-        if self.side_bars {
-            (bars.ports, bars.prs) = (self.ports_width, self.prs_width);
-        }
+        let shown = |shown: bool, width: u16| if shown { width } else { 0 };
+        let bars = Bars {
+            ports: shown(self.ports_shown, self.ports_width),
+            files: shown(self.files_shown, self.files_width),
+            prs: shown(self.prs_shown, self.prs_width),
+        };
         self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed, bars);
         self.clamp_bar_scroll(false);
         self.clamp_list_scroll(false);
@@ -1361,13 +1373,47 @@ impl App {
         }
     }
 
-    /// Shows or hides the ports and pull request bars.
+    /// Shows or hides the ports and pull request bars together.
     fn toggle_side_bars(&mut self) {
-        self.side_bars = !self.side_bars;
+        let show = !self.ports_shown && !self.prs_shown;
+        (self.ports_shown, self.prs_shown) = (show, show);
         self.hover = None;
         self.relayout_now();
-        if self.side_bars && self.layout.ports_bar.width == 0 {
+        if show && self.layout.ports_bar.width == 0 {
             self.set_status("the window is too narrow for the ports and pull request bars");
+        }
+    }
+
+    /// Shows or hides the ports bar.
+    fn toggle_ports_bar(&mut self) {
+        self.ports_shown = !self.ports_shown;
+        self.hover = None;
+        self.relayout_now();
+        if self.ports_shown && self.layout.ports_bar.is_empty() {
+            self.set_status("the window is too narrow for the ports bar");
+        }
+    }
+
+    /// Shows or hides the pull request bar.
+    fn toggle_prs_bar(&mut self) {
+        self.prs_shown = !self.prs_shown;
+        self.hover = None;
+        self.relayout_now();
+        if self.prs_shown && self.layout.pr_bar.is_empty() {
+            self.set_status("the window is too narrow for the pull request bar · hide the files bar to make room");
+        }
+    }
+
+    /// Shows or hides the files bar.
+    fn toggle_files_bar(&mut self) {
+        if self.files_shown {
+            return self.hide_files();
+        }
+        self.files_shown = true;
+        self.hover = None;
+        self.relayout_now();
+        if self.layout.files_bar.is_empty() {
+            self.set_status("the window is too narrow for the files bar");
         }
     }
 

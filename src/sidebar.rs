@@ -207,6 +207,22 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
 }
 
 /// A tab row's background and text colours.
+/// A tab's icon: the status glyph from its program's title (claude's ✳ or
+/// spinner), so even a narrow sidebar shows it working; else a spinner
+/// while it's busy, or its program's icon.
+pub fn tab_icon(app: &App, tab: &Tab) -> (String, Color) {
+    let p = theme::palette();
+    let running = tab.running();
+    match running.as_deref().and_then(|title| split_glyph(title).0) {
+        Some(glyph) => (glyph.to_owned(), theme::process_icon(tab.process_name()).1),
+        None if app.is_busy(tab) => (SPINNER[app.spinner_frame() % SPINNER.len()].to_owned(), p.accent),
+        None => {
+            let (icon, color) = theme::process_icon(tab.process_name());
+            (icon.to_owned(), color)
+        }
+    }
+}
+
 fn tab_colors(app: &App, active: bool, hovered: bool) -> (Color, Color) {
     let p = theme::palette();
     match (active, hovered) {
@@ -226,15 +242,7 @@ fn render_tab(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, state: TabStat
     let (bg, fg) = tab_colors(app, active, hovered);
     buf.set_style(pill, Style::new().bg(bg).fg(fg));
 
-    // The status glyph from a program's title (claude's ✳ or spinner)
-    // comes first, so even a narrow sidebar shows it working.
-    let running = tab.running();
-    let glyph = running.as_deref().and_then(|title| split_glyph(title).0);
-    let (icon, icon_color) = match glyph {
-        Some(glyph) => (glyph, theme::process_icon(tab.process_name()).1),
-        None if app.is_busy(tab) => (SPINNER[app.spinner_frame() % SPINNER.len()], p.accent),
-        None => theme::process_icon(tab.process_name()),
-    };
+    let (icon, icon_color) = tab_icon(app, tab);
     let icon_color = if active && highlight { fg } else { icon_color };
     // Icon only when collapsed (or squeezed by a tiny window).
     let icon_only = app.layout.collapsed || pill.width < 8;

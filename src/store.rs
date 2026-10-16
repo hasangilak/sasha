@@ -33,9 +33,14 @@ pub struct SavedLayout {
     /// The sidebar shows only the current workspace's tabs.
     #[serde(default)]
     pub current_only: bool,
-    /// The ports and pull request bars are hidden.
+    /// The ports and pull request bars are hidden (older versions hid
+    /// them together, and only that).
     #[serde(default)]
     pub hide_side_bars: bool,
+    #[serde(default)]
+    pub hide_ports: bool,
+    #[serde(default)]
+    pub hide_prs: bool,
     /// Their widths (0: as they start).
     #[serde(default)]
     pub ports_width: u16,

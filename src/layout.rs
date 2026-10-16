@@ -1,5 +1,5 @@
-//! Screen layout — workspace activity bar, tab sidebar, terminal pane — and
-//! hit-testing for the mouse.
+//! Screen layout — the header, workspace activity bar, tab sidebar,
+//! terminal pane and the slim bars — and hit-testing for the mouse.
 
 use ratatui::layout::{Position, Rect};
 
@@ -39,10 +39,66 @@ pub const MIN_WIDTH: u16 = 16;
 pub const COLLAPSED_WIDTH: u16 = 6;
 /// Rows per workspace in the activity bar: the badge plus a gap.
 const ACTIVITY_ROW: u16 = 2;
+/// Windows shorter than this go without the header.
+const HEADER_MIN_HEIGHT: u16 = 8;
+/// Narrower headers leave out the buttons.
+const HEADER_BUTTONS_MIN_WIDTH: u16 = 40;
+
+/// The buttons on the right of the header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderButton {
+    /// Collapses and expands the tab sidebar.
+    Sidebar,
+    NewTerminal,
+    PullRequests,
+    Ports,
+    Files,
+    /// Everything else, in a menu.
+    More,
+}
+
+impl HeaderButton {
+    /// Right to left after the sidebar's, which stands apart.
+    pub const ALL: [HeaderButton; 6] = [
+        HeaderButton::Sidebar,
+        HeaderButton::NewTerminal,
+        HeaderButton::PullRequests,
+        HeaderButton::Ports,
+        HeaderButton::Files,
+        HeaderButton::More,
+    ];
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            HeaderButton::Sidebar => "◧",
+            HeaderButton::NewTerminal => ">_",
+            HeaderButton::PullRequests => "±",
+            HeaderButton::Ports => "⇄",
+            HeaderButton::Files => "▤",
+            HeaderButton::More => "⋮",
+        }
+    }
+
+    /// What it does, and its key after the prefix.
+    pub fn tooltip(self) -> (&'static str, &'static str) {
+        match self {
+            HeaderButton::Sidebar => ("tab sidebar", "s"),
+            HeaderButton::NewTerminal => ("new terminal", "t"),
+            HeaderButton::PullRequests => ("pull requests bar", "P"),
+            HeaderButton::Ports => ("ports bar", "O"),
+            HeaderButton::Files => ("files bar", "F"),
+            HeaderButton::More => ("everything else", "?"),
+        }
+    }
+}
 
 /// Something clickable on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
+    /// The active terminal's title, left in the header: its menu.
+    Title,
+    /// A button on the right of the header.
+    Header(HeaderButton),
     Workspace(usize),
     AddWorkspace,
     HelpButton,
@@ -116,6 +172,8 @@ pub enum Row {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Layout {
     pub area: Rect,
+    /// The header across the top: the terminal's title and the buttons.
+    pub top: Rect,
     pub activity: Rect,
     /// The last column of `activity`.
     pub activity_divider: Rect,
@@ -146,7 +204,9 @@ pub struct Bars {
 impl Layout {
     /// `activity_width` 0 hides the workspace bar. The `bars` are left out
     /// where there isn't room.
-    pub fn new(area: Rect, activity_width: u16, width: u16, collapsed: bool, bars: Bars) -> Self {
+    pub fn new(full: Rect, activity_width: u16, width: u16, collapsed: bool, bars: Bars) -> Self {
+        let top = if full.height >= HEADER_MIN_HEIGHT { Rect { height: 1, ..full } } else { Rect::default() };
+        let area = Rect { y: full.y + top.height, height: full.height - top.height, ..full };
         // Wide workspace bars give way to the sidebar and terminal first.
         let activity_width = activity_width
             .min(area.width.saturating_sub(26).max(ACTIVITY_COMPACT))
@@ -188,7 +248,8 @@ impl Layout {
             ..inner
         };
         Self {
-            area,
+            area: full,
+            top,
             activity,
             activity_divider,
             ports_bar,
@@ -202,6 +263,33 @@ impl Layout {
             pane,
             collapsed,
         }
+    }
+
+    /// The header's buttons, where they are: on the right, the sidebar's
+    /// apart from the others.
+    pub fn header_buttons(&self) -> Vec<(HeaderButton, Rect)> {
+        if self.top.width < HEADER_BUTTONS_MIN_WIDTH {
+            return Vec::new();
+        }
+        let mut x = self.top.right().saturating_sub(1);
+        let mut buttons = Vec::new();
+        for button in HeaderButton::ALL.into_iter().rev() {
+            if button == HeaderButton::Sidebar {
+                // Room for the separator.
+                x = x.saturating_sub(2);
+            }
+            let width = button.icon().chars().count() as u16 + 2;
+            x = x.saturating_sub(width);
+            buttons.push((button, Rect::new(x, self.top.y, width, 1)));
+            x = x.saturating_sub(1);
+        }
+        buttons.reverse();
+        buttons
+    }
+
+    /// Where the buttons start; the title has the header up to there.
+    pub fn header_buttons_left(&self) -> u16 {
+        self.header_buttons().first().map_or(self.top.right(), |(_, rect)| rect.x)
     }
 
     /// Column of the × that hides the files bar.
@@ -338,6 +426,14 @@ impl Layout {
 
     pub fn hit(&self, x: u16, y: u16, app: &App) -> Option<Hit> {
         let pos = Position::new(x, y);
+        if self.top.contains(pos) {
+            let button = self.header_buttons().into_iter().find(|(_, rect)| rect.contains(pos));
+            return match button {
+                Some((button, _)) => Some(Hit::Header(button)),
+                None if x < self.header_buttons_left() => Some(Hit::Title),
+                None => None,
+            };
+        }
         if self.pane.contains(pos) {
             return Some(Hit::Pane);
         }
@@ -459,4 +555,28 @@ pub fn scrolled(scroll: usize, items: usize, rows: usize, reveal: Option<usize>)
         }
     }
     scroll
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screen(width: u16, height: u16) -> Layout {
+        Layout::new(Rect::new(0, 0, width, height), ACTIVITY_COMPACT, DEFAULT_WIDTH, false, Bars::default())
+    }
+
+    #[test]
+    fn the_header_sits_on_top_with_its_buttons_on_the_right() {
+        let layout = screen(150, 20);
+        assert_eq!(layout.top, Rect::new(0, 0, 150, 1));
+        assert_eq!((layout.activity.y, layout.pane.y, layout.pane.height), (1, 1, 19));
+        let buttons = layout.header_buttons();
+        assert_eq!(buttons.last().map(|(b, r)| (*b, r.right())), Some((HeaderButton::More, 149)));
+        // The sidebar's button stands apart, with a separator between.
+        assert_eq!(buttons[1].1.x - buttons[0].1.right(), 3);
+        assert_eq!(layout.header_buttons_left(), buttons[0].1.x);
+        // Short windows go without a header, narrow ones without buttons.
+        assert!(screen(150, 7).top.is_empty());
+        assert!(screen(30, 20).header_buttons().is_empty());
+    }
 }

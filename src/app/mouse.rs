@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
-use super::state::{Mode, Picker, PickerKind};
+use super::state::{Menu, Mode, Picker, PickerKind};
 use super::{App, Drag, Selection};
 use crate::layout::{self, Hit};
 use crate::{input, links};
@@ -54,6 +54,10 @@ impl App {
             return;
         }
 
+        // An open picker or menu takes the mouse over it.
+        if matches!(self.mode, Mode::Picker(_)) && self.picker_mouse(&mouse) {
+            return;
+        }
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             match self.mode {
                 Mode::Help | Mode::ConfirmQuit | Mode::Picker(_) => {
@@ -166,6 +170,8 @@ impl App {
             Hit::Toggle => self.set_collapsed(!self.collapsed),
             Hit::Search => self.enter(Mode::Picker(Picker::new(PickerKind::Search, String::new()))),
             Hit::Awake => self.toggle_awake(),
+            Hit::Title => self.open_menu(Menu::Terminal),
+            Hit::Header(button) => self.header_click(button),
             Hit::CloseWorkspace(w) => self.close_section(w),
             Hit::GroupNewTab(id) => self.new_tab_in(id),
             Hit::GroupDelete(id) => self.delete_group(id),

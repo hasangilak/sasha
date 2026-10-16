@@ -249,6 +249,17 @@ pub enum PickerKind {
     Workspaces,
     /// Putting the active tab into a group.
     Groups,
+    /// Commands, from the header.
+    Menu(Menu),
+}
+
+/// The header's menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Menu {
+    /// What can be done with the terminal on screen: its title's menu.
+    Terminal,
+    /// Everything else: the ⋮ button's.
+    More,
 }
 
 pub struct Picker {
