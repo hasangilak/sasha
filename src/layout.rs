@@ -26,6 +26,11 @@ pub const PRS_MAX: u16 = 100;
 pub const FILES_WIDTH: u16 = 30;
 pub const FILES_MIN: u16 = 16;
 pub const FILES_MAX: u16 = 100;
+/// The tower's panel, with its edge. Narrower than its least, it doesn't
+/// show.
+pub const TOWER_WIDTH: u16 = 64;
+pub const TOWER_MIN: u16 = 40;
+pub const TOWER_MAX: u16 = 200;
 /// Narrower windows leave out the ports bar, the files bar, and then the
 /// pull request bar.
 const PORTS_MIN_AREA: u16 = 80;
@@ -95,7 +100,7 @@ impl HeaderButton {
         match self {
             HeaderButton::Sidebar => ("tab sidebar", "s"),
             HeaderButton::NewTerminal => ("new terminal", "t"),
-            HeaderButton::Tower => ("tower: steer every terminal", "T"),
+            HeaderButton::Tower => ("tower: show / hide", "T"),
             HeaderButton::PullRequests => ("pull requests bar", "P"),
             HeaderButton::Ports => ("ports bar", "O"),
             HeaderButton::Files => ("files bar", "F"),
@@ -140,6 +145,12 @@ pub enum Hit {
     FilesDivider,
     /// The pull request bar's heading: refreshes the list.
     PrHeading,
+    /// The tower's terminal, in its panel.
+    Tower,
+    /// The tower panel's left edge, dragged to resize it.
+    TowerDivider,
+    /// The tower's name in the header, over its panel: its menu.
+    TowerTitle,
     /// A tab (workspace, tab) of another workspace, in the tab sidebar.
     OtherTab(usize, usize),
     /// A workspace's heading in the stacked tab sidebar.
@@ -195,6 +206,8 @@ pub struct Layout {
     pub files_bar: Rect,
     /// The open pull requests, right of the files.
     pub pr_bar: Rect,
+    /// The tower, at the right edge.
+    pub tower: Rect,
     pub sidebar: Rect,
     pub header: Rect,
     pub list: Rect,
@@ -211,6 +224,7 @@ pub struct Bars {
     pub ports: u16,
     pub files: u16,
     pub prs: u16,
+    pub tower: u16,
 }
 
 impl Layout {
@@ -226,6 +240,11 @@ impl Layout {
         let activity = Rect { width: activity_width, ..area };
         let activity_divider = Rect { x: activity.right().saturating_sub(1), width: activity_width.min(1), ..area };
         let rest = Rect { x: area.x + activity_width, width: area.width - activity_width, ..area };
+        // The tower keeps its room: the other bars give way to it.
+        let tower_width = bars.tower.min(rest.width.saturating_sub(KEEP));
+        let tower_width = if tower_width >= TOWER_MIN { tower_width } else { 0 };
+        let tower = Rect { x: rest.right() - tower_width, width: tower_width, ..rest };
+        let rest = Rect { width: rest.width - tower_width, ..rest };
         let fits = |min_area: u16, width: u16, share: u16| {
             if area.width >= min_area { width.min(rest.width / share) } else { 0 }
         };
@@ -267,6 +286,7 @@ impl Layout {
             ports_bar,
             files_bar,
             pr_bar,
+            tower,
             sidebar,
             header,
             list,
@@ -321,6 +341,7 @@ impl Layout {
             HeaderButton::Ports => self.ports_bar,
             HeaderButton::Files => self.files_bar,
             HeaderButton::PullRequests => self.pr_bar,
+            HeaderButton::Tower => self.tower,
             _ => Rect::default(),
         }
     }
@@ -334,11 +355,37 @@ impl Layout {
         Rect::new(pane.x, self.top.y, end - pane.x, self.top.height)
     }
 
+    /// The tower's name in the header, over its panel, up to its toggle.
+    pub fn tower_title(&self) -> Rect {
+        if self.tower.is_empty() || self.top.is_empty() {
+            return Rect::default();
+        }
+        let toggle = self.header_buttons().into_iter().find(|(b, _)| *b == HeaderButton::Tower).map(|(_, rect)| rect.x);
+        let end = toggle.unwrap_or(self.tower.right());
+        Rect::new(self.tower.x + 1, self.top.y, end.saturating_sub(self.tower.x + 1), 1)
+    }
+
+    /// Where the tower's terminal is drawn: its panel but the edge.
+    pub fn tower_screen(&self) -> Rect {
+        if self.tower.width < 2 {
+            return Rect::default();
+        }
+        Rect { x: self.tower.x + 1, width: self.tower.width - 1, ..self.tower }
+    }
+
     /// The columns where the workspace bar, the bars and the tab sidebar
     /// meet the rest, for the header to carry their edges up.
     pub fn edges(&self) -> Vec<u16> {
         let mut edges = Vec::new();
-        for (bar, right) in [(self.activity_divider, true), (self.ports_bar, true), (self.divider, true), (self.files_bar, false), (self.pr_bar, false)] {
+        let bars = [
+            (self.activity_divider, true),
+            (self.ports_bar, true),
+            (self.divider, true),
+            (self.files_bar, false),
+            (self.pr_bar, false),
+            (self.tower, false),
+        ];
+        for (bar, right) in bars {
             if !bar.is_empty() {
                 edges.push(if right { bar.right() - 1 } else { bar.x });
             }
@@ -485,11 +532,18 @@ impl Layout {
             return match button {
                 Some((button, _)) => Some(Hit::Header(button)),
                 None if self.title().contains(pos) => Some(Hit::Title),
+                None if self.tower_title().contains(pos) => Some(Hit::TowerTitle),
                 None => None,
             };
         }
         if self.pane.contains(pos) {
             return Some(Hit::Pane);
+        }
+        if self.tower.width > 0 && x == self.tower.x && self.tower.contains(pos) {
+            return Some(Hit::TowerDivider);
+        }
+        if self.tower.contains(pos) {
+            return Some(Hit::Tower);
         }
         if self.activity_divider.contains(pos) {
             return Some(Hit::ActivityDivider);
@@ -638,8 +692,29 @@ mod tests {
     }
 
     #[test]
+    fn the_tower_keeps_the_right_edge_and_its_room() {
+        let bars = Bars { ports: PORTS_WIDTH, files: FILES_WIDTH, prs: PRS_WIDTH, tower: TOWER_WIDTH };
+        let layout = Layout::new(Rect::new(0, 0, 250, 30), ACTIVITY_COMPACT, DEFAULT_WIDTH, false, bars);
+        assert_eq!((layout.tower.right(), layout.tower.width), (250, TOWER_WIDTH));
+        assert_eq!(layout.pr_bar.right(), layout.tower.x);
+        assert_eq!(layout.tower_screen(), Rect::new(250 - TOWER_WIDTH + 1, 1, TOWER_WIDTH - 1, 29));
+        // Its toggle on top of it, its name before that.
+        let toggle = layout.header_buttons().into_iter().find(|(b, _)| *b == HeaderButton::Tower).unwrap().1;
+        assert!(toggle.x > layout.tower.x && toggle.right() < layout.tower.right());
+        assert_eq!(layout.tower_title().right(), toggle.x);
+        // Short of room, the bars go first; then the tower shrinks.
+        let narrow = Layout::new(Rect::new(0, 0, 140, 30), ACTIVITY_COMPACT, DEFAULT_WIDTH, false, bars);
+        assert_eq!(narrow.tower.width, TOWER_WIDTH);
+        assert!(narrow.pr_bar.is_empty());
+        let narrower = Layout::new(Rect::new(0, 0, 110, 30), ACTIVITY_COMPACT, DEFAULT_WIDTH, false, bars);
+        assert!(narrower.tower.width >= TOWER_MIN && narrower.tower.width < TOWER_WIDTH);
+        // Too narrow for it at all.
+        assert!(Layout::new(Rect::new(0, 0, 100, 30), ACTIVITY_COMPACT, DEFAULT_WIDTH, false, bars).tower.is_empty());
+    }
+
+    #[test]
     fn a_bars_toggle_sits_on_top_of_it_while_it_shows() {
-        let bars = Bars { ports: PORTS_WIDTH, files: FILES_WIDTH, prs: PRS_WIDTH };
+        let bars = Bars { ports: PORTS_WIDTH, files: FILES_WIDTH, prs: PRS_WIDTH, tower: 0 };
         let layout = Layout::new(Rect::new(0, 0, 200, 20), ACTIVITY_COMPACT, DEFAULT_WIDTH, true, bars);
         let at = |button| layout.header_buttons().into_iter().find(|(b, _)| *b == button).map(|(_, r)| r);
         let over = |bar: Rect, button| at(button).is_some_and(|r| r.x >= bar.x && r.right() < bar.right());

@@ -66,8 +66,6 @@ pub struct Terminal {
     /// Printed since the user last looked, or rang the bell.
     pub unseen: bool,
     pub bell: bool,
-    /// The tower's own terminal.
-    pub tower: bool,
 }
 
 /// Asks the running sasha.

@@ -72,7 +72,7 @@ impl App {
             let Mode::Tab(tab) = &mut self.mode else { return };
             if tab.prefix(now) == Prefix::PassThrough {
                 let byte = self.config.prefix.byte();
-                if let Some(tab) = self.active_tab() {
+                if let Some(tab) = self.focused_tab() {
                     tab.write([byte]);
                 }
                 self.leave();
@@ -138,6 +138,8 @@ impl App {
             Command::Files => self.browse_files(),
             Command::Tower => self.toggle_tower(),
             Command::TowerOn(engine) => self.tower_on(engine),
+            Command::TowerRestart => self.restart_tower(),
+            Command::TowerHide => self.hide_tower(),
             Command::SideBars => self.toggle_side_bars(),
             Command::Narrower => self.resize_sidebar(-2),
             Command::Wider => self.resize_sidebar(2),
@@ -367,7 +369,14 @@ impl App {
 
     fn send_key(&mut self, key: KeyEvent) {
         self.selection = None;
-        let Some(tab) = self.ws_mut().active_tab_mut() else { return };
+        // A stopped tower starts again with Enter.
+        if self.tower_focused() && self.tower.is_none() {
+            if key.code == KeyCode::Enter {
+                self.start_tower(None);
+            }
+            return;
+        }
+        let Some(tab) = self.focused_tab_mut() else { return };
         // Typing always jumps back to the live screen.
         tab.screen_mut().set_scrollback(0);
         let bytes = input::encode_key(&key, tab.screen().application_cursor());

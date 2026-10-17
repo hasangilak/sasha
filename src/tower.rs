@@ -40,6 +40,14 @@ impl Engine {
         }
     }
 
+    /// As people say it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::Claude => "Claude",
+            Engine::Codex => "Codex",
+        }
+    }
+
     /// The model pi runs, as `provider/id`: `$SASHA_TOWER_CLAUDE_MODEL` or
     /// `$SASHA_TOWER_CODEX_MODEL`, else the strongest at the time of writing.
     fn model(self) -> String {

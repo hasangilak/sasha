@@ -37,7 +37,7 @@ impl App {
         match button {
             HeaderButton::Sidebar => !self.collapsed && !self.layout.sidebar.is_empty(),
             HeaderButton::NewTerminal => false,
-            HeaderButton::Tower => self.tower_on_screen(),
+            HeaderButton::Tower => self.tower_shown(),
             HeaderButton::PullRequests => !self.layout.pr_bar.is_empty(),
             HeaderButton::Ports => !self.layout.ports_bar.is_empty(),
             HeaderButton::Files => !self.layout.files_bar.is_empty(),
@@ -57,7 +57,7 @@ impl App {
         match button {
             HeaderButton::Sidebar => self.set_collapsed(!self.collapsed),
             HeaderButton::NewTerminal => self.run_command(Command::NewTab),
-            HeaderButton::Tower => self.run_command(Command::Tower),
+            HeaderButton::Tower => self.toggle_tower_panel(),
             HeaderButton::PullRequests => self.toggle_prs_bar(),
             HeaderButton::Ports => self.toggle_ports_bar(),
             HeaderButton::Files => self.toggle_files_bar(),
@@ -85,20 +85,21 @@ impl App {
                 if grouped {
                     entries.push(entry("Take out of its group", "u", Command::Ungroup));
                 }
-                if tab.is_some_and(|t| t.tower) {
-                    let other = match self.tower_engine() {
-                        Engine::Claude => entry("Run on Codex (ChatGPT subscription)", "", Command::TowerOn(Engine::Codex)),
-                        Engine::Codex => entry("Run on Claude (Claude subscription)", "", Command::TowerOn(Engine::Claude)),
-                    };
-                    entries.insert(0, other);
-                }
                 entries.push(entry("Scroll back", "[", Command::Scroll));
                 entries.push(entry("Close", "x", Command::Close));
                 entries
             }
+            Menu::Tower => vec![
+                match self.tower_engine() {
+                    Engine::Claude => entry("Run on Codex (ChatGPT subscription)", "", Command::TowerOn(Engine::Codex)),
+                    Engine::Codex => entry("Run on Claude (Claude subscription)", "", Command::TowerOn(Engine::Claude)),
+                },
+                entry(if self.tower.is_some() { "Restart the tower" } else { "Start the tower" }, "", Command::TowerRestart),
+                entry("Hide the tower", "", Command::TowerHide),
+            ],
             Menu::More => vec![
                 entry("New terminal", "t", Command::NewTab),
-                entry(if self.tower_on_screen() { "Back from the tower" } else { "Tower: steer every terminal" }, "T", Command::Tower),
+                entry(if self.tower_focused() { "Hide the tower" } else { "Tower: steer every terminal" }, "T", Command::Tower),
                 entry("Search terminals", "/", Command::Search),
                 entry("Workspaces", "w", Command::Workspaces),
                 entry("Browse files", "F", Command::Files),

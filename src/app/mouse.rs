@@ -46,8 +46,9 @@ impl App {
             }
             return;
         }
-        self.hover = hit.filter(|h| *h != Hit::Pane);
-        if hit != Some(Hit::Pane) {
+        let terminal = matches!(hit, Some(Hit::Pane | Hit::Tower));
+        self.hover = hit.filter(|_| !terminal);
+        if !terminal {
             self.hover_link = None;
         }
         if self.handle_drag(&mouse, hit) {
@@ -66,7 +67,7 @@ impl App {
                 }
                 // Clicking away saves the name, like leaving a text field.
                 Mode::Rename(_) => self.finish_rename(),
-                Mode::Tab(_) if hit == Some(Hit::Pane) => self.leave(),
+                Mode::Tab(_) if terminal => self.leave(),
                 // Clicking away from the files bar gives the keys back.
                 Mode::Files(_) if !matches!(hit, Some(Hit::File(_))) => self.leave(),
                 _ => {}
@@ -74,7 +75,22 @@ impl App {
         }
 
         match (mouse.kind, hit) {
-            (_, Some(Hit::Pane)) => self.mouse_in_pane(mouse),
+            // A click gives that terminal the keys.
+            (_, Some(Hit::Pane)) => {
+                if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                    self.tower_focus = false;
+                }
+                self.mouse_in_terminal(mouse, false);
+            }
+            (_, Some(Hit::Tower)) => {
+                if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                    self.tower_focus = true;
+                    if let Some(tower) = &mut self.tower {
+                        tower.unseen = false;
+                    }
+                }
+                self.mouse_in_terminal(mouse, true);
+            }
             (MouseEventKind::Down(MouseButton::Left), Some(hit)) => self.click(hit),
             (MouseEventKind::Down(MouseButton::Middle), Some(Hit::OtherTab(w, t))) => {
                 if self.workspaces[w].tabs[t].pinned {
@@ -161,6 +177,8 @@ impl App {
             Hit::PortsDivider => self.drag = Some(Drag::PortsDivider),
             Hit::PrsDivider => self.drag = Some(Drag::PrsDivider),
             Hit::FilesDivider => self.drag = Some(Drag::FilesDivider),
+            Hit::TowerDivider => self.drag = Some(Drag::TowerDivider),
+            Hit::TowerTitle => self.open_menu(Menu::Tower),
             Hit::File(index) => self.click_file(index),
             Hit::FilesHide => self.hide_files(),
             // Another workspace's tab or group, stacked in the sidebar.
@@ -210,7 +228,7 @@ impl App {
                 }
             }
             Hit::Divider => self.drag = Some(Drag::Divider),
-            Hit::Pane => {}
+            Hit::Pane | Hit::Tower => {}
         }
     }
 
@@ -228,6 +246,7 @@ impl App {
                 self.relayout_now();
             }
             (MouseEventKind::Drag(MouseButton::Left), Some(Drag::FilesDivider)) => self.resize_files_bar(mouse.column),
+            (MouseEventKind::Drag(MouseButton::Left), Some(Drag::TowerDivider)) => self.resize_tower(mouse.column),
             (MouseEventKind::Drag(MouseButton::Left), Some(Drag::ActivityDivider)) => {
                 self.resize_activity_bar(mouse.column.saturating_sub(self.layout.activity.x) + 1);
             }
@@ -262,9 +281,10 @@ impl App {
                 }
             }
             (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Select)) => {
-                let pane = self.layout.pane;
-                let col = mouse.column.clamp(pane.left(), pane.right().saturating_sub(1)) - pane.x;
-                let row = mouse.row.clamp(pane.top(), pane.bottom().saturating_sub(1)) - pane.y;
+                let in_tower = self.selection.is_some_and(|s| self.is_tower(s.tab));
+                let area = if in_tower { self.layout.tower_screen() } else { self.layout.pane };
+                let col = mouse.column.clamp(area.left(), area.right().saturating_sub(1)) - area.x;
+                let row = mouse.row.clamp(area.top(), area.bottom().saturating_sub(1)) - area.y;
                 if let Some(selection) = &mut self.selection {
                     selection.head = (row, col);
                 }
@@ -279,14 +299,21 @@ impl App {
         true
     }
 
-    fn mouse_in_pane(&mut self, mouse: MouseEvent) {
-        let pane = self.layout.pane;
-        let (col, row) = (mouse.column - pane.x, mouse.row - pane.y);
-        // Scrolling moves the text out from under an underlined link.
+    /// The mouse over the terminal in the pane, or the tower's.
+    fn mouse_in_terminal(&mut self, mouse: MouseEvent, tower: bool) {
+        let area = if tower { self.layout.tower_screen() } else { self.layout.pane };
+        if !area.contains(Position::new(mouse.column, mouse.row)) {
+            return;
+        }
+        let (col, row) = (mouse.column - area.x, mouse.row - area.y);
+        // Scrolling moves the text out from under an underlined link and a
+        // selection.
         if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
             self.hover_link = None;
+            self.selection = None;
         }
-        let Some(tab) = self.ws_mut().active_tab_mut() else { return };
+        let tab = if tower { self.tower.as_mut() } else { self.ws_mut().active_tab_mut() };
+        let Some(tab) = tab else { return };
         let screen = tab.screen();
         let mode = screen.mouse_protocol_mode();
         // Shift bypasses the program's mouse handling, as in xterm.
@@ -316,7 +343,8 @@ impl App {
                     tab.write(bytes);
                 } else {
                     let lines = WHEEL_LINES as isize;
-                    self.scroll_active(if up { lines } else { -lines });
+                    let offset = tab.screen().scrollback().saturating_add_signed(if up { lines } else { -lines });
+                    tab.screen_mut().set_scrollback(offset);
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -331,11 +359,11 @@ impl App {
                     self.pending_link = None;
                 }
                 let (anchor, head) = match clicks {
-                    2 => match self.active_tab() {
+                    2 => match self.any_tab(tab_id) {
                         Some(tab) => word_bounds(tab.screen(), row, col),
                         None => ((row, col), (row, col)),
                     },
-                    3 => ((row, 0), (row, pane.width.saturating_sub(1))),
+                    3 => ((row, 0), (row, area.width.saturating_sub(1))),
                     _ => ((row, col), (row, col)),
                 };
                 self.selection = Some(Selection { tab: tab_id, anchor, head });
@@ -353,14 +381,14 @@ impl App {
             let single = self.last_click.is_some_and(|(_, _, clicks)| clicks == 1);
             let (row, col) = selection.anchor;
             if single
-                && let Some(tab) = self.active_tab().filter(|t| t.id == selection.tab)
+                && let Some(tab) = self.any_tab(selection.tab)
                 && let Some(link) = links::at(tab.screen(), row, col)
             {
                 self.pending_link = Some((link.url, Instant::now()));
             }
             return;
         }
-        let Some(tab) = self.active_tab().filter(|t| t.id == selection.tab) else { return };
+        let Some(tab) = self.any_tab(selection.tab) else { return };
         let ((start_row, start_col), (end_row, end_col)) = selection.ordered();
         let text = tab.screen().contents_between(start_row, start_col, end_row, end_col + 1);
         if text.is_empty() {

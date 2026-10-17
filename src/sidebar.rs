@@ -212,10 +212,6 @@ fn render_heading(buf: &mut Buffer, app: &App, w: usize, pill: Rect) {
 /// while it's busy, or its program's icon.
 pub fn tab_icon(app: &App, tab: &Tab) -> (String, Color) {
     let p = theme::palette();
-    if tab.tower {
-        let color = if app.is_busy(tab) { p.yellow } else { p.accent };
-        return ("♜".to_owned(), color);
-    }
     let running = tab.running();
     match running.as_deref().and_then(|title| split_glyph(title).0) {
         Some(glyph) => (glyph.to_owned(), theme::process_icon(tab.process_name()).1),

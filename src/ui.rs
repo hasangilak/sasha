@@ -7,7 +7,8 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, GroupEntry, Menu, Mode, PickerEntry, PickerKind, Selection};
-use crate::layout::HeaderButton;
+use crate::layout::{HeaderButton, Hit};
+use crate::tab::Tab;
 use crate::links::Link;
 use crate::workspace::pretty_path;
 use crate::{activity, bars, header, panel_view, sidebar, theme};
@@ -18,15 +19,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     bars::render(frame.buffer_mut(), app);
     let rename_cursor = sidebar::render(frame.buffer_mut(), app);
 
+    render_tower(frame.buffer_mut(), app);
     let pane = app.layout.pane;
     let Some(tab) = app.active_tab() else { return };
+    render_terminal(frame.buffer_mut(), app, tab, pane);
     let screen = tab.screen();
-    let selection = app.selection.as_ref().filter(|s| s.tab == tab.id);
-    let link = app.hover_link.as_ref().filter(|(id, _)| *id == tab.id).map(|(_, link)| link);
-    render_screen(frame.buffer_mut(), pane, screen, selection, link);
-    if screen.scrollback() > 0 {
-        render_scroll_badge(frame.buffer_mut(), pane, screen.scrollback());
-    }
     activity::render_tooltip(frame.buffer_mut(), app);
     bars::render_tooltip(frame.buffer_mut(), app);
     header::render_tooltip(frame.buffer_mut(), app);
@@ -49,10 +46,56 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Panel(_) => panel_view::render(frame, app),
         Mode::Files(_) => panel_view::render_preview(frame, app),
         Mode::Normal | Mode::Tab(_) => {
+            // The cursor of the terminal that has the keys.
+            let (screen, area) = match app.tower().filter(|_| app.tower_focused()) {
+                Some(tower) => (tower.screen(), app.layout.tower_screen()),
+                None => (screen, pane),
+            };
             if screen.scrollback() == 0 && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
-                if row < pane.height && col < pane.width {
-                    frame.set_cursor_position(Position::new(pane.x + col, pane.y + row));
+                if row < area.height && col < area.width {
+                    frame.set_cursor_position(Position::new(area.x + col, area.y + row));
+                }
+            }
+        }
+    }
+}
+
+/// A tab's screen in `area`, with its selection, the link under the mouse,
+/// and how far back it's scrolled.
+fn render_terminal(buf: &mut Buffer, app: &App, tab: &Tab, area: Rect) {
+    let screen = tab.screen();
+    let selection = app.selection.as_ref().filter(|s| s.tab == tab.id);
+    let link = app.hover_link.as_ref().filter(|(id, _)| *id == tab.id).map(|(_, link)| link);
+    render_screen(buf, area, screen, selection, link);
+    if screen.scrollback() > 0 {
+        render_scroll_badge(buf, area, screen.scrollback());
+    }
+}
+
+/// The tower's panel: its edge, lit while it has the keys, and pi in it,
+/// or how to start it again.
+fn render_tower(buf: &mut Buffer, app: &App) {
+    let panel = app.layout.tower;
+    if panel.is_empty() {
+        return;
+    }
+    let p = theme::palette();
+    let bg = theme::BG;
+    buf.set_style(panel, Style::new().bg(bg).fg(p.text));
+    let hot = app.tower_focused() || app.edge_hot(Hit::TowerDivider);
+    for y in panel.top()..panel.bottom() {
+        buf.set_string(panel.x, y, "│", Style::new().fg(if hot { p.accent } else { p.border }).bg(bg));
+    }
+    let area = app.layout.tower_screen();
+    match app.tower() {
+        Some(tower) => render_terminal(buf, app, tower, area),
+        None => {
+            let lines = [("The tower isn't running.", p.text), ("Press ⏎ here, or ^B T, to start it.", p.text_dim)];
+            for (i, (line, color)) in lines.into_iter().enumerate() {
+                let y = area.y + 1 + i as u16;
+                if y < area.bottom() {
+                    buf.set_stringn(area.x + 1, y, line, area.width.saturating_sub(2) as usize, Style::new().fg(color).bg(bg));
                 }
             }
         }
@@ -88,7 +131,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("P", "open pull requests (gh) and their diffs"),
         ("O", "open ports in your tabs; x x force-kills"),
         ("F", "browse the terminal's folder: ↑↓ ← →, ⏎ read, e edit, y copy path"),
-        ("T", "tower: pi steering every terminal (Claude or Codex); T again goes back"),
+        ("T", "tower: show it and type there; T again hides it (it keeps running)"),
         ("i", "show / hide the ports and pull request bars"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
@@ -118,6 +161,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("heading – ×", "minimize / close a workspace's section"),
         ("header title", "this terminal's menu: rename, pin, group, close"),
         ("header icons", "sidebar · new terminal · ♜ tower · PR, ports, files bars · ⋮ all"),
+        ("click a terminal", "the pane or the tower: keys go there"),
         ("files bar", "click a folder to open it, a file to read it; × hides"),
         ("drag an edge", "resize that bar (wide workspace bar: names)"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
@@ -302,6 +346,10 @@ pub fn picker_frame(app: &App) -> Option<PickerFrame> {
     let hint_rows = u16::from(matches!(picker.kind, PickerKind::Workspaces | PickerKind::Groups));
     let (x, y, width, most) = match picker.kind {
         PickerKind::Menu(Menu::Terminal) => (layout.title().x + 1, layout.top.bottom(), 46, 16),
+        PickerKind::Menu(Menu::Tower) => {
+            let x = layout.tower_title().x.max(layout.tower.x + 1);
+            (x.min(screen.right().saturating_sub(47)), layout.top.bottom(), 46, 16)
+        }
         PickerKind::Menu(Menu::More) => {
             let buttons = layout.header_buttons();
             let more = buttons.iter().find(|(b, _)| *b == HeaderButton::More);
@@ -340,6 +388,7 @@ fn render_menu(frame: &mut Frame, app: &App, menu: Menu) {
     let title = match menu {
         Menu::Terminal => format!(" {} ", app.active_tab().map(|t| t.prefix()).unwrap_or_default()),
         Menu::More => " sasha ".to_owned(),
+        Menu::Tower => " tower ".to_owned(),
     };
     render_picker(frame, app, Picker {
         title: &title,

@@ -122,8 +122,6 @@ pub struct Tab {
     pub group: Option<GroupId>,
     /// The group it was in before it was pinned: unpinning puts it back.
     pub group_before_pin: Option<GroupId>,
-    /// The tower's terminal: pi, watching and steering the others.
-    pub tower: bool,
     /// Name of the process in the foreground of this tab's tty.
     fg_name: String,
     fg_pgid: Option<i32>,
@@ -226,7 +224,6 @@ impl Tab {
             pinned: false,
             group: None,
             group_before_pin: None,
-            tower: false,
             fg_name: String::new(),
             fg_pgid: shell_pid,
             title_owner: None,

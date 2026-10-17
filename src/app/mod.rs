@@ -81,6 +81,7 @@ enum Drag {
     PortsDivider,
     FilesDivider,
     PrsDivider,
+    TowerDivider,
     Select,
 }
 
@@ -199,8 +200,17 @@ pub struct App {
     /// The width it goes back to when it shows names again.
     wide_activity_width: u16,
     drag: Option<Drag>,
-    /// The tab the tower was opened from, to go back to.
-    before_tower: Option<TabId>,
+    /// The tower's terminal: pi, steering the others. Not in any
+    /// workspace; `None` until it starts, or after it stops.
+    tower: Option<Tab>,
+    /// The tower was opened once: it runs from then on, and starts with
+    /// sasha.
+    tower_enabled: bool,
+    /// Its panel is wanted on screen (where there's room).
+    tower_panel: bool,
+    /// Keys go to it rather than the pane, while its panel shows.
+    tower_focus: bool,
+    tower_width: u16,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
     next_group_id: GroupId,
@@ -261,7 +271,11 @@ impl App {
             activity_width: layout::ACTIVITY_COMPACT,
             wide_activity_width: layout::ACTIVITY_WIDE_DEFAULT,
             drag: None,
-            before_tower: None,
+            tower: None,
+            tower_enabled: false,
+            tower_panel: false,
+            tower_focus: false,
+            tower_width: layout::TOWER_WIDTH,
             next_tab_id: 0,
             next_workspace_id: 0,
             next_group_id: 0,
@@ -300,6 +314,11 @@ impl App {
                 self.prs_width = layout.prs_width.clamp(layout::PRS_MIN, layout::PRS_MAX);
             }
             self.files_shown = !layout.hide_files;
+            self.tower_enabled = layout.tower;
+            self.tower_panel = layout.tower && !layout.hide_tower;
+            if layout.tower_width > 0 {
+                self.tower_width = layout.tower_width.clamp(layout::TOWER_MIN, layout::TOWER_MAX);
+            }
             if layout.files_width > 0 {
                 self.files_width = layout.files_width.clamp(layout::FILES_MIN, layout::FILES_MAX);
             }
@@ -319,6 +338,12 @@ impl App {
             let mut later = Vec::new();
             let mut active = None;
             for (i, tab) in saved.take_tabs().into_iter().enumerate() {
+                // The tower used to be a tab: now it has a panel of its own.
+                if tab.tower {
+                    self.tower_enabled = true;
+                    self.tower_panel = true;
+                    continue;
+                }
                 let group = tab.group.and_then(|g| group_ids.get(g).copied());
                 if tab.pinned || group.is_some() {
                     let id = self.reopen(index, tab, group);
@@ -372,9 +397,7 @@ impl App {
     /// workspace's, if that's gone), at the end of workspace `index`.
     fn reopen(&mut self, index: usize, saved: SavedTab, group: Option<GroupId>) -> Option<TabId> {
         let cwd = if saved.cwd.is_dir() { saved.cwd } else { self.workspaces[index].path.clone() };
-        // The tower comes back as the tower, its conversation and all.
-        let spawned = if saved.tower { self.spawn_tower(None) } else { self.spawn_tab(&cwd) };
-        match spawned {
+        match self.spawn_tab(&cwd) {
             Ok(mut tab) => {
                 tab.pinned = saved.pinned;
                 tab.custom_prefix = saved.title;
@@ -432,6 +455,10 @@ impl App {
             return;
         }
         self.show_only_groups();
+        // Once opened, the tower runs whenever sasha does.
+        if self.tower_enabled && self.tower.is_none() {
+            self.start_tower(None);
+        }
         if hello.build != self.build {
             let prefix = self.config.prefix.label();
             self.set_status(format!("sasha was rebuilt · {prefix} q and reopen to update"));
@@ -603,6 +630,7 @@ impl App {
             Hit::PortsDivider => self.drag == Some(Drag::PortsDivider),
             Hit::FilesDivider => self.drag == Some(Drag::FilesDivider),
             Hit::PrsDivider => self.drag == Some(Drag::PrsDivider),
+            Hit::TowerDivider => self.drag == Some(Drag::TowerDivider),
             _ => false,
         };
         dragging || self.hover == Some(edge)
@@ -803,6 +831,9 @@ impl App {
                 prs_width: self.prs_width,
                 hide_files: !self.files_shown,
                 files_width: self.files_width,
+                tower: self.tower_enabled,
+                hide_tower: !self.tower_panel,
+                tower_width: self.tower_width,
             }),
         };
         let result = store::encode(&state).and_then(|json| {
@@ -826,6 +857,7 @@ impl App {
             ports: shown(self.ports_shown, self.ports_width),
             files: shown(self.files_shown, self.files_width),
             prs: shown(self.prs_shown, self.prs_width),
+            tower: shown(self.tower_enabled && self.tower_panel, self.tower_width),
         };
         self.layout = Layout::new(area, self.activity_width, self.sidebar_width, self.collapsed, bars);
         self.clamp_bar_scroll(false);
@@ -834,6 +866,13 @@ impl App {
         for ws in &mut self.workspaces {
             for tab in &mut ws.tabs {
                 tab.resize(rows, cols);
+            }
+        }
+        // Hidden, the tower keeps the size it had.
+        if self.tower_shown() {
+            let (rows, cols) = self.tower_size();
+            if let Some(tower) = &mut self.tower {
+                tower.resize(rows, cols);
             }
         }
     }
@@ -845,7 +884,7 @@ impl App {
 
     /// Mirrors the active program's cursor shape (e.g. vim's insert bar).
     fn sync_cursor_style(&mut self) -> io::Result<()> {
-        let style = self.active_tab().map_or(0, Tab::cursor_style);
+        let style = self.focused_tab().map_or(0, Tab::cursor_style);
         let Some(client) = &mut self.client else { return Ok(()) };
         if style == self.cursor_style {
             return Ok(());
@@ -1591,11 +1630,23 @@ impl App {
                 }
                 tab.last_notified = Some(Instant::now());
                 // Claude, Codex and the tower get told from what they did.
-                let agent = if tab.tower { Some(Agent::Pi) } else { Agent::of(tab.process_name()) };
-                match (agent, tab.program_cwd()) {
+                match (Agent::of(tab.process_name()), tab.program_cwd()) {
                     (Some(agent), Some(cwd)) => notify::send_agent(agent, cwd, tab.prefix(), tab.title(), news),
                     _ => notify::send(&tab.title(), &news),
                 }
+            }
+        }
+        // The tower says what it found, unless it's on screen.
+        let shown = self.tower_shown();
+        if let Some(tower) = &mut self.tower
+            && let Some(news) = tower.take_news()
+            && !(watching && shown)
+            && !tower.last_notified.is_some_and(|at| at.elapsed() < NOTIFY_GAP)
+        {
+            tower.last_notified = Some(Instant::now());
+            match tower.program_cwd() {
+                Some(cwd) => notify::send_agent(Agent::Pi, cwd, "tower".to_owned(), "tower".to_owned(), news),
+                None => notify::send("tower", &news),
             }
         }
     }
@@ -1872,7 +1923,9 @@ impl App {
             AppEvent::Files(scan) => self.files_loaded(*scan),
             AppEvent::Output(id, bytes) => self.handle_output(id, &bytes),
             AppEvent::Exited(id) => {
-                if let Some((w, t)) = self.find_tab(id) {
+                if self.is_tower(id) {
+                    self.tower = None;
+                } else if let Some((w, t)) = self.find_tab(id) {
                     self.remove_tab(w, t);
                 }
             }
@@ -1970,9 +2023,17 @@ impl App {
     }
 
     fn handle_output(&mut self, id: TabId, bytes: &[u8]) {
-        let Some((w, t)) = self.find_tab(id) else { return };
-        let on_screen = w == self.current && t == self.ws().active;
-        let tab = &mut self.workspaces[w].tabs[t];
+        let tower_shown = self.tower_shown();
+        let (tab, on_screen) = match self.find_tab(id) {
+            Some((w, t)) => {
+                let on_screen = w == self.current && t == self.ws().active;
+                (&mut self.workspaces[w].tabs[t], on_screen)
+            }
+            None => match self.tower.as_mut().filter(|t| t.id == id) {
+                Some(tower) => (tower, tower_shown),
+                None => return,
+            },
+        };
         let clipboard = tab.process(bytes).and_then(|data| clipboard::copy_base64(&data));
         // A shell starting up or redrawing after a resize isn't news.
         if !tab.settling() {
@@ -1993,7 +2054,7 @@ impl App {
             Mode::Picker(picker) => return picker.query.push_str(line),
             _ => {}
         }
-        if let Some(tab) = self.ws_mut().active_tab_mut() {
+        if let Some(tab) = self.focused_tab_mut() {
             tab.paste(text);
         }
     }
@@ -2019,7 +2080,7 @@ fn save_workspace(ws: &Workspace, groups: &[Group]) -> SavedWorkspace {
             title: tab.custom_prefix.clone(),
             pinned: tab.pinned,
             group: tab.group.and_then(|id| groups.iter().position(|g| g.id == id)),
-            tower: tab.tower,
+            tower: false,
         })
         .collect();
     SavedWorkspace {

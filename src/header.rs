@@ -8,7 +8,7 @@ use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Menu};
-use crate::layout::Hit;
+use crate::layout::{HeaderButton, Hit};
 use crate::sidebar::{self, render_faded};
 use crate::theme;
 
@@ -43,6 +43,8 @@ pub fn render(buf: &mut Buffer, app: &App) {
         buf.set_string(title_end + 1, top.y, "▾", Style::new().fg(if hot { p.accent } else { p.text_dim }).bg(bg));
     }
 
+    render_tower_title(buf, app);
+
     for (button, rect) in app.layout.header_buttons() {
         let on = app.header_on(button);
         let hovered = app.hover == Some(Hit::Header(button));
@@ -53,9 +55,42 @@ pub fn render(buf: &mut Buffer, app: &App) {
         } else {
             bg
         };
-        let fg = if on || hovered { p.text } else { p.text_dim };
+        // The hidden tower has something to say.
+        let news = button == HeaderButton::Tower && app.tower_has_news();
+        let fg = if news {
+            p.yellow
+        } else if on || hovered {
+            p.text
+        } else {
+            p.text_dim
+        };
         buf.set_string(rect.x, rect.y, format!(" {} ", button.icon()), Style::new().fg(fg).bg(button_bg));
     }
+}
+
+/// Over the tower's panel: its name and what it runs on, and ▾ for its
+/// menu; bright while it has the keys.
+fn render_tower_title(buf: &mut Buffer, app: &App) {
+    let area = app.layout.tower_title();
+    if area.width < 8 {
+        return;
+    }
+    let p = theme::palette();
+    let bg = p.popup_bg;
+    let hot = app.hover == Some(Hit::TowerTitle) || app.menu() == Some(Menu::Tower);
+    let focused = app.tower_focused();
+    let color = if hot || focused { p.accent } else { p.text };
+    let x = area.x + 1;
+    buf.set_string(x, area.y, "♜", Style::new().fg(color).bg(bg));
+    let state = match app.tower() {
+        Some(_) => app.tower_engine().label(),
+        None => "stopped",
+    };
+    let style = Style::new().fg(color).bg(bg);
+    let style = if focused { style.add_modifier(Modifier::BOLD) } else { style };
+    let room = area.right().saturating_sub(x + 4) as usize;
+    let end = render_faded(buf, x + 2, area.y, &format!("tower · {state}"), room, style, bg);
+    buf.set_string(end + 1, area.y, "▾", Style::new().fg(if hot { p.accent } else { p.text_dim }).bg(bg));
 }
 
 /// What the hovered header button does, and its key, under it.

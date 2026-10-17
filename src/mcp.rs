@@ -262,18 +262,13 @@ fn id(args: &Value) -> Result<TabId> {
     args["id"].as_u64().or_else(|| args["id"].as_str()?.trim_start_matches('#').parse().ok()).context("`id` is missing")
 }
 
-/// The terminals but the tower's own.
+/// Every terminal; the tower's own isn't one of them.
 fn terminals() -> Result<Vec<Terminal>> {
-    Ok(control::terminals()?.into_iter().filter(|t| !t.tower).collect())
+    control::terminals()
 }
 
 fn find(id: TabId) -> Result<Terminal> {
-    let terminals = control::terminals()?;
-    let terminal = terminals.into_iter().find(|t| t.id == id).ok_or_else(|| anyhow!("no terminal #{id}: list them again"))?;
-    if terminal.tower {
-        bail!("#{id} is the tower's own terminal");
-    }
-    Ok(terminal)
+    terminals()?.into_iter().find(|t| t.id == id).ok_or_else(|| anyhow!("no terminal #{id}: list them again"))
 }
 
 fn agent(terminal: &Terminal) -> Option<Agent> {

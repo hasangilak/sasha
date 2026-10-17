@@ -135,6 +135,8 @@ pub enum Command {
     Tower,
     /// Runs the tower on this subscription.
     TowerOn(Engine),
+    TowerRestart,
+    TowerHide,
     SideBars,
     Narrower,
     Wider,
@@ -215,6 +217,8 @@ impl Command {
             | Command::NewTab
             | Command::Tower
             | Command::TowerOn(_)
+            | Command::TowerRestart
+            | Command::TowerHide
             | Command::Leave => {
                 After::Leave
             }
@@ -272,6 +276,8 @@ pub enum Menu {
     Terminal,
     /// Everything else: the ⋮ button's.
     More,
+    /// The tower's: its name's, over its panel.
+    Tower,
 }
 
 pub struct Picker {

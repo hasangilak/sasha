@@ -51,6 +51,14 @@ pub struct SavedLayout {
     pub hide_files: bool,
     #[serde(default)]
     pub files_width: u16,
+    /// The tower was opened: it starts with sasha.
+    #[serde(default)]
+    pub tower: bool,
+    /// Its panel is hidden.
+    #[serde(default)]
+    pub hide_tower: bool,
+    #[serde(default)]
+    pub tower_width: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -115,8 +123,8 @@ pub struct SavedTab {
     /// Index into the state's `groups`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<usize>,
-    /// The tower's tab, which comes back running the tower.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// The tower's tab, from the version that kept it in a workspace.
+    #[serde(default, skip_serializing)]
     pub tower: bool,
 }
 

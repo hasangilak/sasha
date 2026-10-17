@@ -27,11 +27,11 @@ impl App {
             Request::List => Ok(Reply::Terminals(self.terminals())),
             Request::Read { id, lines } => Ok(Reply::Text(self.control_tab(id)?.text(lines.clamp(1, MAX_LINES)))),
             Request::Paste { id, text } => {
-                self.typing_tab(id)?.paste(&text);
+                self.control_tab(id)?.paste(&text);
                 Ok(Reply::Done)
             }
             Request::Keys { id, keys } => {
-                let tab = self.typing_tab(id)?;
+                let tab = self.control_tab(id)?;
                 let mut bytes = Vec::new();
                 for name in &keys {
                     let key = input::parse_key(name).ok_or_else(|| format!("no key called `{name}`"))?;
@@ -68,9 +68,6 @@ impl App {
             }
             Request::Close { id } => {
                 let (w, t) = self.find_tab(id).ok_or_else(|| gone(id))?;
-                if self.workspaces[w].tabs[t].tower {
-                    return Err("that's the tower's own terminal".to_owned());
-                }
                 self.remove_tab(w, t);
                 Ok(Reply::Done)
             }
@@ -95,7 +92,6 @@ impl App {
                     on_screen: on_screen == Some(tab.id),
                     unseen: tab.unseen,
                     bell: tab.bell,
-                    tower: tab.tower,
                 });
             }
         }
@@ -105,15 +101,6 @@ impl App {
     fn control_tab(&mut self, id: TabId) -> Result<&mut Tab, String> {
         let (w, t) = self.find_tab(id).ok_or_else(|| gone(id))?;
         Ok(&mut self.workspaces[w].tabs[t])
-    }
-
-    /// A terminal to type into: any but the tower's own.
-    fn typing_tab(&mut self, id: TabId) -> Result<&mut Tab, String> {
-        let tab = self.control_tab(id)?;
-        if tab.tower {
-            return Err("that's the tower's own terminal".to_owned());
-        }
-        Ok(tab)
     }
 }
 
