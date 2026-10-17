@@ -43,8 +43,11 @@ const ACTIVITY_ROW: u16 = 2;
 const HEADER_MIN_HEIGHT: u16 = 8;
 /// Narrower headers leave out the buttons.
 const HEADER_BUTTONS_MIN_WIDTH: u16 = 40;
+/// The buttons above the terminal leave its title this much of the header.
+const TITLE_MIN: u16 = 12;
 
-/// The buttons on the right of the header.
+/// The buttons of the header: a bar's toggle sits on top of the bar while
+/// it shows, the rest on the right above the terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderButton {
     /// Collapses and expands the tab sidebar.
@@ -58,7 +61,7 @@ pub enum HeaderButton {
 }
 
 impl HeaderButton {
-    /// Right to left after the sidebar's, which stands apart.
+    /// In order, left to right.
     pub const ALL: [HeaderButton; 6] = [
         HeaderButton::Sidebar,
         HeaderButton::NewTerminal,
@@ -79,6 +82,10 @@ impl HeaderButton {
         }
     }
 
+    pub fn width(self) -> u16 {
+        self.icon().chars().count() as u16 + 2
+    }
+
     /// What it does, and its key after the prefix.
     pub fn tooltip(self) -> (&'static str, &'static str) {
         match self {
@@ -95,9 +102,9 @@ impl HeaderButton {
 /// Something clickable on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
-    /// The active terminal's title, left in the header: its menu.
+    /// The active terminal's title, in the header above it: its menu.
     Title,
-    /// A button on the right of the header.
+    /// A button of the header.
     Header(HeaderButton),
     Workspace(usize),
     AddWorkspace,
@@ -265,31 +272,73 @@ impl Layout {
         }
     }
 
-    /// The header's buttons, where they are: on the right, the sidebar's
-    /// apart from the others.
+    /// The header's buttons, where they are: a bar's toggle on top of it at
+    /// its right while it shows, the rest on the right above the terminal,
+    /// as many as leave its title room. Windows too narrow for a bar go
+    /// without its toggle.
     pub fn header_buttons(&self) -> Vec<(HeaderButton, Rect)> {
         if self.top.width < HEADER_BUTTONS_MIN_WIDTH {
             return Vec::new();
         }
-        let mut x = self.top.right().saturating_sub(1);
         let mut buttons = Vec::new();
+        let mut right = self.pane.right().saturating_sub(1);
+        let mut room = true;
         for button in HeaderButton::ALL.into_iter().rev() {
-            if button == HeaderButton::Sidebar {
-                // Room for the separator.
-                x = x.saturating_sub(2);
+            let width = button.width();
+            let bar = self.bar_of(button);
+            let min_area = match button {
+                HeaderButton::Ports => PORTS_MIN_AREA,
+                HeaderButton::Files => FILES_MIN_AREA,
+                HeaderButton::PullRequests => PRS_MIN_AREA,
+                _ => 0,
+            };
+            if self.area.width < min_area {
+                continue;
             }
-            let width = button.icon().chars().count() as u16 + 2;
-            x = x.saturating_sub(width);
-            buttons.push((button, Rect::new(x, self.top.y, width, 1)));
-            x = x.saturating_sub(1);
+            if bar.width > width + 1 {
+                buttons.push((button, Rect::new(bar.right() - 1 - width, self.top.y, width, 1)));
+            } else if room && right >= self.pane.x + TITLE_MIN + width {
+                right -= width;
+                buttons.push((button, Rect::new(right, self.top.y, width, 1)));
+                right -= 1;
+            } else {
+                room = false;
+            }
         }
-        buttons.reverse();
+        buttons.sort_by_key(|(_, rect)| rect.x);
         buttons
     }
 
-    /// Where the buttons start; the title has the header up to there.
-    pub fn header_buttons_left(&self) -> u16 {
-        self.header_buttons().first().map_or(self.top.right(), |(_, rect)| rect.x)
+    /// The bar a header button shows and hides, while it shows.
+    fn bar_of(&self, button: HeaderButton) -> Rect {
+        match button {
+            HeaderButton::Sidebar if !self.collapsed => self.sidebar,
+            HeaderButton::Ports => self.ports_bar,
+            HeaderButton::Files => self.files_bar,
+            HeaderButton::PullRequests => self.pr_bar,
+            _ => Rect::default(),
+        }
+    }
+
+    /// The terminal's title, in the header above it, up to the buttons
+    /// there.
+    pub fn title(&self) -> Rect {
+        let pane = self.pane;
+        let end = self.header_buttons().into_iter().map(|(_, rect)| rect.x).find(|&x| x >= pane.x && x < pane.right());
+        let end = end.unwrap_or(pane.right());
+        Rect::new(pane.x, self.top.y, end - pane.x, self.top.height)
+    }
+
+    /// The columns where the workspace bar, the bars and the tab sidebar
+    /// meet the rest, for the header to carry their edges up.
+    pub fn edges(&self) -> Vec<u16> {
+        let mut edges = Vec::new();
+        for (bar, right) in [(self.activity_divider, true), (self.ports_bar, true), (self.divider, true), (self.files_bar, false), (self.pr_bar, false)] {
+            if !bar.is_empty() {
+                edges.push(if right { bar.right() - 1 } else { bar.x });
+            }
+        }
+        edges
     }
 
     /// Column of the × that hides the files bar.
@@ -430,7 +479,7 @@ impl Layout {
             let button = self.header_buttons().into_iter().find(|(_, rect)| rect.contains(pos));
             return match button {
                 Some((button, _)) => Some(Hit::Header(button)),
-                None if x < self.header_buttons_left() => Some(Hit::Title),
+                None if self.title().contains(pos) => Some(Hit::Title),
                 None => None,
             };
         }
@@ -566,17 +615,45 @@ mod tests {
     }
 
     #[test]
-    fn the_header_sits_on_top_with_its_buttons_on_the_right() {
+    fn the_header_sits_on_top_with_the_title_above_the_terminal() {
         let layout = screen(150, 20);
         assert_eq!(layout.top, Rect::new(0, 0, 150, 1));
         assert_eq!((layout.activity.y, layout.pane.y, layout.pane.height), (1, 1, 19));
+        assert_eq!(layout.title().x, layout.pane.x);
         let buttons = layout.header_buttons();
+        // The sidebar's toggle on top of it, at its right.
+        assert_eq!(buttons[0].0, HeaderButton::Sidebar);
+        assert_eq!(buttons[0].1.right(), layout.divider.x);
+        // The rest on the right, after the title.
         assert_eq!(buttons.last().map(|(b, r)| (*b, r.right())), Some((HeaderButton::More, 149)));
-        // The sidebar's button stands apart, with a separator between.
-        assert_eq!(buttons[1].1.x - buttons[0].1.right(), 3);
-        assert_eq!(layout.header_buttons_left(), buttons[0].1.x);
+        assert_eq!(layout.title().right(), buttons[1].1.x);
         // Short windows go without a header, narrow ones without buttons.
         assert!(screen(150, 7).top.is_empty());
         assert!(screen(30, 20).header_buttons().is_empty());
+    }
+
+    #[test]
+    fn a_bars_toggle_sits_on_top_of_it_while_it_shows() {
+        let bars = Bars { ports: PORTS_WIDTH, files: FILES_WIDTH, prs: PRS_WIDTH };
+        let layout = Layout::new(Rect::new(0, 0, 200, 20), ACTIVITY_COMPACT, DEFAULT_WIDTH, true, bars);
+        let at = |button| layout.header_buttons().into_iter().find(|(b, _)| *b == button).map(|(_, r)| r);
+        let over = |bar: Rect, button| at(button).is_some_and(|r| r.x >= bar.x && r.right() < bar.right());
+        assert!(over(layout.ports_bar, HeaderButton::Ports));
+        assert!(over(layout.files_bar, HeaderButton::Files));
+        assert!(over(layout.pr_bar, HeaderButton::PullRequests));
+        // The collapsed sidebar's goes above the terminal, with the rest.
+        assert!(over(layout.title().union(layout.pane), HeaderButton::Sidebar));
+        assert!(over(layout.pane, HeaderButton::More));
+        // Windows too narrow for the bars go without their toggles; narrow
+        // terminals keep their title room, and the menu of everything.
+        let narrow = Layout::new(Rect::new(0, 0, 60, 20), ACTIVITY_COMPACT, DEFAULT_WIDTH, true, Bars::default());
+        let buttons: Vec<_> = narrow.header_buttons().into_iter().map(|(b, _)| b).collect();
+        assert_eq!(buttons, [HeaderButton::Sidebar, HeaderButton::NewTerminal, HeaderButton::More]);
+        let narrow = Layout::new(Rect::new(0, 0, 110, 20), ACTIVITY_COMPACT, 80, false, Bars::default());
+        let buttons = narrow.header_buttons();
+        assert!(narrow.title().width >= TITLE_MIN);
+        assert!(!buttons.iter().any(|(b, _)| *b == HeaderButton::NewTerminal));
+        assert_eq!(buttons.last().map(|(b, _)| *b), Some(HeaderButton::More));
+        assert!(buttons.windows(2).all(|w| w[0].1.right() < w[1].1.x));
     }
 }

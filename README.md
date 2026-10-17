@@ -45,8 +45,9 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 
 The mouse works too: click and drag tabs, double-click to rename, right-click to pin, click a
 link to open it, and drag any bar's edge to resize it. The header across the top shows the
-terminal you're in (click its title to rename, pin, group or close it), with buttons for the
-sidebar, a new terminal, the pull request, ports and files bars, and `⋮` for everything else.
+terminal you're in above it (click its title to rename, pin, group or close it). The tab sidebar
+and each bar that shows have their toggle on top of them; hidden ones line up on the right with a
+new terminal and `⋮` for everything else.
 
 ## What it does
 

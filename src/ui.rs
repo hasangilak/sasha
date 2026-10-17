@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, GroupEntry, Menu, Mode, PickerEntry, PickerKind, Selection};
+use crate::layout::HeaderButton;
 use crate::links::Link;
 use crate::workspace::pretty_path;
 use crate::{activity, bars, header, panel_view, sidebar, theme};
@@ -299,8 +300,13 @@ pub fn picker_frame(app: &App) -> Option<PickerFrame> {
     let screen = layout.area;
     let hint_rows = u16::from(matches!(picker.kind, PickerKind::Workspaces | PickerKind::Groups));
     let (x, y, width, most) = match picker.kind {
-        PickerKind::Menu(Menu::Terminal) => (layout.top.x + 1, layout.top.bottom(), 46, 16),
-        PickerKind::Menu(Menu::More) => (screen.right().saturating_sub(47), layout.top.bottom(), 46, 16),
+        PickerKind::Menu(Menu::Terminal) => (layout.title().x + 1, layout.top.bottom(), 46, 16),
+        PickerKind::Menu(Menu::More) => {
+            let buttons = layout.header_buttons();
+            let more = buttons.iter().find(|(b, _)| *b == HeaderButton::More);
+            let right = more.map_or(screen.right().saturating_sub(1), |(_, rect)| rect.right());
+            (right.saturating_sub(46).max(screen.x), layout.top.bottom(), 46, 16)
+        }
         _ => (pane.x + 1, pane.y, pane.width.saturating_sub(2).min(72), 12),
     };
     let visible = app.picker_len().clamp(1, most) as u16;

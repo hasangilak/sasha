@@ -1,14 +1,14 @@
-//! The header across the top of the window: the terminal on screen's icon
-//! and title, which opens its menu, and on the right the buttons for the
-//! tab sidebar, a new terminal, the bars and everything else, lit up while
-//! what they show is showing.
+//! The header across the top of the window: above the terminal its icon and
+//! title, which opens its menu, and the buttons for a new terminal,
+//! everything else and the bars that are hidden; above each bar that shows,
+//! lit up, the button that hides it.
 
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Menu};
-use crate::layout::{HeaderButton, Hit};
+use crate::layout::Hit;
 use crate::sidebar::{self, render_faded};
 use crate::theme;
 
@@ -21,19 +21,27 @@ pub fn render(buf: &mut Buffer, app: &App) {
     let bg = p.popup_bg;
     buf.set_style(top, Style::new().bg(bg).fg(p.text));
 
-    // The terminal's icon and title, and ▾ for its menu.
-    let mut x = top.x + 2;
-    let end = app.layout.header_buttons_left().saturating_sub(2);
-    if let Some(tab) = app.active_tab() {
-        let (icon, color) = sidebar::tab_icon(app, tab);
-        buf.set_string(x, top.y, &icon, Style::new().fg(color).bg(bg));
-        x += icon.width() as u16 + 1;
+    // The edges of the bars below, carried up.
+    for x in app.layout.edges() {
+        buf.set_string(x, top.y, "│", Style::new().fg(p.border).bg(bg));
     }
-    let hot = app.hover == Some(Hit::Title) || app.menu() == Some(Menu::Terminal);
-    let style = Style::new().fg(if hot { p.accent } else { p.text }).bg(bg).add_modifier(Modifier::BOLD);
-    let room = end.saturating_sub(x + 2) as usize;
-    let title_end = render_faded(buf, x, top.y, &app.header_title(), room, style, bg);
-    buf.set_string(title_end + 1, top.y, "▾", Style::new().fg(if hot { p.accent } else { p.text_dim }).bg(bg));
+
+    // The terminal's icon and title, and ▾ for its menu.
+    let title = app.layout.title();
+    if title.width >= 6 {
+        let mut x = title.x + 1;
+        let end = title.right().saturating_sub(2);
+        if let Some(tab) = app.active_tab() {
+            let (icon, color) = sidebar::tab_icon(app, tab);
+            buf.set_string(x, top.y, &icon, Style::new().fg(color).bg(bg));
+            x += icon.width() as u16 + 1;
+        }
+        let hot = app.hover == Some(Hit::Title) || app.menu() == Some(Menu::Terminal);
+        let style = Style::new().fg(if hot { p.accent } else { p.text }).bg(bg).add_modifier(Modifier::BOLD);
+        let room = end.saturating_sub(x + 2) as usize;
+        let title_end = render_faded(buf, x, top.y, &app.header_title(), room, style, bg);
+        buf.set_string(title_end + 1, top.y, "▾", Style::new().fg(if hot { p.accent } else { p.text_dim }).bg(bg));
+    }
 
     for (button, rect) in app.layout.header_buttons() {
         let on = app.header_on(button);
@@ -47,9 +55,6 @@ pub fn render(buf: &mut Buffer, app: &App) {
         };
         let fg = if on || hovered { p.text } else { p.text_dim };
         buf.set_string(rect.x, rect.y, format!(" {} ", button.icon()), Style::new().fg(fg).bg(button_bg));
-        if button == HeaderButton::Sidebar {
-            buf.set_string(rect.right() + 1, rect.y, "│", Style::new().fg(p.border).bg(bg));
-        }
     }
 }
 
