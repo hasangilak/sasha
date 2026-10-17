@@ -25,6 +25,8 @@ const SPOKEN_MAX: usize = 400;
 const SPEAKER: &str = include_str!("voice/speaker.py");
 /// Kokoro's voice unless you pick another: warm, clear, American.
 const KOKORO_VOICE: &str = "af_heart";
+/// How fast the voice talks unless you say: a tenth slower than its own.
+const DEFAULT_PACE: f64 = 0.9;
 /// The tones a part can be said in, from the quiet ones to the loudest.
 pub const TONES: [&str; 16] = [
     "tired", "gentle", "calm", "thoughtful", "serious", "warm", "sad", "pleased", "relieved", "concerned", "proud",
@@ -107,6 +109,14 @@ pub fn say_parts(parts: &[(String, String)]) {
     say_with_mac(&text.join(" "));
 }
 
+/// How fast it talks: `$SASHA_VOICE_PACE`, else the first line of
+/// `voice/pace`, else a tenth slower than the model's own (0.9). 1 is the
+/// model's pace; smaller is slower.
+fn chosen_pace() -> f64 {
+    let pace = std::env::var("SASHA_VOICE_PACE").ok().or_else(|| std::fs::read_to_string(dir()?.join("pace")).ok());
+    pace.and_then(|p| p.lines().next()?.trim().parse::<f64>().ok()).filter(|p| (0.5..=1.5).contains(p)).unwrap_or(DEFAULT_PACE)
+}
+
 /// The speaker's engine: `$SASHA_VOICE_ENGINE`, else the first line of
 /// `voice/engine` (`chatterbox` for feeling), else Kokoro.
 fn chosen_engine() -> String {
@@ -141,7 +151,7 @@ fn say_with_speaker(python: &Path, parts: &[(String, String)]) -> Result<()> {
     let socket = speaker_socket()?;
     let voice = speaker_voice();
     let parts: Vec<Value> = parts.iter().map(|(text, tone)| json!({"text": text, "tone": tone})).collect();
-    let request = json!({"say": parts, "voice": voice, "engine": chosen_engine()});
+    let request = json!({"say": parts, "voice": voice, "engine": chosen_engine(), "pace": chosen_pace()});
     if tell_speaker(&socket, &request).is_ok() {
         return Ok(());
     }

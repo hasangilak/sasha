@@ -131,7 +131,9 @@ of a second. Pick its voice by name in `~/.config/sasha/voice/voice` (`af_heart`
 `bm_george`, `am_michael`, `bf_emma`…). Put `chatterbox` in `~/.config/sasha/voice/engine` and it
 speaks with feeling: [Chatterbox](https://github.com/resemble-ai/chatterbox) copies that voice
 (from a recording Kokoro makes once) and the tower gives each part of what it says a tone, from
-calm to urgent, changing within a message when the news does. Without Kokoro it uses your Mac's
+calm to urgent, changing within a message when the news does. It talks a tenth slower than the
+model would, with a breath after each sentence; set your own pace in `~/.config/sasha/voice/pace`
+(`0.85`, or `1` for the model's own). Without Kokoro it uses your Mac's
 system voice.
 Talk to it with Claude Code's or Codex's own voice input.
 

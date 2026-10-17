@@ -5,7 +5,7 @@ tower starts, or on first use: `python speaker.py SOCKET VOICE_DIR [VOICE
 ENGINE]`, which gets that voice ready straight away. Each connection sends one line
 of JSON, either
   {"say": [{"text": "...", "tone": "pleased"}, ...], "voice": "bm_fable",
-   "engine": "chatterbox"}
+   "engine": "chatterbox", "pace": 0.9}
 or {"stop": true}. Something new to say cuts off what it was saying.
 
 Kokoro reads plainly in any of its voices. Chatterbox speaks with
@@ -23,6 +23,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -45,7 +46,11 @@ CHATTERBOX = os.environ.get("SASHA_CHATTERBOX_MODEL", "mlx-community/Chatterbox-
 # Tests set a player that gets each piece of audio as a file.
 PLAYER = os.environ.get("SASHA_PLAYER")
 IDLE = 2 * 60 * 60
-PAUSE = 0.35
+# Breaths: after a sentence, and between parts (at normal pace).
+SENTENCE_PAUSE = 0.25
+PAUSE = 0.45
+# Slows speech without lowering the voice (Chatterbox has no pace of its own).
+FFMPEG = shutil.which("ffmpeg") or next((p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg") if os.path.exists(p)), None)
 # How much speech is buffered before playing starts.
 BUFFER_FIRST = 0.4
 
@@ -205,7 +210,26 @@ class Files:
                 player.kill()
 
 
-def say(parts, voice, engine, mine):
+def at_pace(audio, rate, pace):
+    """`audio` spoken at `pace` (0.9 is a tenth slower), pitch kept."""
+    if abs(pace - 1.0) < 0.01 or not FFMPEG or not len(audio):
+        return audio
+    stretched = subprocess.run(
+        [FFMPEG, "-loglevel", "error", "-f", "f32le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
+         "-filter:a", f"atempo={pace}", "-f", "f32le", "pipe:1"],
+        input=audio.astype(np.float32).tobytes(),
+        capture_output=True,
+    )
+    if stretched.returncode != 0 or not stretched.stdout:
+        return audio
+    return np.frombuffer(stretched.stdout, dtype=np.float32)
+
+
+def silence(seconds, rate, pace):
+    return np.zeros(int(rate * seconds / pace), dtype=np.float32)
+
+
+def say(parts, voice, engine, mine, pace):
     out = Files() if PLAYER else Speakers()
     with lock:
         if current["id"] != mine:
@@ -217,18 +241,19 @@ def say(parts, voice, engine, mine):
             if not text:
                 continue
             rate = 24000
-            for audio, rate in pieces(text, part.get("tone") or "warm", voice, engine):
+            for audio, rate in pieces(text, part.get("tone") or "warm", voice, engine, pace):
                 if not still(mine):
                     return
-                out.add(audio, rate)
-            out.add(np.zeros(int(rate * PAUSE), dtype=np.float32), rate)
+                out.add(at_pace(audio, rate, pace) if engine == "chatterbox" else audio, rate)
+                out.add(silence(SENTENCE_PAUSE, rate, pace), rate)
+            out.add(silence(PAUSE - SENTENCE_PAUSE, rate, pace), rate)
     except Exception:
         traceback.print_exc()
     # Waiting for it to finish playing isn't the worker's job.
     threading.Thread(target=out.finish, daemon=True).start()
 
 
-def pieces(text, tone, voice, engine):
+def pieces(text, tone, voice, engine, pace):
     """`text` as audio, a piece at a time as it's made: (samples, rate)."""
     if engine == "chatterbox":
         try:
@@ -254,7 +279,8 @@ def pieces(text, tone, voice, engine):
             # Chatterbox can't: Kokoro reads it plainly instead.
             traceback.print_exc()
     kokoro = model("kokoro")
-    for result in kokoro.generate(text=text, voice=voice, lang_code=voice[0]):
+    # Kokoro keeps its own pace.
+    for result in kokoro.generate(text=text, voice=voice, lang_code=voice[0], speed=pace):
         yield np.array(result.audio, dtype=np.float32).reshape(-1), kokoro.sample_rate
 
 
@@ -285,7 +311,8 @@ def handle(conn):
         stop()
         with lock:
             mine = current["id"]
-        jobs.put((parts, request.get("voice") or "af_heart", request.get("engine") or "kokoro", mine))
+        pace = min(max(float(request.get("pace") or 1.0), 0.5), 1.5)
+        jobs.put((parts, request.get("voice") or "af_heart", request.get("engine") or "kokoro", mine, pace))
     last_used = time.time()
 
 
@@ -299,9 +326,9 @@ def worker():
         except queue.Empty:
             ready = not warm_up_next()
             continue
-        parts, voice, engine, mine = job
+        parts, voice, engine, mine, pace = job
         if still(mine):
-            say(parts, voice, engine, mine)
+            say(parts, voice, engine, mine, pace)
 
 
 def leave_when_idle(server):
