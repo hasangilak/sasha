@@ -6,8 +6,13 @@ ENGINE]`, which gets that voice ready straight away. Each connection sends one l
 of JSON, either
   {"say": [{"text": "...", "tone": "pleased"}, ...], "voice": "bm_fable",
    "engine": "chatterbox", "pace": 0.9}
+or {"play": FILE, "who": ..., "parts": [...]} to play a kept message again,
 or {"stop": true}, or {"status": true}, answered with {"speaking": true or
-false, "version": ...}, or {"quit": true}. Something new to say cuts off what it was saying.
+false, "version": ..., "now": what's playing}, or {"quit": true}.
+
+Every message said is kept in VOICE_DIR/library, compact, with a line in
+its index.jsonl: when, who, the words and their moods, how long, and
+whether it was stopped. Something new to say cuts off what it was saying.
 
 Kokoro reads plainly in any of its voices. Chatterbox speaks with
 feeling: it copies the voice, and the delivery, from a recording of that
@@ -54,6 +59,12 @@ PAUSE = 0.45
 FFMPEG = shutil.which("ffmpeg") or next((p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg") if os.path.exists(p)), None)
 # How much speech is buffered before playing starts.
 BUFFER_FIRST = 0.4
+# Every message said is kept here, with an index line each.
+LIBRARY = os.path.join(VOICE_DIR, "library")
+# The sound level is measured this often, and sent to sasha in at most
+# this many points.
+LEVEL_EVERY = 0.05
+LEVELS_MAX = 400
 
 # Each tone: how much feeling (Chatterbox's exaggeration), how deliberate
 # the pace (its cfg_weight: lower is slower), and what the voice reads in
@@ -89,7 +100,7 @@ loading = threading.Lock()
 conds = {}
 lock = threading.Lock()
 # Which request is current, and the player playing it.
-current = {"id": 0, "player": None, "busy": False}
+current = {"id": 0, "player": None, "busy": False, "track": None}
 last_used = time.time()
 # What there is to say, for the worker, newest last.
 jobs = queue.Queue()
@@ -153,6 +164,90 @@ def warm_up_next():
     except Exception:
         traceback.print_exc()
     return False
+
+
+class Track:
+    """What's playing: who says it, the words and their moods, the sound so
+    far and its levels, and when it started playing, for sasha to show and
+    the library to keep."""
+
+    def __init__(self, who, parts, replay=False):
+        self.who, self.parts, self.replay = who, parts, replay
+        self.samples, self.levels = [], []
+        self.seconds, self.rate, self.since = 0.0, 24000, None
+
+    def add(self, audio, rate):
+        self.rate = rate
+        if self.since is None and len(audio):
+            self.since = time.time()
+        self.samples.append(audio)
+        step = max(1, int(rate * LEVEL_EVERY))
+        for start in range(0, len(audio), step):
+            chunk = audio[start : start + step]
+            self.levels.append(float(np.sqrt(np.mean(chunk * chunk))) if len(chunk) else 0.0)
+        self.seconds += len(audio) / rate
+
+    def summary(self):
+        levels = self.levels
+        if len(levels) > LEVELS_MAX:
+            size = len(levels) / LEVELS_MAX
+            levels = [max(levels[int(i * size) : max(int((i + 1) * size), int(i * size) + 1)]) for i in range(LEVELS_MAX)]
+        position = min(time.time() - self.since, self.seconds) if self.since else 0.0
+        return {
+            "who": self.who,
+            "text": " ".join(part.get("text", "") for part in self.parts).strip(),
+            "tones": [part.get("tone") or "warm" for part in self.parts],
+            "duration": round(self.seconds, 2),
+            "position": round(position, 2),
+            "levels": [round(level, 4) for level in levels],
+            "replay": self.replay,
+        }
+
+
+def keep(track, stopped):
+    """Adds what was said to the library: the sound, compact, and a line
+    in its index."""
+    if track.replay or not track.samples:
+        return
+    try:
+        os.makedirs(LIBRARY, exist_ok=True)
+        audio = np.concatenate(track.samples)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        base = os.path.join(LIBRARY, f"{stamp}-{track.who or 'voice'}")
+        path = base + ".m4a"
+        encoded = FFMPEG and subprocess.run(
+            [FFMPEG, "-loglevel", "error", "-y", "-f", "f32le", "-ar", str(track.rate), "-ac", "1", "-i", "pipe:0",
+             "-c:a", "aac", "-b:a", "64k", path],
+            input=audio.astype(np.float32).tobytes(),
+            capture_output=True,
+        ).returncode == 0
+        if not encoded:
+            path = base + ".wav"
+            write_wav(audio, track.rate, path)
+        entry = {
+            "file": os.path.basename(path),
+            "time": int(time.time()),
+            "who": track.who,
+            "parts": track.parts,
+            "duration": round(len(audio) / track.rate, 2),
+            "stopped": stopped,
+        }
+        with open(os.path.join(LIBRARY, "index.jsonl"), "a") as index:
+            index.write(json.dumps(entry) + "\n")
+    except Exception:
+        traceback.print_exc()
+
+
+def decode(path):
+    """A kept message's sound, to play again."""
+    if path.endswith(".wav"):
+        with wave.open(path) as source:
+            frames = source.readframes(source.getnframes())
+            return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767, source.getframerate()
+    decoded = subprocess.run(
+        [FFMPEG, "-loglevel", "error", "-i", path, "-f", "f32le", "-ar", "24000", "-ac", "1", "pipe:1"], capture_output=True
+    )
+    return np.frombuffer(decoded.stdout, dtype=np.float32), 24000
 
 
 def stop():
@@ -233,12 +328,20 @@ def silence(seconds, rate, pace):
     return np.zeros(int(rate * seconds / pace), dtype=np.float32)
 
 
-def say(parts, voice, engine, mine, pace):
+def say(parts, voice, engine, mine, pace, who):
     out = Files() if PLAYER else Speakers()
+    track = Track(who, parts)
     with lock:
         if current["id"] != mine:
             return
         current["player"] = out
+        current["track"] = track
+
+    def emit(audio, rate):
+        out.add(audio, rate)
+        track.add(audio, rate)
+
+    stopped = False
     try:
         for part in parts:
             text = part.get("text", "").strip()
@@ -247,13 +350,42 @@ def say(parts, voice, engine, mine, pace):
             rate = 24000
             for audio, rate in pieces(text, part.get("tone") or "warm", voice, engine, pace):
                 if not still(mine):
-                    return
-                out.add(at_pace(audio, rate, pace) if engine == "chatterbox" else audio, rate)
-                out.add(silence(SENTENCE_PAUSE, rate, pace), rate)
-            out.add(silence(PAUSE - SENTENCE_PAUSE, rate, pace), rate)
+                    stopped = True
+                    break
+                emit(at_pace(audio, rate, pace) if engine == "chatterbox" else audio, rate)
+                emit(silence(SENTENCE_PAUSE, rate, pace), rate)
+            if stopped:
+                break
+            emit(silence(PAUSE - SENTENCE_PAUSE, rate, pace), rate)
     except Exception:
         traceback.print_exc()
-    # Waiting for it to finish playing isn't the worker's job.
+    threading.Thread(target=keep, args=(track, stopped), daemon=True).start()
+    if stopped:
+        return
+    played(out, mine)
+
+
+def play(path, who, parts, mine):
+    """A kept message, again."""
+    out = Files() if PLAYER else Speakers()
+    track = Track(who, parts, replay=True)
+    with lock:
+        if current["id"] != mine:
+            return
+        current["player"] = out
+        current["track"] = track
+    try:
+        audio, rate = decode(path)
+        out.add(audio, rate)
+        track.add(audio, rate)
+    except Exception:
+        traceback.print_exc()
+    played(out, mine)
+
+
+def played(out, mine):
+    """Waits for it to finish playing, off the worker's hands."""
+
     def finished():
         out.finish()
         with lock:
@@ -316,7 +448,10 @@ def handle(conn):
         if request.get("status"):
             with lock:
                 speaking = current["busy"]
+                track = current["track"]
             answer = {"speaking": speaking, "version": os.environ.get("SASHA_SPEAKER_VERSION", "")}
+            if speaking and track is not None:
+                answer["now"] = track.summary()
             conn.sendall((json.dumps(answer) + "\n").encode())
             return
         if request.get("quit"):
@@ -335,7 +470,15 @@ def handle(conn):
             mine = current["id"]
             current["busy"] = True
         pace = min(max(float(request.get("pace") or 1.0), 0.5), 1.5)
-        jobs.put((parts, request.get("voice") or "af_heart", request.get("engine") or "kokoro", mine, pace))
+        voice = request.get("voice") or "af_heart"
+        jobs.put(("say", parts, voice, request.get("engine") or "kokoro", mine, pace, request.get("who") or voice))
+    elif request.get("play"):
+        stop()
+        with lock:
+            mine = current["id"]
+            current["busy"] = True
+        path = os.path.join(LIBRARY, os.path.basename(request["play"]))
+        jobs.put(("play", path, request.get("who") or "", request.get("parts") or [], mine))
     last_used = time.time()
 
 
@@ -349,9 +492,14 @@ def worker():
         except queue.Empty:
             ready = not warm_up_next()
             continue
-        parts, voice, engine, mine, pace = job
+        if job[0] == "play":
+            _, path, who, parts, mine = job
+            if still(mine):
+                play(path, who, parts, mine)
+            continue
+        _, parts, voice, engine, mine, pace, who = job
         if still(mine):
-            say(parts, voice, engine, mine, pace)
+            say(parts, voice, engine, mine, pace, who)
 
 
 def leave_when_idle(server):

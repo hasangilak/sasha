@@ -55,6 +55,15 @@ pub struct PrList {
 pub enum Panel {
     Prs(PrPanel),
     Ports(PortsPanel),
+    /// The tower's voice: what it's saying, and everything it has said.
+    Voice(VoicePanel),
+}
+
+pub struct VoicePanel {
+    /// The highlighted message in the library.
+    pub selected: usize,
+    /// The library, newest first, as last read.
+    pub clips: Vec<crate::voice::Clip>,
 }
 
 pub struct PrPanel {
@@ -299,6 +308,7 @@ impl App {
                     panel.selected = index;
                 }
             }
+            Mode::Panel(Panel::Voice(_)) => return self.voice_click(pos),
             _ => {}
         }
         if let Some((dir, number)) = load {
@@ -326,6 +336,7 @@ impl App {
                 panel.selected = step_in(panel.selected, step.signum(), count);
             }
             Mode::Panel(Panel::Ports(panel)) => panel.selected = step_in(panel.selected, step.signum(), ports),
+            Mode::Panel(Panel::Voice(panel)) => panel.selected = step_in(panel.selected, step.signum(), panel.clips.len()),
             _ => {}
         }
     }
@@ -412,6 +423,7 @@ impl App {
                     _ => None,
                 }
             }
+            Mode::Panel(Panel::Voice(_)) => return self.voice_key(key),
             _ => Some(Action::Close),
         };
         match action {

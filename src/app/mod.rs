@@ -9,7 +9,7 @@ mod state;
 mod tower;
 mod voice;
 
-pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel};
+pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel, VoicePanel};
 pub use state::{Confirm, Menu, Mode, Picker, PickerKind, Rename, Renaming};
 use state::Pending;
 
@@ -57,6 +57,8 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 const LINK_DELAY: Duration = Duration::from_millis(400);
 /// At most one notification per tab this often.
 const NOTIFY_GAP: Duration = Duration::from_secs(10);
+/// How often the voice's control center asks what's playing.
+const VOICE_POLL: Duration = Duration::from_millis(100);
 
 pub enum AppEvent {
     Output(TabId, Vec<u8>),
@@ -235,6 +237,9 @@ pub struct App {
     voice_replies: bool,
     /// The tower is talking, as last checked.
     voice_speaking: bool,
+    /// What it's playing, as last checked.
+    voice_now: Option<crate::voice::Playing>,
+    voice_polled: Instant,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
     next_group_id: GroupId,
@@ -310,6 +315,8 @@ impl App {
             ended_missions: Vec::new(),
             voice_replies: false,
             voice_speaking: false,
+            voice_now: None,
+            voice_polled: Instant::now(),
             next_tab_id: 0,
             next_workspace_id: 0,
             next_group_id: 0,
@@ -501,10 +508,12 @@ impl App {
             return;
         }
         self.show_only_groups();
-        // Once opened, the tower runs whenever sasha does.
+        // Once opened, the tower runs whenever sasha does, and while its
+        // panel shows, sasha opens with the keys on it.
         if self.tower_enabled && self.tower.is_none() {
             self.start_tower(None);
         }
+        self.tower_focus = self.tower_enabled && self.tower_panel;
         if hello.build != self.build {
             let prefix = self.config.prefix.label();
             self.set_status(format!("sasha was rebuilt · {prefix} q and reopen to update"));
@@ -655,7 +664,9 @@ impl App {
     }
 
     fn animating(&self) -> bool {
-        self.workspaces.iter().flat_map(|w| &w.tabs).any(|t| self.is_busy(t)) || self.fetching_prs()
+        self.workspaces.iter().flat_map(|w| &w.tabs).any(|t| self.is_busy(t))
+            || self.fetching_prs()
+            || (self.voice_panel_open() && self.voice_now.is_some())
     }
 
     pub fn spinner_frame(&self) -> usize {
@@ -743,6 +754,7 @@ impl App {
             ),
             Mode::Help => (Some(("?", p.accent)), "any key to close".to_owned()),
             Mode::Panel(Panel::Ports(_)) => (Some((if short { "PRT" } else { "PORTS" }, p.cyan)), "esc closes".to_owned()),
+            Mode::Panel(Panel::Voice(_)) => (Some((if short { "VOX" } else { "VOICE" }, p.pink)), "esc closes".to_owned()),
             Mode::Panel(Panel::Prs(_)) => (Some((if short { "PR" } else { "PULLS" }, p.purple)), "esc closes".to_owned()),
             Mode::Files(_) => (Some((if short { "FIL" } else { "FILES" }, p.green)), "↑↓ ⏎ · e edit · q".to_owned()),
             Mode::ConfirmQuit => (Some((if short { "Q?" } else { "QUIT?" }, p.red)), "y / n".to_owned()),
@@ -820,6 +832,11 @@ impl App {
                 self.tower_tick();
                 self.refresh_voice();
                 self.save();
+                dirty = true;
+            }
+            // The voice's waveform moves while its control center is open.
+            if self.voice_panel_open() && self.voice_polled.elapsed() >= VOICE_POLL {
+                self.refresh_voice();
                 dirty = true;
             }
             // Keep spinners moving, and redraw once more when they stop.

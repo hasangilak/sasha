@@ -1,8 +1,15 @@
 //! Hearing the tower: with voice replies on, it says the big picture of
-//! each answer aloud.
+//! each answer aloud; prefix, then S, or saying "hush", stops it. And its
+//! control center (prefix, then V): what it's saying, with its sound
+//! drawn as it plays, ▶ and ■, and every message it has said, to play
+//! again.
 
-use super::App;
-use crate::voice;
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Position;
+
+use super::state::Mode;
+use super::{App, Panel, VoicePanel};
+use crate::{panel_view, voice};
 
 impl App {
     pub fn voice_replies(&self) -> bool {
@@ -21,10 +28,94 @@ impl App {
         self.set_status("stopped talking");
     }
 
-    /// Checks whether the tower is talking, for its stop button.
+    /// Checks whether the tower is talking, and what it's playing, for its
+    /// stop button and control center.
     pub(super) fn refresh_voice(&mut self) {
-        if self.tower_enabled {
-            self.voice_speaking = voice::speaking_now();
+        self.voice_polled = std::time::Instant::now();
+        if !self.tower_enabled && !self.voice_panel_open() {
+            return;
+        }
+        self.voice_now = voice::now();
+        self.voice_speaking = self.voice_now.is_some() || voice::mac_speaking();
+        // A message just finished joins the library.
+        if let Mode::Panel(Panel::Voice(panel)) = &mut self.mode
+            && self.voice_now.is_none()
+            && panel.clips.len() != voice::library().len()
+        {
+            panel.clips = voice::library();
+        }
+    }
+
+    /// What the voice is playing, as last checked.
+    pub fn voice_now(&self) -> Option<&voice::Playing> {
+        self.voice_now.as_ref()
+    }
+
+    pub fn voice_panel_open(&self) -> bool {
+        matches!(self.mode, Mode::Panel(Panel::Voice(_)))
+    }
+
+    /// The voice's control center.
+    pub(super) fn open_voice(&mut self) {
+        self.enter(Mode::Panel(Panel::Voice(VoicePanel { selected: 0, clips: voice::library() })));
+        self.refresh_voice();
+    }
+
+    /// Plays the highlighted message again.
+    fn replay_selected(&mut self) {
+        let Mode::Panel(Panel::Voice(panel)) = &self.mode else { return };
+        let Some(clip) = panel.clips.get(panel.selected).cloned() else {
+            return self.set_status("nothing in the library yet");
+        };
+        // Starting the speaker can take a moment: not on this thread.
+        std::thread::spawn(move || voice::replay(&clip));
+        self.set_status("playing it again");
+    }
+
+    pub(super) fn voice_key(&mut self, key: KeyEvent) {
+        let Mode::Panel(Panel::Voice(panel)) = &mut self.mode else { return };
+        let count = panel.clips.len();
+        let last = count.saturating_sub(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.leave(),
+            KeyCode::Up | KeyCode::Char('k') => panel.selected = panel.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => panel.selected = (panel.selected + 1).min(last),
+            KeyCode::Home | KeyCode::Char('g') => panel.selected = 0,
+            KeyCode::End | KeyCode::Char('G') => panel.selected = last,
+            KeyCode::Enter | KeyCode::Char('p') => self.replay_selected(),
+            KeyCode::Char(' ' | 's') => self.hush(),
+            KeyCode::Char('r') => {
+                panel.clips = voice::library();
+                panel.selected = panel.selected.min(panel.clips.len().saturating_sub(1));
+            }
+            _ => {}
+        }
+    }
+
+    /// A click in the control center: ▶, ■, or a message (a second click on
+    /// it plays it).
+    pub(super) fn voice_click(&mut self, pos: Position) {
+        let body = panel_view::body(self.layout.pane);
+        let (play, stop) = panel_view::voice_buttons(body);
+        if play.contains(pos) {
+            return self.replay_selected();
+        }
+        if stop.contains(pos) {
+            return self.hush();
+        }
+        let list = panel_view::voice_list(body);
+        let Mode::Panel(Panel::Voice(panel)) = &mut self.mode else { return };
+        if !list.contains(pos) {
+            return;
+        }
+        let index = panel_view::first_shown(panel.selected, list.height) + usize::from(pos.y - list.y);
+        if index >= panel.clips.len() {
+            return;
+        }
+        if index == panel.selected {
+            self.replay_selected();
+        } else {
+            panel.selected = index;
         }
     }
 

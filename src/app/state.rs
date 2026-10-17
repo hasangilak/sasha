@@ -145,6 +145,8 @@ pub enum Command {
     TowerRole,
     /// Stops the tower talking.
     Hush,
+    /// The voice's control center: what it's saying, and its library.
+    Voice,
     SideBars,
     Narrower,
     Wider,
@@ -205,6 +207,7 @@ impl Command {
             KeyCode::Char('F') => Command::Files,
             KeyCode::Char('T') => Command::Tower,
             KeyCode::Char('S') => Command::Hush,
+            KeyCode::Char('V') => Command::Voice,
             KeyCode::Char('i') => Command::SideBars,
             KeyCode::Char('<') => Command::Narrower,
             KeyCode::Char('>') => Command::Wider,
@@ -242,6 +245,7 @@ impl Command {
             | Command::PullRequests
             | Command::Ports
             | Command::Files
+            | Command::Voice
             | Command::Scroll
             | Command::Rename
             | Command::Search

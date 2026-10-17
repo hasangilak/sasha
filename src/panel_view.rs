@@ -1,6 +1,6 @@
 //! Drawing the panels over the terminal pane: pull requests with their
-//! files and diffs, the ports the tabs listen on, and a file from the files
-//! bar.
+//! files and diffs, the ports the tabs listen on, the tower's voice, and a
+//! file from the files bar.
 
 use std::time::Instant;
 
@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Confirm, Loadable, OpenPr, Panel, PortsPanel, PrPanel};
+use crate::app::{App, Confirm, Loadable, OpenPr, Panel, PortsPanel, PrPanel, VoicePanel};
 use crate::files::printable;
 use crate::github::Change;
 use crate::highlight::{Kind, Span};
@@ -31,6 +31,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             format!(" pull requests · {repo} ")
         }
         Panel::Ports(_) => " ports open in your tabs ".to_owned(),
+        Panel::Voice(_) => " the tower's voice ".to_owned(),
     };
     frame.render_widget(Clear, area);
     let block = popup_block(&title);
@@ -49,6 +50,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         Panel::Prs(panel) => {
             render_prs(buf, body, app, panel);
             ("↑↓ choose · ⏎ files · o browser · r reload · esc close".to_owned(), p.text_dim)
+        }
+        Panel::Voice(panel) => {
+            render_voice(buf, app, body, panel);
+            ("⏎ play again · space stop · ↑↓ choose · r refresh · esc close".to_owned(), p.text_dim)
         }
         Panel::Ports(panel) => {
             render_ports(buf, app, body, panel);
@@ -302,6 +307,142 @@ fn render_files(buf: &mut Buffer, area: Rect, open: &OpenPr) {
         };
         buf.set_stringn(diff.x, y, printable(line), diff.width as usize, Style::new().fg(color).bg(p.popup_bg));
     }
+}
+
+/// Where the voice's ▶ and ■ are.
+pub fn voice_buttons(body: Rect) -> (Rect, Rect) {
+    let y = body.y + 5;
+    (Rect::new(body.x, y, 8, 1), Rect::new(body.x + 10, y, 8, 1))
+}
+
+/// Where the voice's library is listed.
+pub fn voice_list(body: Rect) -> Rect {
+    Rect { y: body.y + 8, height: body.height.saturating_sub(8), ..body }
+}
+
+/// What the tower is saying, drawn as it plays, its ▶ and ■, and the
+/// library of everything it has said.
+fn render_voice(buf: &mut Buffer, app: &App, area: Rect, panel: &VoicePanel) {
+    let p = theme::palette();
+    let bg = p.popup_bg;
+    let now = app.voice_now();
+    // Who's speaking, in which moods, and how far along.
+    match now {
+        Some(now) => {
+            let who = if now.who.is_empty() { "the tower".to_owned() } else { crate::voice::shown(&now.who) };
+            let mut moods = now.tones.clone();
+            moods.dedup();
+            let again = if now.replay { " · again" } else { "" };
+            let line = format!("● {who} · {}{again}", moods.join(" → "));
+            buf.set_stringn(area.x, area.y, &line, area.width as usize, Style::new().fg(p.pink).bg(bg).add_modifier(Modifier::BOLD));
+            let clock = format!("{} / {}", minutes(now.position), minutes(now.duration));
+            let x = area.right().saturating_sub(clock.width() as u16);
+            buf.set_string(x, area.y, &clock, Style::new().fg(p.text_dim).bg(bg));
+        }
+        None => {
+            let who = crate::voice::current_person().map_or_else(|| "The tower".to_owned(), |p| crate::voice::shown(&p.name));
+            buf.set_stringn(area.x, area.y, format!("{who} is quiet"), area.width as usize, Style::new().fg(p.text_dim).bg(bg));
+        }
+    }
+    // Its sound, three rows tall, what's been played in colour.
+    let wave = Rect::new(area.x, area.y + 1, area.width, 3.min(area.height.saturating_sub(1)));
+    match now.filter(|n| !n.levels.is_empty()) {
+        Some(now) => {
+            let loudest = now.levels.iter().copied().fold(0.05_f32, f32::max);
+            let played = if now.duration > 0.0 { (now.position / now.duration).clamp(0.0, 1.0) } else { 0.0 };
+            const BARS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+            let eighths = wave.height * 8;
+            for col in 0..wave.width {
+                let index = (usize::from(col) * now.levels.len() / usize::from(wave.width.max(1))).min(now.levels.len() - 1);
+                let height = ((now.levels[index] / loudest) * f32::from(eighths)).round() as u16;
+                let past = f64::from(col) < played * f64::from(wave.width);
+                let color = if past { p.pink } else { p.text_dim };
+                for row in 0..wave.height {
+                    let floor = (wave.height - 1 - row) * 8;
+                    let fill = height.saturating_sub(floor).min(8);
+                    buf.set_string(wave.x + col, wave.y + row, BARS[usize::from(fill)], Style::new().fg(color).bg(bg));
+                }
+            }
+        }
+        None if wave.height > 0 => {
+            let middle = wave.y + wave.height / 2;
+            buf.set_stringn(wave.x, middle, "─".repeat(usize::from(wave.width)), wave.width as usize, Style::new().fg(p.border).bg(bg));
+        }
+        None => {}
+    }
+    // The words, then ▶ and ■.
+    if area.height > 4 {
+        let words = now.map_or_else(String::new, |n| format!("“{}”", n.text));
+        buf.set_stringn(area.x, area.y + 4, printable(&words), area.width as usize, Style::new().fg(p.text).bg(bg));
+    }
+    if area.height > 5 {
+        let (play, stop) = voice_buttons(area);
+        let hot = |hit: bool| if hit { p.accent } else { p.button_bg };
+        buf.set_string(play.x, play.y, " ▶ play ", Style::new().fg(p.text).bg(hot(false)));
+        buf.set_string(stop.x, stop.y, " ■ stop ", Style::new().fg(p.text).bg(if now.is_some() { p.red } else { hot(false) }));
+    }
+    // The library.
+    let list = voice_list(area);
+    if area.height > 7 {
+        let heading = format!("library · {} messages", panel.clips.len());
+        buf.set_stringn(area.x, area.y + 7, heading, area.width as usize, Style::new().fg(p.text_dim).bg(bg).add_modifier(Modifier::BOLD));
+    }
+    if panel.clips.is_empty() && list.height > 0 {
+        let text = "nothing yet: everything the tower says is kept here";
+        buf.set_stringn(list.x, list.y, text, list.width as usize, Style::new().fg(p.text_dim).bg(bg));
+        return;
+    }
+    let first = first_shown(panel.selected, list.height);
+    for (i, clip) in panel.clips.iter().enumerate().skip(first).take(list.height as usize) {
+        let y = list.y + (i - first) as u16;
+        let row_bg = if i == panel.selected { p.active_bg } else { bg };
+        buf.set_style(Rect::new(list.x, y, list.width, 1), Style::new().bg(row_bg));
+        let mut moods = clip.tones();
+        moods.dedup();
+        let who = crate::voice::shown(&clip.who);
+        // Narrow, the moods go first, then the time.
+        let mut head = String::new();
+        if list.width >= 44 {
+            head.push_str(&format!("{:<12} ", when(clip.time)));
+        }
+        head.push_str(&format!("{who:<7} "));
+        if list.width >= 76 {
+            head.push_str(&format!("{:<18} ", crate::agents::clip(&moods.join("→"), 18)));
+        }
+        buf.set_stringn(list.x, y, &head, list.width as usize, Style::new().fg(p.text_dim).bg(row_bg));
+        let tail = if clip.stopped { format!("{} cut", minutes(clip.duration)) } else { minutes(clip.duration) };
+        let tail_x = list.right().saturating_sub(tail.width() as u16);
+        buf.set_string(tail_x, y, &tail, Style::new().fg(p.text_dim).bg(row_bg));
+        let x = list.x + head.width() as u16;
+        let room = tail_x.saturating_sub(x + 1) as usize;
+        buf.set_stringn(x, y, printable(&clip.text()), room, Style::new().fg(p.text).bg(row_bg));
+    }
+}
+
+/// "0:07", "1:23".
+fn minutes(seconds: f64) -> String {
+    let seconds = seconds.max(0.0).round() as u64;
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// "17:52" today, "Oct 16 17:52" before.
+fn when(time: u64) -> String {
+    let local = |t: u64| {
+        let t = libc::time_t::try_from(t).unwrap_or_default();
+        // SAFETY: localtime_r only writes the struct it's given.
+        unsafe {
+            let mut tm: libc::tm = std::mem::zeroed();
+            libc::localtime_r(&t, &mut tm);
+            tm
+        }
+    };
+    let (then, today) = (local(time), local(crate::mission::now()));
+    let clock = format!("{:02}:{:02}", then.tm_hour, then.tm_min);
+    if (then.tm_year, then.tm_yday) == (today.tm_year, today.tm_yday) {
+        return clock;
+    }
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!("{} {} {clock}", MONTHS[then.tm_mon.clamp(0, 11) as usize], then.tm_mday)
 }
 
 fn render_ports(buf: &mut Buffer, app: &App, area: Rect, panel: &PortsPanel) {

@@ -275,8 +275,9 @@ pub fn set_current(name: &str) {
     }
 }
 
-/// How the speaker speaks: in which voice, with which model, how fast.
+/// How the speaker speaks: who, in which voice, with which model, how fast.
 struct Speaking {
+    who: String,
     voice: String,
     engine: String,
     pace: f64,
@@ -287,10 +288,11 @@ fn speaking() -> Speaking {
     match current_person() {
         Some(person) => Speaking {
             pace: person.pace.filter(|p| (0.5..=1.5).contains(p)).unwrap_or_else(chosen_pace),
+            who: person.name,
             voice: person.voice,
             engine: person.engine,
         },
-        None => Speaking { voice: speaker_voice(), engine: chosen_engine(), pace: chosen_pace() },
+        None => Speaking { who: String::new(), voice: speaker_voice(), engine: chosen_engine(), pace: chosen_pace() },
     }
 }
 
@@ -335,7 +337,7 @@ fn say_with_speaker(python: &Path, parts: &[(String, String)], how: &Speaking) -
     let dir = dir().context("no home folder")?;
     let socket = speaker_socket()?;
     let parts: Vec<Value> = parts.iter().map(|(text, tone)| json!({"text": text, "tone": tone})).collect();
-    let request = json!({"say": parts, "voice": how.voice, "engine": how.engine, "pace": how.pace});
+    let request = json!({"say": parts, "voice": how.voice, "engine": how.engine, "pace": how.pace, "who": how.who});
     if tell_speaker(&socket, &request).is_ok() {
         return Ok(());
     }
@@ -432,12 +434,95 @@ fn say_with_mac(text: &str) {
     }
 }
 
-/// Whether the tower is talking right now: its speaker, or the Mac's
-/// voice.
-pub fn speaking_now() -> bool {
-    if speaker_status().and_then(|s| s["speaking"].as_bool()) == Some(true) {
-        return true;
+/// What the speaker is playing: who, the words and their moods, how long
+/// it is so far and how far it's got, and its sound levels.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Playing {
+    #[serde(default)]
+    pub who: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub tones: Vec<String>,
+    #[serde(default)]
+    pub duration: f64,
+    #[serde(default)]
+    pub position: f64,
+    #[serde(default)]
+    pub levels: Vec<f32>,
+    /// A message from the library, played again.
+    #[serde(default)]
+    pub replay: bool,
+}
+
+/// What the tower's voice is doing: talking or not, and what it's playing.
+pub fn now() -> Option<Playing> {
+    let status = speaker_status()?;
+    if status["speaking"].as_bool() != Some(true) {
+        return None;
     }
+    Some(serde_json::from_value(status["now"].clone()).unwrap_or_default())
+}
+
+/// A message the tower said, kept in the library.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Clip {
+    pub file: String,
+    pub time: u64,
+    #[serde(default)]
+    pub who: String,
+    #[serde(default)]
+    pub parts: Vec<Value>,
+    #[serde(default)]
+    pub duration: f64,
+    /// It was stopped before it finished.
+    #[serde(default)]
+    pub stopped: bool,
+}
+
+impl Clip {
+    pub fn text(&self) -> String {
+        let texts: Vec<&str> = self.parts.iter().filter_map(|p| p["text"].as_str()).collect();
+        texts.join(" ")
+    }
+
+    pub fn tones(&self) -> Vec<String> {
+        self.parts.iter().map(|p| p["tone"].as_str().unwrap_or("warm").to_owned()).collect()
+    }
+}
+
+/// Every message the tower said, newest first.
+pub fn library() -> Vec<Clip> {
+    let Some(index) = dir().and_then(|dir| std::fs::read_to_string(dir.join("library/index.jsonl")).ok()) else {
+        return Vec::new();
+    };
+    let mut clips: Vec<Clip> = index.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    clips.reverse();
+    clips
+}
+
+/// Plays a kept message again.
+pub fn replay(clip: &Clip) {
+    let Some(python) = kokoro_python() else { return };
+    let (Some(dir), Ok(socket)) = (dir(), speaker_socket()) else { return };
+    let request = json!({"play": clip.file, "who": clip.who, "parts": clip.parts});
+    if tell_speaker(&socket, &request).is_ok() {
+        return;
+    }
+    if start_speaker(&python, &dir, &socket).is_err() {
+        return;
+    }
+    let started = Instant::now();
+    while started.elapsed() < SPEAKER_START {
+        std::thread::sleep(Duration::from_millis(200));
+        if tell_speaker(&socket, &request).is_ok() {
+            return;
+        }
+    }
+}
+
+/// Whether macOS's own voice is talking for the tower.
+pub fn mac_speaking() -> bool {
     let pid = dir().and_then(|dir| std::fs::read_to_string(dir.join("saying")).ok()).and_then(|pid| pid.trim().parse::<i32>().ok());
     pid.is_some_and(|pid| crate::procinfo::name(pid).as_deref() == Some("say"))
 }

@@ -41,6 +41,7 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `F` | browse the terminal's folder: arrows, `⏎` reads a file, `e` edits it |
 | `T` | the tower: an agent steering every terminal (`T` again hides it) |
 | `S` | stop the tower talking |
+| `V` | the voice's control center: what it's saying, ▶ ■, and everything it said |
 | `i` | show / hide the ports and pull request bars |
 | `q` | quit |
 | `?` | every key |
@@ -148,6 +149,11 @@ with its model voice, `engine` (`kokoro` or `chatterbox`), and optionally `pace`
 
 Then "hey Bella, tell me about the open PRs" or "Fable, what's been pushed to main?" brings that
 voice up: the tower answers in it, and keeps it until you call the other.
+
+**Its voice has a control center** (`Ctrl+B` then `Shift+V`, or in the tower's menu): who's
+talking and in which moods, the sound drawn as it plays, ▶ play and ■ stop, and a library of
+everything the tower has said, kept in `~/.config/sasha/voice/library` (compact AAC, about 120 KB
+for 15 seconds, with an index of who said what, when): pick one and press ⏎ to hear it again.
 
 **Stop it talking** by saying "hush" ("Bella, hush", "Fable, shh", "stop talking"), with `Ctrl+B`
 then `Shift+S`, the **■ stop** beside the tower's name while it talks, or by starting to type to
