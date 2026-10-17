@@ -144,6 +144,7 @@ impl App {
             Command::Talk => self.talk(),
             Command::TalkCancel => self.stop_listening(),
             Command::TowerVoice => self.toggle_voice(),
+            Command::TowerRole => self.edit_tower_role(),
             Command::SideBars => self.toggle_side_bars(),
             Command::Narrower => self.resize_sidebar(-2),
             Command::Wider => self.resize_sidebar(2),

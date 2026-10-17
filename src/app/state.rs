@@ -145,6 +145,8 @@ pub enum Command {
     TalkCancel,
     /// The tower says the big picture of its answers aloud, or doesn't.
     TowerVoice,
+    /// Opens your instructions for the tower in your editor.
+    TowerRole,
     SideBars,
     Narrower,
     Wider,
@@ -232,6 +234,7 @@ impl Command {
             | Command::Talk
             | Command::TalkCancel
             | Command::TowerVoice
+            | Command::TowerRole
             | Command::Leave => {
                 After::Leave
             }

@@ -336,13 +336,19 @@ impl App {
             self.set_status("pick a file to edit");
             return;
         };
+        self.leave();
+        self.open_in_editor(path);
+    }
+
+    /// Opens `path` in your `$VISUAL` or `$EDITOR`, in a new tab beside the
+    /// one on screen.
+    pub(super) fn open_in_editor(&mut self, path: PathBuf) {
         let dir = path.parent().map_or_else(|| self.ws().path.clone(), Path::to_path_buf);
         // The shell splits an editor given with arguments ("code -w").
         let script = r#"exec ${VISUAL:-${EDITOR:-vi}} "$1""#;
         let program = ["/bin/sh", "-c", script, "sasha"].map(OsString::from).into_iter().chain([path.into_os_string()]);
         match self.spawn_program(&dir, Some(program.collect())) {
             Ok(tab) => {
-                self.leave();
                 let group = self.active_tab().and_then(|t| t.group);
                 self.add_tab(tab, group);
             }

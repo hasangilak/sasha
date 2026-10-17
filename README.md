@@ -104,6 +104,14 @@ restart it; each picks up its own last conversation.
 - `SASHA_TOWER_CLAUDE_MODEL` and `SASHA_TOWER_CODEX_MODEL` pick the models (Claude Code's own
   default, and `openai-codex/gpt-6.1-sol`).
 
+**Its role.** The tower works as your engineering lead for the agents: it splits a goal into
+workstreams, picks or opens a session for each (named after its job, Claude Code by default,
+Codex for second opinions), briefs each fully with a definition of done, keeps them out of each
+other's files, acts on every finish, approval, question or failure, and brings you the big
+picture and only the decisions that are yours. **Edit its role** in its menu opens `role.md`,
+where your own instructions go ("Codex reviews, Claude Code builds", "report in Persian");
+they win where they differ, from the tower's next start.
+
 **It keeps track of its sessions.** sasha remembers what the tower set each terminal to do and
 how that's going (working, waiting for approval, done, ended), across restarts, and marks them ♜
 in the sidebar, coloured by state. Agents the tower starts are named after their job, in the

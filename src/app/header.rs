@@ -106,6 +106,7 @@ impl App {
                     "",
                     Command::TowerAutopilot,
                 ),
+                entry("Edit its role (what you expect)", "", Command::TowerRole),
                 entry(if self.tower.is_some() { "Restart the tower" } else { "Start the tower" }, "", Command::TowerRestart),
                 entry("Hide the tower", "", Command::TowerHide),
                 ];

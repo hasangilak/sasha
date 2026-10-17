@@ -17,6 +17,8 @@ use crate::{agents, hooks, store};
 
 const EXTENSION: &str = include_str!("tower/extension.ts");
 const PROMPT: &str = include_str!("tower/prompt.md");
+/// What `role.md` starts as: how to use it, in a comment.
+const ROLE_TEMPLATE: &str = include_str!("tower/role.md");
 /// pi's npm package.
 const PACKAGE: &str = "@earendil-works/pi-coding-agent";
 /// The tower's tools Claude Code may use without asking each time: all but
@@ -91,6 +93,41 @@ pub fn described() -> &'static str {
     }
 }
 
+/// The tower's role: sasha's, then yours from `role.md`.
+pub fn role() -> String {
+    let mut role = PROMPT.to_owned();
+    let yours = dir().and_then(|dir| std::fs::read_to_string(dir.join("role.md")).ok()).map(|text| uncommented(&text));
+    if let Some(yours) = yours.filter(|text| !text.is_empty()) {
+        role.push_str("\n\n## From the user\n\nThe user wrote these instructions for you themselves. Where they differ from the above, follow them.\n\n");
+        role.push_str(&yours);
+        role.push('\n');
+    }
+    role
+}
+
+/// `role.md`, made from its template the first time.
+pub fn role_file() -> Result<PathBuf> {
+    let dir = dir().context("no home folder")?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("role.md");
+    if !path.exists() {
+        std::fs::write(&path, ROLE_TEMPLATE)?;
+    }
+    Ok(path)
+}
+
+/// Markdown without its `<!-- -->` comments, trimmed.
+fn uncommented(text: &str) -> String {
+    let mut kept = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<!--") {
+        kept.push_str(&rest[..start]);
+        rest = rest[start..].find("-->").map_or("", |end| &rest[start + end + 3..]);
+    }
+    kept.push_str(rest);
+    kept.trim().to_owned()
+}
+
 /// Where the tower keeps its files, beside sasha's state:
 /// `~/.config/sasha/tower`.
 pub fn dir() -> Option<PathBuf> {
@@ -140,7 +177,7 @@ fn run_claude(dir: &Path) -> Result<()> {
         .arg("--settings")
         .arg(hooks::tower_hooks()?)
         .args(["--allowedTools", CLAUDE_ALLOWED])
-        .args(["--append-system-prompt", PROMPT])
+        .args(["--append-system-prompt", &role()])
         .env("MCP_TOOL_TIMEOUT", CLAUDE_TOOL_TIMEOUT);
     if let Some(model) = claude_model() {
         command.args(["--model", &model]);
@@ -172,7 +209,7 @@ fn run_pi(dir: &Path) -> Result<()> {
     let extension = dir.join("extension.ts");
     let prompt = dir.join("prompt.md");
     std::fs::write(&extension, EXTENSION)?;
-    std::fs::write(&prompt, PROMPT)?;
+    std::fs::write(&prompt, role())?;
     let Some(pi) = find_pi().or_else(install_pi) else { return Ok(()) };
 
     let mut command = Command::new(&pi);
@@ -305,6 +342,13 @@ mod tests {
         assert_eq!(Engine::parse("chatgpt"), Some(Engine::Codex));
         assert_eq!(Engine::parse("gemini"), None);
         assert!(codex_model().contains('/'));
+    }
+
+    #[test]
+    fn your_role_is_what_you_wrote_outside_comments() {
+        assert_eq!(uncommented(ROLE_TEMPLATE), "");
+        assert_eq!(uncommented("<!-- how -->\nCodex reviews.\n<!-- more -->\nReport in Persian."), "Codex reviews.\n\nReport in Persian.");
+        assert_eq!(uncommented("Keep it short. <!-- unfinished"), "Keep it short.");
     }
 
     #[test]

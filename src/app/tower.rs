@@ -161,6 +161,22 @@ impl App {
         self.show_tower();
     }
 
+    /// Your instructions for the tower, in your editor, in the pane.
+    pub(super) fn edit_tower_role(&mut self) {
+        match tower::role_file() {
+            Ok(path) => {
+                self.tower_focus = false;
+                self.open_in_editor(path);
+                // Not to be taken for the tower itself.
+                if let Some(tab) = self.ws_mut().active_tab_mut() {
+                    tab.custom_prefix = Some("tower role".to_owned());
+                }
+                self.set_status("your role for the tower: save, then restart the tower (its menu) to apply");
+            }
+            Err(err) => self.set_status(format!("can't open the tower's role: {err:#}")),
+        }
+    }
+
     /// The subscription the tower runs on, as it last said.
     pub fn tower_engine(&self) -> Engine {
         tower::current_engine()
