@@ -25,8 +25,11 @@ const SPOKEN_MAX: usize = 400;
 const SPEAKER: &str = include_str!("voice/speaker.py");
 /// Kokoro's voice unless you pick another: warm, clear, American.
 const KOKORO_VOICE: &str = "af_heart";
-/// The tones a part can be said in, from flat to most feeling.
-pub const TONES: [&str; 6] = ["calm", "warm", "pleased", "concerned", "excited", "urgent"];
+/// The tones a part can be said in, from the quiet ones to the loudest.
+pub const TONES: [&str; 16] = [
+    "tired", "gentle", "calm", "thoughtful", "serious", "warm", "sad", "pleased", "relieved", "concerned", "proud",
+    "amused", "frustrated", "excited", "urgent", "surprised",
+];
 /// How long a starting speaker gets to load Kokoro.
 const SPEAKER_START: Duration = Duration::from_secs(30);
 /// What Kokoro needs, beside mlx-audio: its English text processing.
