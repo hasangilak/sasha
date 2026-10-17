@@ -49,5 +49,6 @@ fn main() -> Result<()> {
         Command::Inbox => hooks::inbox(),
         Command::Agent(spec) => hooks::run_agent(&spec),
         Command::Speak => voice::speak_tower(),
+        Command::VoiceInstall => voice::install(),
     }
 }

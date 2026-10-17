@@ -1,20 +1,36 @@
-//! The tower's voice: it says things aloud to you in macOS's own voice,
-//! when you ask (its `speak` tool) or, with voice replies on, the big
-//! picture of each answer.
+//! The tower's voice: it says things aloud to you when you ask (its
+//! `speak` tool) or, with voice replies on, the big picture of each answer.
+//! With Kokoro set up (`sasha voice install`), a neural voice close to a
+//! person's, kept loaded by a small speaker process; else macOS's own.
 
-use std::io::Read;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 
 use crate::agents::{self, Agent};
 use crate::{store, tower};
 
 /// The most of an answer said aloud.
 const SPOKEN_MAX: usize = 400;
+/// The speaker that keeps Kokoro loaded, written beside it.
+const SPEAKER: &str = include_str!("voice/speaker.py");
+/// Kokoro's voice unless you pick another: warm, clear, American.
+const KOKORO_VOICE: &str = "af_heart";
+/// How long a starting speaker gets to load Kokoro.
+const SPEAKER_START: Duration = Duration::from_secs(30);
+/// What Kokoro needs, beside mlx-audio: its English text processing.
+const KOKORO_PACKAGES: [&str; 3] = [
+    "mlx-audio",
+    "misaki[en]",
+    "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+];
 
 /// Where the voice keeps its state, beside sasha's: `~/.config/sasha/voice`.
 pub fn dir() -> Option<PathBuf> {
@@ -69,9 +85,82 @@ pub fn spoken(answer: &str) -> String {
 
 /// Says `text`, cutting off whatever it was saying.
 pub fn say(text: &str) {
+    if let Some(python) = kokoro_python()
+        && say_with_kokoro(&python, text).is_ok()
+    {
+        return;
+    }
+    say_with_mac(text);
+}
+
+/// The voice you picked: `$SASHA_VOICE`, else the first line of
+/// `voice/voice`.
+fn chosen_voice() -> Option<String> {
+    let voice = std::env::var("SASHA_VOICE").ok().or_else(|| std::fs::read_to_string(dir()?.join("voice")).ok())?;
+    let voice = voice.lines().next()?.trim().to_owned();
+    (!voice.is_empty()).then_some(voice)
+}
+
+/// Kokoro's voices go by language, sex and name: `af_heart`, `bm_george`.
+fn is_kokoro_voice(voice: &str) -> bool {
+    let bytes = voice.as_bytes();
+    bytes.len() > 3 && bytes[0].is_ascii_lowercase() && bytes[1].is_ascii_lowercase() && bytes[2] == b'_'
+}
+
+/// Kokoro's Python, once it's set up.
+fn kokoro_python() -> Option<PathBuf> {
+    let python = dir()?.join("kokoro/bin/python");
+    python.is_file().then_some(python)
+}
+
+/// Hands `text` to the speaker, starting it (and loading Kokoro) first
+/// if it isn't running.
+fn say_with_kokoro(python: &Path, text: &str) -> Result<()> {
+    let dir = dir().context("no home folder")?;
+    let socket = speaker_socket()?;
+    let voice = chosen_voice().filter(|v| is_kokoro_voice(v)).unwrap_or_else(|| KOKORO_VOICE.to_owned());
+    let request = json!({"say": text, "voice": voice});
+    if tell_speaker(&socket, &request).is_ok() {
+        return Ok(());
+    }
+    let script = dir.join("speaker.py");
+    std::fs::write(&script, SPEAKER)?;
+    let log = std::fs::File::create(dir.join("speaker.log")).map_or_else(|_| Stdio::null(), Stdio::from);
+    let mut command = Command::new(python);
+    command.arg(&script).arg(&socket).stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
+    // A session of its own: it outlives whoever asked first.
+    // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
+    unsafe {
+        command.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+    }
+    command.spawn().context("can't start the speaker")?;
+    let started = Instant::now();
+    while started.elapsed() < SPEAKER_START {
+        std::thread::sleep(Duration::from_millis(200));
+        if tell_speaker(&socket, &request).is_ok() {
+            return Ok(());
+        }
+    }
+    bail!("the speaker didn't start: see {}", dir.join("speaker.log").display())
+}
+
+/// The speaker's socket, beside sasha's in its private folder: a socket's
+/// path can't be long.
+fn speaker_socket() -> Result<PathBuf> {
+    let sasha = crate::protocol::socket_path()?;
+    Ok(sasha.with_file_name("speaker.sock"))
+}
+
+fn tell_speaker(socket: &Path, request: &Value) -> std::io::Result<()> {
+    let mut stream = UnixStream::connect(socket)?;
+    writeln!(stream, "{request}")
+}
+
+/// macOS's own voice: `say`, with your system voice or the one you picked.
+fn say_with_mac(text: &str) {
     hush();
     let mut command = Command::new("say");
-    if let Ok(voice) = std::env::var("SASHA_VOICE") {
+    if let Some(voice) = chosen_voice().filter(|v| !is_kokoro_voice(v)) {
         command.args(["-v", &voice]);
     }
     let Ok(child) = command.arg(text).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
@@ -84,7 +173,11 @@ pub fn say(text: &str) {
 
 /// Stops talking, so it doesn't talk over you.
 pub fn hush() {
-    let Some(file) = dir().map(|dir| dir.join("saying")) else { return };
+    if let Ok(socket) = speaker_socket() {
+        let _ = tell_speaker(&socket, &json!({"stop": true}));
+    }
+    let Some(dir) = dir() else { return };
+    let file = dir.join("saying");
     if let Some(pid) = std::fs::read_to_string(&file).ok().and_then(|pid| pid.trim().parse::<i32>().ok()) {
         // Only if it's still `say`: the pid may have been reused.
         if crate::procinfo::name(pid).as_deref() == Some("say") {
@@ -97,9 +190,39 @@ pub fn hush() {
     let _ = std::fs::remove_file(file);
 }
 
+/// `sasha voice install`: sets Kokoro up beside sasha with uv, and says
+/// so in its voice.
+pub fn install() -> Result<()> {
+    let uv = tower::find_program("uv").context("Kokoro is set up with uv: brew install uv")?;
+    let dir = dir().context("no home folder")?;
+    let venv = dir.join("kokoro");
+    if kokoro_python().is_none() {
+        println!("Setting Kokoro up in {}…", venv.display());
+        let made = Command::new(&uv).args(["venv", "--python", "3.12"]).arg(&venv).status()?;
+        if !made.success() {
+            bail!("uv couldn't make Kokoro's environment");
+        }
+    }
+    let python = venv.join("bin/python");
+    let installed = Command::new(&uv).args(["pip", "install", "--python"]).arg(&python).args(KOKORO_PACKAGES).status()?;
+    if !installed.success() {
+        bail!("uv couldn't install Kokoro");
+    }
+    println!("Loading Kokoro (the first time, it downloads its model)…");
+    say_with_kokoro(&python, "Hello. This is how the tower sounds now.")?;
+    println!("Done. The tower speaks with Kokoro; pick another voice in {}.", dir.join("voice").display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kokoro_voices_are_told_from_macs() {
+        assert!(is_kokoro_voice("af_heart") && is_kokoro_voice("bm_george"));
+        assert!(!is_kokoro_voice("Daniel") && !is_kokoro_voice("Ava (Premium)") && !is_kokoro_voice("a_b"));
+    }
 
     #[test]
     fn only_the_big_picture_is_said() {

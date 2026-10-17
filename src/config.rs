@@ -31,6 +31,7 @@ COMMANDS:
     mcp                Serve the terminals as tools over MCP on stdin/stdout:
                        list, read, prompt, wait for, open and close them.
     event, inbox       Run by agents' hooks and the tower's, to pass news on.
+    voice install      Set Kokoro up, a natural voice for the tower (needs uv).
 
 Press the prefix, then ? inside sasha to see every key binding.";
 
@@ -54,6 +55,8 @@ pub enum Command {
     Agent(std::path::PathBuf),
     /// The tower's hook: say the big picture of its answer.
     Speak,
+    /// Set Kokoro up, the tower's natural voice.
+    VoiceInstall,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +74,13 @@ impl Config {
             Some("mcp") => return Ok(Some(Command::Mcp)),
             Some("inbox") => return Ok(Some(Command::Inbox)),
             Some("speak") => return Ok(Some(Command::Speak)),
+            Some("voice") => {
+                args.next();
+                return match args.next().as_deref() {
+                    Some("install") => Ok(Some(Command::VoiceInstall)),
+                    _ => bail!("sasha voice install sets Kokoro up, the tower's natural voice"),
+                };
+            }
             Some("agent") => {
                 args.next();
                 let spec = args.next().ok_or_else(|| anyhow::anyhow!("sasha agent needs the file of what to start"))?;

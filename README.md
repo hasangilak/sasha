@@ -123,9 +123,12 @@ with **auto-reply** on (in its menu), so it can act on it and tell you. The head
 hasn't heard yet.
 
 **It talks back.** Ask the tower to tell you, or for the big picture of everything or of one
-session, and it says a short summary aloud in your Mac's voice (its `speak` tool). With **voice
-replies** on (its menu) it says the gist of every answer. The voice is your system voice (System
-Settings → Accessibility → Spoken Content; a Siri or Premium voice sounds best), or `SASHA_VOICE`.
+session, and it says a short summary aloud (its `speak` tool). With **voice replies** on (its
+menu) it says the gist of every answer. `sasha voice install` sets up
+[Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), a natural neural voice that runs on your
+Mac (it needs `uv`): a small speaker process keeps it loaded, so it starts talking in a fraction
+of a second. Pick its voice by name in `~/.config/sasha/voice/voice` (`af_heart` by default;
+`bm_george`, `am_michael`, `bf_emma`…). Without Kokoro it uses your Mac's system voice.
 Talk to it with Claude Code's or Codex's own voice input.
 
 **Sessions talk to each other.** Each agent the tower starts can see the others by name, read what
