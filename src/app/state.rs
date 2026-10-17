@@ -139,6 +139,12 @@ pub enum Command {
     TowerHide,
     /// News from its sessions goes straight to the tower, or waits.
     TowerAutopilot,
+    /// Starts listening to you, or sends what you said to the tower.
+    Talk,
+    /// Stops listening without sending.
+    TalkCancel,
+    /// The tower says the big picture of its answers aloud, or doesn't.
+    TowerVoice,
     SideBars,
     Narrower,
     Wider,
@@ -198,6 +204,7 @@ impl Command {
             KeyCode::Char('O') => Command::Ports,
             KeyCode::Char('F') => Command::Files,
             KeyCode::Char('T') => Command::Tower,
+            KeyCode::Char('V') => Command::Talk,
             KeyCode::Char('i') => Command::SideBars,
             KeyCode::Char('<') => Command::Narrower,
             KeyCode::Char('>') => Command::Wider,
@@ -222,6 +229,9 @@ impl Command {
             | Command::TowerRestart
             | Command::TowerHide
             | Command::TowerAutopilot
+            | Command::Talk
+            | Command::TalkCancel
+            | Command::TowerVoice
             | Command::Leave => {
                 After::Leave
             }

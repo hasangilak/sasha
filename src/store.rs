@@ -67,6 +67,9 @@ pub struct SavedLayout {
     /// News from its sessions goes straight to the tower when it's idle.
     #[serde(default)]
     pub tower_autopilot: bool,
+    /// The tower says the big picture of its answers aloud.
+    #[serde(default)]
+    pub tower_voice: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

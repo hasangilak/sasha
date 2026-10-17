@@ -31,6 +31,7 @@ COMMANDS:
     mcp                Serve the terminals as tools over MCP on stdin/stdout:
                        list, read, prompt, wait for, open and close them.
     event, inbox       Run by agents' hooks and the tower's, to pass news on.
+    voice install      Fetch Whisper's model, to talk to the tower (prefix, V).
 
 Press the prefix, then ? inside sasha to see every key binding.";
 
@@ -52,6 +53,10 @@ pub enum Command {
     Inbox,
     /// Start the agent a session was opened for.
     Agent(std::path::PathBuf),
+    /// The tower's hook: say the big picture of its answer.
+    Speak,
+    /// Fetch Whisper's model.
+    VoiceInstall,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +73,14 @@ impl Config {
         match args.peek().map(String::as_str) {
             Some("mcp") => return Ok(Some(Command::Mcp)),
             Some("inbox") => return Ok(Some(Command::Inbox)),
+            Some("speak") => return Ok(Some(Command::Speak)),
+            Some("voice") => {
+                args.next();
+                return match args.next().as_deref() {
+                    Some("install") => Ok(Some(Command::VoiceInstall)),
+                    _ => bail!("sasha voice install fetches Whisper's model"),
+                };
+            }
             Some("agent") => {
                 args.next();
                 let spec = args.next().ok_or_else(|| anyhow::anyhow!("sasha agent needs the file of what to start"))?;

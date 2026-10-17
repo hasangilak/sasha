@@ -246,8 +246,11 @@ fn session_hooks(exe: &str) -> Value {
 /// Claude Code settings for the tower: its news goes in before each turn.
 pub fn tower_hooks() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("can't find the sasha executable")?;
-    let hook = json!([{"hooks": [{"type": "command", "command": format!("{} inbox", quote(&exe.to_string_lossy()))}]}]);
-    write_settings("tower-hooks.json", &json!({"hooks": {"UserPromptSubmit": hook}}))
+    let exe = quote(&exe.to_string_lossy());
+    let inbox = json!([{"hooks": [{"type": "command", "command": format!("{exe} inbox")}]}]);
+    // Its answer, said aloud when voice replies are on.
+    let speak = json!([{"hooks": [{"type": "command", "command": format!("{exe} speak")}]}]);
+    write_settings("tower-hooks.json", &json!({"hooks": {"UserPromptSubmit": inbox, "Stop": speak}}))
 }
 
 fn write_settings(name: &str, settings: &Value) -> Result<PathBuf> {

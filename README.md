@@ -40,6 +40,7 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `O` | ports your tabs listen on; `x` `x` force-kills |
 | `F` | browse the terminal's folder: arrows, `⏎` reads a file, `e` edits it |
 | `T` | the tower: an agent steering every terminal (`T` again hides it) |
+| `V` | talk to the tower (`V` again sends it) |
 | `i` | show / hide the ports and pull request bars |
 | `q` | quit |
 | `?` | every key |
@@ -110,6 +111,13 @@ sidebar and in Claude Code's own session list, and report through hooks the mome
 stop for an approval. That news reaches the tower at the start of its next turn, or right away
 with **auto-reply** on (in its menu), so it can act on it and tell you. The header counts what it
 hasn't heard yet.
+
+**Talk to it.** `Ctrl+B` then `Shift+V` starts listening, and again sends what you said: Whisper
+(through [whisper.cpp](https://github.com/ggml-org/whisper.cpp), in any language) writes it
+down and it goes to the tower. With **voice replies** on (in its menu), the tower says the big
+picture of each answer aloud: it opens every answer with a sentence or two for that, and the
+details follow on screen. Needs `brew install whisper-cpp ffmpeg` and `sasha voice install` for
+Whisper's model; `SASHA_VOICE` picks the voice (`say -v '?'` lists them).
 
 **Sessions talk to each other.** Each agent the tower starts can see the others by name, read what
 they did, and message them or the tower; a message waits until its reader's turn is over. The

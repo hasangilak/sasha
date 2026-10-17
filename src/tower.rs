@@ -202,7 +202,7 @@ fn find_pi() -> Option<PathBuf> {
 
 /// `name` on the `$PATH`, else where npm, bun, volta and Homebrew put
 /// programs.
-fn find_program(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
     if let Some(home) = std::env::home_dir() {

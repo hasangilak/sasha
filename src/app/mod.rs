@@ -7,8 +7,10 @@ mod mouse;
 mod panels;
 mod state;
 mod tower;
+mod voice;
 
 pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel};
+pub use voice::Listening;
 pub use state::{Confirm, Menu, Mode, Picker, PickerKind, Rename, Renaming};
 use state::Pending;
 
@@ -74,6 +76,8 @@ pub enum AppEvent {
     PrFiles(u64, Result<Vec<FileDiff>, String>),
     Ports(Result<Vec<Port>, String>),
     Files(Box<Scan>),
+    /// What Whisper heard you say.
+    Heard(Result<String, String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -228,6 +232,12 @@ pub struct App {
     enters: Vec<(TabId, Instant)>,
     /// The tower's sessions whose terminals are gone.
     ended_missions: Vec<Ended>,
+    /// You, being recorded for the tower.
+    recording: Option<crate::voice::Recording>,
+    /// Whisper is working out what you said.
+    transcribing: bool,
+    /// The tower says the big picture of its answers aloud.
+    voice_replies: bool,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
     next_group_id: GroupId,
@@ -300,6 +310,9 @@ impl App {
             pane_last_key: None,
             enters: Vec::new(),
             ended_missions: Vec::new(),
+            recording: None,
+            transcribing: false,
+            voice_replies: false,
             next_tab_id: 0,
             next_workspace_id: 0,
             next_group_id: 0,
@@ -340,6 +353,8 @@ impl App {
             self.files_shown = !layout.hide_files;
             self.tower_enabled = layout.tower;
             self.tower_autopilot = layout.tower_autopilot;
+            self.voice_replies = layout.tower_voice;
+            crate::voice::set_replies(self.voice_replies);
             self.tower_panel = layout.tower && !layout.hide_tower;
             if layout.tower_width > 0 {
                 self.tower_width = layout.tower_width.clamp(layout::TOWER_MIN, layout::TOWER_MAX);
@@ -871,6 +886,7 @@ impl App {
                 hide_tower: !self.tower_panel,
                 tower_width: self.tower_width,
                 tower_autopilot: self.tower_autopilot,
+                tower_voice: self.voice_replies,
             }),
         };
         let result = store::encode(&state).and_then(|json| {
@@ -1977,6 +1993,7 @@ impl App {
             AppEvent::PrFiles(number, files) => self.pr_files_loaded(number, files),
             AppEvent::Ports(ports) => self.ports_loaded(ports),
             AppEvent::Files(scan) => self.files_loaded(*scan),
+            AppEvent::Heard(heard) => self.heard(heard),
             AppEvent::Output(id, bytes) => self.handle_output(id, &bytes),
             AppEvent::Exited(id) => {
                 if self.is_tower(id) {

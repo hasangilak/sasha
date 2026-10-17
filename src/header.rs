@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Menu};
+use crate::app::{App, Listening, Menu};
 use crate::layout::{HeaderButton, Hit};
 use crate::sidebar::{self, render_faded};
 use crate::theme;
@@ -98,6 +98,18 @@ fn render_tower_title(buf: &mut Buffer, app: &App) {
     if let Some(news) = news {
         buf.set_string(end + 1, area.y, &news, Style::new().fg(p.on_accent).bg(p.yellow));
         end += news.width() as u16 + 1;
+    }
+    // Listening to you, and for how long; or working out what you said.
+    let listening = match app.listening() {
+        Listening::Recording(time) => Some((format!(" ● {}:{:02} ", time.as_secs() / 60, time.as_secs() % 60), p.red)),
+        Listening::Transcribing => Some((" hearing… ".to_owned(), p.accent)),
+        Listening::No => None,
+    };
+    if let Some((text, color)) = listening
+        && end + 1 + (text.width() as u16) < area.right()
+    {
+        buf.set_string(end + 1, area.y, &text, Style::new().fg(p.on_accent).bg(color).add_modifier(Modifier::BOLD));
+        end += text.width() as u16 + 1;
     }
     buf.set_string(end + 1, area.y, "▾", Style::new().fg(if hot { p.accent } else { p.text_dim }).bg(bg));
 }

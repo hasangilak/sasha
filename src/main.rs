@@ -30,6 +30,7 @@ mod termcolors;
 mod theme;
 mod tower;
 mod ui;
+mod voice;
 mod workspace;
 
 use anyhow::Result;
@@ -47,5 +48,7 @@ fn main() -> Result<()> {
         Command::Event(source, payload) => hooks::event(&source, payload.as_deref()),
         Command::Inbox => hooks::inbox(),
         Command::Agent(spec) => hooks::run_agent(&spec),
+        Command::Speak => voice::speak_tower(),
+        Command::VoiceInstall => voice::install(),
     }
 }

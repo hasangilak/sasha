@@ -25,6 +25,11 @@ export default function (pi: any) {
     }
   });
 
+  // Its answer, said aloud when voice replies are on.
+  pi.on("agent_settled", async () => {
+    await pi.exec(sasha, ["speak"], { timeout: 10000 });
+  });
+
   // Not signed in yet: say how, once.
   pi.on("session_start", async (_event: any, ctx: any) => {
     if (ctx.model && !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
