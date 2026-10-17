@@ -128,7 +128,11 @@ menu) it says the gist of every answer. `sasha voice install` sets up
 [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), a natural neural voice that runs on your
 Mac (it needs `uv`): a small speaker process keeps it loaded, so it starts talking in a fraction
 of a second. Pick its voice by name in `~/.config/sasha/voice/voice` (`af_heart` by default;
-`bm_george`, `am_michael`, `bf_emma`…). Without Kokoro it uses your Mac's system voice.
+`bm_george`, `am_michael`, `bf_emma`…). Put `chatterbox` in `~/.config/sasha/voice/engine` and it
+speaks with feeling: [Chatterbox](https://github.com/resemble-ai/chatterbox) copies that voice
+(from a recording Kokoro makes once) and the tower gives each part of what it says a tone, from
+calm to urgent, changing within a message when the news does. Without Kokoro it uses your Mac's
+system voice.
 Talk to it with Claude Code's or Codex's own voice input.
 
 **Sessions talk to each other.** Each agent the tower starts can see the others by name, read what

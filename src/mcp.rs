@@ -196,8 +196,16 @@ fn tools() -> Value {
         },
         {
             "name": "speak",
-            "description": "Says text aloud to the user, in their Mac's voice, cutting off anything it was saying. Use it when the user asks you to talk to them, to tell them, or for a spoken summary of everything or of one session. Write it to be heard: plain sentences, the big picture, sessions by their names, what needs the user. No code, paths, ids or symbols, and a few sentences unless they ask for more. Empty text stops it talking.",
-            "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "What to say"}}, "required": ["text"]},
+            "description": "Says something aloud to the user, cutting off anything it was saying. Use it when the user asks you to talk to them, to tell them, or for a spoken summary of everything or of one session. Write it to be heard: plain sentences, the big picture, sessions by their names, what needs the user. No code, paths, ids or symbols, and a few sentences unless they ask for more. Give it a tone that fits (calm for routine status, warm for friendly asides, pleased for good news, excited for real wins, concerned for problems, urgent when something needs them now); when the mood shifts, as with good news and then a problem, send `parts`, each with its own tone. Empty text stops it talking.",
+            "inputSchema": {"type": "object", "properties": {
+                "text": {"type": "string", "description": "What to say, in one tone"},
+                "tone": {"type": "string", "enum": voice::TONES, "description": "How it sounds (default warm)"},
+                "parts": {"type": "array", "description": "Or what to say in parts, each in its tone, one after another", "items": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}, "tone": {"type": "string", "enum": voice::TONES}},
+                    "required": ["text"],
+                }},
+            }},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
         },
         {
@@ -375,13 +383,23 @@ fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
         }
         "wait_for_any" => wait_for_any(args, progress),
         "speak" => {
-            let text = args["text"].as_str().unwrap_or_default().trim();
-            if text.is_empty() {
+            let tone = |value: &Value| {
+                let tone = value.as_str().unwrap_or("warm");
+                if voice::TONES.contains(&tone) { tone.to_owned() } else { "warm".to_owned() }
+            };
+            let mut parts: Vec<(String, String)> = match args["parts"].as_array() {
+                Some(parts) => parts.iter().map(|p| (p["text"].as_str().unwrap_or_default().trim().to_owned(), tone(&p["tone"]))).collect(),
+                None => vec![(args["text"].as_str().unwrap_or_default().trim().to_owned(), tone(&args["tone"]))],
+            };
+            parts.retain(|(text, _)| !text.is_empty());
+            if parts.is_empty() {
                 voice::hush();
                 return Ok("Stopped talking.".to_owned());
             }
-            voice::say(text);
-            Ok(format!("Saying it aloud ({} words).", text.split_whitespace().count()))
+            let words: usize = parts.iter().map(|(text, _)| text.split_whitespace().count()).sum();
+            let tones: Vec<&str> = parts.iter().map(|(_, tone)| tone.as_str()).collect();
+            voice::say_parts(&parts);
+            Ok(format!("Saying it aloud ({words} words; {}).", tones.join(", then ")))
         }
         "show_terminal" => {
             let id = id(args)?;

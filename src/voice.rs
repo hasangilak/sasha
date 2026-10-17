@@ -1,7 +1,9 @@
 //! The tower's voice: it says things aloud to you when you ask (its
 //! `speak` tool) or, with voice replies on, the big picture of each answer.
 //! With Kokoro set up (`sasha voice install`), a neural voice close to a
-//! person's, kept loaded by a small speaker process; else macOS's own.
+//! person's, kept loaded by a small speaker process; with Chatterbox chosen
+//! (`voice/engine`), that voice with feeling, a tone per part. Else
+//! macOS's own.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -23,6 +25,8 @@ const SPOKEN_MAX: usize = 400;
 const SPEAKER: &str = include_str!("voice/speaker.py");
 /// Kokoro's voice unless you pick another: warm, clear, American.
 const KOKORO_VOICE: &str = "af_heart";
+/// The tones a part can be said in, from flat to most feeling.
+pub const TONES: [&str; 6] = ["calm", "warm", "pleased", "concerned", "excited", "urgent"];
 /// How long a starting speaker gets to load Kokoro.
 const SPEAKER_START: Duration = Duration::from_secs(30);
 /// What Kokoro needs, beside mlx-audio: its English text processing.
@@ -85,12 +89,26 @@ pub fn spoken(answer: &str) -> String {
 
 /// Says `text`, cutting off whatever it was saying.
 pub fn say(text: &str) {
+    say_parts(&[(text.to_owned(), "warm".to_owned())]);
+}
+
+/// Says `parts` one after another, each `(text, tone)` in its tone where
+/// the voice can do feeling.
+pub fn say_parts(parts: &[(String, String)]) {
     if let Some(python) = kokoro_python()
-        && say_with_kokoro(&python, text).is_ok()
+        && say_with_speaker(&python, parts).is_ok()
     {
         return;
     }
-    say_with_mac(text);
+    let text: Vec<&str> = parts.iter().map(|(text, _)| text.as_str()).collect();
+    say_with_mac(&text.join(" "));
+}
+
+/// The speaker's engine: `$SASHA_VOICE_ENGINE`, else the first line of
+/// `voice/engine` (`chatterbox` for feeling), else Kokoro.
+fn chosen_engine() -> String {
+    let engine = std::env::var("SASHA_VOICE_ENGINE").ok().or_else(|| std::fs::read_to_string(dir()?.join("engine")).ok());
+    engine.and_then(|e| e.lines().next().map(|l| l.trim().to_ascii_lowercase())).filter(|e| !e.is_empty()).unwrap_or_else(|| "kokoro".to_owned())
 }
 
 /// The voice you picked: `$SASHA_VOICE`, else the first line of
@@ -113,13 +131,14 @@ fn kokoro_python() -> Option<PathBuf> {
     python.is_file().then_some(python)
 }
 
-/// Hands `text` to the speaker, starting it (and loading Kokoro) first
-/// if it isn't running.
-fn say_with_kokoro(python: &Path, text: &str) -> Result<()> {
+/// Hands `parts` to the speaker, starting it (and loading its model)
+/// first if it isn't running.
+fn say_with_speaker(python: &Path, parts: &[(String, String)]) -> Result<()> {
     let dir = dir().context("no home folder")?;
     let socket = speaker_socket()?;
     let voice = chosen_voice().filter(|v| is_kokoro_voice(v)).unwrap_or_else(|| KOKORO_VOICE.to_owned());
-    let request = json!({"say": text, "voice": voice});
+    let parts: Vec<Value> = parts.iter().map(|(text, tone)| json!({"text": text, "tone": tone})).collect();
+    let request = json!({"say": parts, "voice": voice, "engine": chosen_engine()});
     if tell_speaker(&socket, &request).is_ok() {
         return Ok(());
     }
@@ -127,7 +146,7 @@ fn say_with_kokoro(python: &Path, text: &str) -> Result<()> {
     std::fs::write(&script, SPEAKER)?;
     let log = std::fs::File::create(dir.join("speaker.log")).map_or_else(|_| Stdio::null(), Stdio::from);
     let mut command = Command::new(python);
-    command.arg(&script).arg(&socket).stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
+    command.arg(&script).arg(&socket).arg(&dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
     // A session of its own: it outlives whoever asked first.
     // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
     unsafe {
@@ -209,7 +228,7 @@ pub fn install() -> Result<()> {
         bail!("uv couldn't install Kokoro");
     }
     println!("Loading Kokoro (the first time, it downloads its model)…");
-    say_with_kokoro(&python, "Hello. This is how the tower sounds now.")?;
+    say_with_speaker(&python, &[("Hello. This is how the tower sounds now.".to_owned(), "warm".to_owned())])?;
     println!("Done. The tower speaks with Kokoro; pick another voice in {}.", dir.join("voice").display());
     Ok(())
 }
