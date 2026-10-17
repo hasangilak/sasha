@@ -113,6 +113,8 @@ fn codex_notify() -> Option<Vec<String>> {
 /// whether or not the tower remembers to ask for it. The prompt comes from
 /// `prompt`, else from the hook's input on stdin (Claude Code's).
 pub fn inbox(prompt: Option<&str>) -> Result<()> {
+    // Claude Code gives the prompt on stdin, and can take the prompt back.
+    let claude = prompt.is_none();
     let prompt = match prompt {
         Some(prompt) => prompt.to_owned(),
         None if !std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
@@ -122,6 +124,26 @@ pub fn inbox(prompt: Option<&str>) -> Result<()> {
         }
         None => String::new(),
     };
+    // "Bella, hush": quiet at once. Only that, and Claude Code drops the
+    // message, so the tower doesn't answer it at all.
+    match crate::voice::quiet(&prompt) {
+        Some(crate::voice::Quiet::Only) => {
+            crate::voice::hush();
+            if claude {
+                println!("{}", json!({"decision": "block", "reason": "Stopped talking."}));
+            } else {
+                println!("[sasha] The user asked you to stop talking, and sasha has stopped the voice. Don't speak this turn; a word in writing at most.");
+            }
+            return Ok(());
+        }
+        Some(crate::voice::Quiet::AndMore) => {
+            crate::voice::hush();
+            println!(
+                "[sasha] The user said \"stop\", and sasha has stopped the voice. If something was about to happen that they could mean, ask before going on with it."
+            );
+        }
+        None => {}
+    }
     if let Some(name) = crate::voice::called(&prompt) {
         crate::voice::set_current(&name);
         let shown = crate::voice::shown(&name);

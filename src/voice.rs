@@ -179,6 +179,60 @@ fn called_among(message: &str, names: &[String]) -> Option<String> {
     opening.chain(closing).find_map(|word| names.iter().find(|name| sounds_like(word, &name.to_lowercase())).cloned())
 }
 
+/// How a message asks for quiet, if it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quiet {
+    /// Only that: "Bella, hush", "shh", "stop talking", "Fable, stop".
+    Only,
+    /// "Stop!" alone: quiet, but it may mean more (stop what's about to
+    /// happen), so the tower should still hear it.
+    AndMore,
+}
+
+/// Whether a message asks the voice to be quiet: one of the tower's names
+/// or none, and a word for it.
+pub fn quiet(message: &str) -> Option<Quiet> {
+    let names: Vec<String> = people().into_iter().map(|p| p.name).collect();
+    quiet_among(message, &names)
+}
+
+fn quiet_among(message: &str, names: &[String]) -> Option<Quiet> {
+    const POLITE: [&str; 9] = ["hey", "ok", "okay", "please", "now", "uh", "um", "oh", "just"];
+    const ONLY: [&[&str]; 12] = [
+        &["hush"],
+        &["shh"],
+        &["shhh"],
+        &["shush"],
+        &["quiet"],
+        &["be", "quiet"],
+        &["stop", "talking"],
+        &["stop", "speaking"],
+        &["shut", "up"],
+        &["silence"],
+        &["enough"],
+        &["that's", "enough"],
+    ];
+    let words: Vec<String> = message
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let named = words.iter().any(|w| names.iter().any(|n| sounds_like(w, &n.to_lowercase())));
+    let rest: Vec<&str> = words
+        .iter()
+        .map(String::as_str)
+        .filter(|w| !POLITE.contains(w) && !names.iter().any(|n| sounds_like(w, &n.to_lowercase())))
+        .collect();
+    if ONLY.contains(&rest.as_slice()) {
+        return Some(Quiet::Only);
+    }
+    match rest.as_slice() {
+        ["stop"] if named => Some(Quiet::Only),
+        ["stop"] => Some(Quiet::AndMore),
+        _ => None,
+    }
+}
+
 /// The same word, or for names of four letters or more one letter off
 /// (added, dropped, changed or swapped) after the same first letter:
 /// "Bela" is Bella, "table" isn't Fable.
@@ -449,6 +503,25 @@ mod tests {
         assert_eq!(called("make the voice that Fable uses a bit slower please"), None);
         assert_eq!(called("tell me about the table"), None);
         assert_eq!((edits("fabel", "fable"), edits("bela", "bella")), (1, 1));
+    }
+
+    #[test]
+    fn quiet_is_asked_for_by_name_or_not() {
+        let names = ["bella".to_owned(), "fable".to_owned()];
+        let quiet = |message: &str| quiet_among(message, &names);
+        assert_eq!(quiet("hush"), Some(Quiet::Only));
+        assert_eq!(quiet("Hush."), Some(Quiet::Only));
+        assert_eq!(quiet("Bella hush"), Some(Quiet::Only));
+        assert_eq!(quiet("Fable, hush."), Some(Quiet::Only));
+        assert_eq!(quiet("hush, Bela"), Some(Quiet::Only));
+        assert_eq!(quiet("Shh!"), Some(Quiet::Only));
+        assert_eq!(quiet("Okay Fable, stop talking please"), Some(Quiet::Only));
+        assert_eq!(quiet("Fable stop"), Some(Quiet::Only));
+        // Stop alone may mean more than the voice.
+        assert_eq!(quiet("Stop!"), Some(Quiet::AndMore));
+        assert_eq!(quiet("stop the deploy"), None);
+        assert_eq!(quiet("Bella, what's quiet today?"), None);
+        assert_eq!(quiet("Hey Bella, what's up?"), None);
     }
 
     #[test]
