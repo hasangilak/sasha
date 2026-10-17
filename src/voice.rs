@@ -20,6 +20,10 @@ use anyhow::{Context, Result, bail};
 use crate::agents::{self, Agent};
 use crate::{store, tower};
 
+pub mod timeline;
+
+pub use timeline::Word;
+
 /// The most of an answer said aloud.
 const SPOKEN_MAX: usize = 400;
 /// The speaker that keeps Kokoro loaded, written beside it.
@@ -434,8 +438,9 @@ fn say_with_mac(text: &str) {
     }
 }
 
-/// What the speaker is playing: who, the words and their moods, how long
-/// it is so far and how far it's got, and its sound levels.
+/// What the speaker is playing: who, the words and their moods and when
+/// each is said, how long it is so far and how far it's got, and its sound
+/// levels.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Playing {
     #[serde(default)]
@@ -450,6 +455,9 @@ pub struct Playing {
     pub position: f64,
     #[serde(default)]
     pub levels: Vec<f32>,
+    /// When each word is said.
+    #[serde(default)]
+    pub words: Vec<Word>,
     /// A message from the library, played again.
     #[serde(default)]
     pub replay: bool,
@@ -473,6 +481,8 @@ pub struct Clip {
     pub who: String,
     #[serde(default)]
     pub parts: Vec<Value>,
+    #[serde(default)]
+    pub words: Vec<Word>,
     #[serde(default)]
     pub duration: f64,
     /// It was stopped before it finished.
@@ -505,7 +515,7 @@ pub fn library() -> Vec<Clip> {
 pub fn replay(clip: &Clip) {
     let Some(python) = kokoro_python() else { return };
     let (Some(dir), Ok(socket)) = (dir(), speaker_socket()) else { return };
-    let request = json!({"play": clip.file, "who": clip.who, "parts": clip.parts});
+    let request = json!({"play": clip.file, "who": clip.who, "parts": clip.parts, "words": clip.words});
     if tell_speaker(&socket, &request).is_ok() {
         return;
     }

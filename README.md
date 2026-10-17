@@ -151,7 +151,8 @@ Then "hey Bella, tell me about the open PRs" or "Fable, what's been pushed to ma
 voice up: the tower answers in it, and keeps it until you call the other.
 
 **Its voice has a control center** (`Ctrl+B` then `Shift+V`, or in the tower's menu): who's
-talking and in which moods, the sound drawn as it plays, ▶ play and ■ stop, and a library of
+talking and in which moods, the sound drawn as it plays with each word under the sound of it,
+running past as it's said, ▶ play and ■ stop, and a library of
 everything the tower has said, kept in `~/.config/sasha/voice/library` (compact AAC, about 120 KB
 for 15 seconds, with an index of who said what, when): pick one and press ⏎ to hear it again.
 

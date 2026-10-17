@@ -17,6 +17,7 @@ use crate::github::Change;
 use crate::highlight::{Kind, Span};
 use crate::theme;
 use crate::ui::popup_block;
+use crate::voice::timeline::{self, Timeline};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let Some(panel) = app.panel() else { return };
@@ -344,23 +345,53 @@ fn render_voice(buf: &mut Buffer, app: &App, area: Rect, panel: &VoicePanel) {
             buf.set_stringn(area.x, area.y, format!("{who} is quiet"), area.width as usize, Style::new().fg(p.text_dim).bg(bg));
         }
     }
-    // Its sound, three rows tall, what's been played in colour.
+    // Its sound, three rows tall, and under it the words, each beneath the
+    // sound of it; what's been said in colour, the word being said bright.
+    // The line runs past as it plays.
     let wave = Rect::new(area.x, area.y + 1, area.width, 3.min(area.height.saturating_sub(1)));
-    match now.filter(|n| !n.levels.is_empty()) {
+    match now.filter(|n| !n.levels.is_empty() && n.duration > 0.0) {
         Some(now) => {
+            let spread;
+            let words = if now.words.is_empty() {
+                spread = timeline::spread(&now.text, now.duration);
+                &spread
+            } else {
+                &now.words
+            };
+            let line = Timeline::new(words, now.duration);
+            let playing = line.column(now.position);
+            let first = timeline::scroll(playing, line.width(), area.width);
             let loudest = now.levels.iter().copied().fold(0.05_f32, f32::max);
-            let played = if now.duration > 0.0 { (now.position / now.duration).clamp(0.0, 1.0) } else { 0.0 };
+            let step = now.duration / now.levels.len() as f64;
             const BARS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
             let eighths = wave.height * 8;
             for col in 0..wave.width {
-                let index = (usize::from(col) * now.levels.len() / usize::from(wave.width.max(1))).min(now.levels.len() - 1);
-                let height = ((now.levels[index] / loudest) * f32::from(eighths)).round() as u16;
-                let past = f64::from(col) < played * f64::from(wave.width);
-                let color = if past { p.pink } else { p.text_dim };
+                let at = first + u32::from(col);
+                if at >= line.width() {
+                    break;
+                }
+                // The loudest of the sound under this column.
+                let from = ((line.time(f64::from(at)) / step) as usize).min(now.levels.len() - 1);
+                let to = ((line.time(f64::from(at + 1)) / step).ceil() as usize).clamp(from + 1, now.levels.len());
+                let level = now.levels[from..to].iter().copied().fold(0.0_f32, f32::max);
+                let height = ((level / loudest) * f32::from(eighths)).round() as u16;
+                let color = if f64::from(at) < playing { p.pink } else { p.text_dim };
                 for row in 0..wave.height {
                     let floor = (wave.height - 1 - row) * 8;
                     let fill = height.saturating_sub(floor).min(8);
                     buf.set_string(wave.x + col, wave.y + row, BARS[usize::from(fill)], Style::new().fg(color).bg(bg));
+                }
+            }
+            if area.height > 4 {
+                for &(at, word) in &line.words {
+                    let style = if word.end <= now.position {
+                        Style::new().fg(p.pink)
+                    } else if word.start <= now.position {
+                        Style::new().fg(p.text).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(p.text_dim)
+                    };
+                    draw_from(buf, area, area.y + 4, i64::from(at) - i64::from(first), &printable(&word.text), style.bg(bg));
                 }
             }
         }
@@ -369,11 +400,6 @@ fn render_voice(buf: &mut Buffer, app: &App, area: Rect, panel: &VoicePanel) {
             buf.set_stringn(wave.x, middle, "─".repeat(usize::from(wave.width)), wave.width as usize, Style::new().fg(p.border).bg(bg));
         }
         None => {}
-    }
-    // The words, then ▶ and ■.
-    if area.height > 4 {
-        let words = now.map_or_else(String::new, |n| format!("“{}”", n.text));
-        buf.set_stringn(area.x, area.y + 4, printable(&words), area.width as usize, Style::new().fg(p.text).bg(bg));
     }
     if area.height > 5 {
         let (play, stop) = voice_buttons(area);
@@ -416,6 +442,22 @@ fn render_voice(buf: &mut Buffer, app: &App, area: Rect, panel: &VoicePanel) {
         let x = list.x + head.width() as u16;
         let room = tail_x.saturating_sub(x + 1) as usize;
         buf.set_stringn(x, y, printable(&clip.text()), room, Style::new().fg(p.text).bg(row_bg));
+    }
+}
+
+/// `text` on row `y` of `area` from column `x`, which may be left of it:
+/// the part that's inside.
+fn draw_from(buf: &mut Buffer, area: Rect, y: u16, x: i64, text: &str, style: Style) {
+    let mut column = x;
+    for ch in text.chars() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as i64;
+        if column >= i64::from(area.width) {
+            return;
+        }
+        if column >= 0 && column + width <= i64::from(area.width) {
+            buf.set_string(area.x + column as u16, y, ch.to_string(), style);
+        }
+        column += width;
     }
 }
 

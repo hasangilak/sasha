@@ -6,13 +6,15 @@ ENGINE]`, which gets that voice ready straight away. Each connection sends one l
 of JSON, either
   {"say": [{"text": "...", "tone": "pleased"}, ...], "voice": "bm_fable",
    "engine": "chatterbox", "pace": 0.9}
-or {"play": FILE, "who": ..., "parts": [...]} to play a kept message again,
+or {"play": FILE, "who": ..., "parts": [...], "words": [...]} to play a
+kept message again,
 or {"stop": true}, or {"status": true}, answered with {"speaking": true or
 false, "version": ..., "now": what's playing}, or {"quit": true}.
 
 Every message said is kept in VOICE_DIR/library, compact, with a line in
-its index.jsonl: when, who, the words and their moods, how long, and
-whether it was stopped. Something new to say cuts off what it was saying.
+its index.jsonl: when, who, the words and their moods, when each word is
+said, how long, and whether it was stopped. Something new to say cuts off
+what it was saying.
 
 Kokoro reads plainly in any of its voices. Chatterbox speaks with
 feeling: it copies the voice, and the delivery, from a recording of that
@@ -167,14 +169,20 @@ def warm_up_next():
 
 
 class Track:
-    """What's playing: who says it, the words and their moods, the sound so
-    far and its levels, and when it started playing, for sasha to show and
-    the library to keep."""
+    """What's playing: who says it, the words and their moods, when each
+    word is said, the sound so far and its levels, and how far it has
+    played, for sasha to show and the library to keep."""
 
-    def __init__(self, who, parts, replay=False):
-        self.who, self.parts, self.replay = who, parts, replay
-        self.samples, self.levels = [], []
+    def __init__(self, who, parts, out, replay=False):
+        self.who, self.parts, self.out, self.replay = who, parts, out, replay
+        self.samples, self.levels, self.words = [], [], []
         self.seconds, self.rate, self.since = 0.0, 24000, None
+
+    def mark(self, words):
+        """When the words of the sound about to be added are said, from its
+        start: [text, start, end] each."""
+        for text, start, end in words:
+            self.words.append([text, round(self.seconds + start, 2), round(self.seconds + end, 2)])
 
     def add(self, audio, rate):
         self.rate = rate
@@ -192,7 +200,11 @@ class Track:
         if len(levels) > LEVELS_MAX:
             size = len(levels) / LEVELS_MAX
             levels = [max(levels[int(i * size) : max(int((i + 1) * size), int(i * size) + 1)]) for i in range(LEVELS_MAX)]
-        position = min(time.time() - self.since, self.seconds) if self.since else 0.0
+        # What the speakers have played, else the time since it started.
+        position = getattr(self.out, "position", lambda: None)()
+        if position is None:
+            position = time.time() - self.since if self.since else 0.0
+        position = min(position, self.seconds)
         return {
             "who": self.who,
             "text": " ".join(part.get("text", "") for part in self.parts).strip(),
@@ -200,6 +212,7 @@ class Track:
             "duration": round(self.seconds, 2),
             "position": round(position, 2),
             "levels": [round(level, 4) for level in levels],
+            "words": self.words,
             "replay": self.replay,
         }
 
@@ -229,6 +242,7 @@ def keep(track, stopped):
             "time": int(time.time()),
             "who": track.who,
             "parts": track.parts,
+            "words": track.words,
             "duration": round(len(audio) / track.rate, 2),
             "stopped": stopped,
         }
@@ -270,12 +284,28 @@ class Speakers:
 
     def __init__(self):
         self.player = None
+        self.queued, self.rate = 0, 24000
 
     def add(self, audio, rate):
         if self.player is None:
             self.player = AudioPlayer(sample_rate=rate)
             self.player.min_buffer_seconds = BUFFER_FIRST
         self.player.queue_audio(audio)
+        self.queued += len(audio)
+        self.rate = rate
+
+    def position(self):
+        """How much has reached the ear, in seconds: what was queued, less
+        what still waits, less what's on its way out. It holds still when
+        speech isn't made fast enough, as the sound does."""
+        player = self.player
+        if player is None:
+            return 0.0
+        with player.buffer_lock:
+            waiting = sum(map(len, player.audio_buffer))
+        stream = player.stream
+        latency = stream.latency if stream is not None and player.playing else 0.0
+        return max(0.0, (self.queued - waiting) / self.rate - latency)
 
     def finish(self):
         if self.player:
@@ -328,9 +358,56 @@ def silence(seconds, rate, pace):
     return np.zeros(int(rate * seconds / pace), dtype=np.float32)
 
 
+def spread(text, audio, rate):
+    """When each word of `text` is said in `audio`, for speech that doesn't
+    say: its words share out the stretch with sound in it by their length,
+    with a little more after a comma or a full stop."""
+    words = text.split()
+    if not words or not len(audio):
+        return []
+    frame = max(1, int(rate * 0.02))
+    count = len(audio) // frame
+    loud = []
+    if count:
+        loudness = np.sqrt(np.mean(audio[: count * frame].reshape(count, frame) ** 2, axis=1))
+        loud = np.nonzero(loudness > loudness.max() * 0.1)[0]
+    start, end = (loud[0] * frame / rate, (loud[-1] + 1) * frame / rate) if len(loud) else (0.0, len(audio) / rate)
+    pause = lambda word: 4 if word[-1] in ".!?" else 2 if word[-1] in ",;:" else 1
+    total = sum(len(word) + pause(word) for word in words)
+    out, at = [], 0
+    for word in words:
+        out.append((word, start + (end - start) * at / total, start + (end - start) * (at + len(word)) / total))
+        at += len(word) + pause(word)
+    return out
+
+
+def kokoro_words(tokens):
+    """Kokoro's own timing of what it said, as words: a token that follows
+    another without a space, like a full stop, joins it. The pause a full
+    stop or a comma makes stays a pause, out of its word."""
+    words = []
+    for token in tokens or []:
+        start, end = getattr(token, "start_ts", None), getattr(token, "end_ts", None)
+        if words and not words[-1][3]:
+            words[-1][0] += token.text
+            if end is not None and any(c.isalnum() for c in token.text):
+                words[-1][2] = end
+            words[-1][3] = token.whitespace
+        else:
+            words.append([token.text, start, end, token.whitespace])
+    out, last = [], 0.0
+    for text, start, end, _ in words:
+        start = last if start is None else max(start, last)
+        end = start if end is None else max(end, start)
+        if text.strip():
+            out.append((text.strip(), start, end))
+        last = end
+    return out
+
+
 def say(parts, voice, engine, mine, pace, who):
     out = Files() if PLAYER else Speakers()
-    track = Track(who, parts)
+    track = Track(who, parts, out)
     with lock:
         if current["id"] != mine:
             return
@@ -348,11 +425,15 @@ def say(parts, voice, engine, mine, pace, who):
             if not text:
                 continue
             rate = 24000
-            for audio, rate in pieces(text, part.get("tone") or "warm", voice, engine, pace):
+            for audio, rate, words, said in pieces(text, part.get("tone") or "warm", voice, engine, pace):
                 if not still(mine):
                     stopped = True
                     break
-                emit(at_pace(audio, rate, pace) if engine == "chatterbox" else audio, rate)
+                if words is None:
+                    audio = at_pace(audio, rate, pace)
+                    words = spread(said, audio, rate)
+                track.mark(words)
+                emit(audio, rate)
                 emit(silence(SENTENCE_PAUSE, rate, pace), rate)
             if stopped:
                 break
@@ -365,10 +446,10 @@ def say(parts, voice, engine, mine, pace, who):
     played(out, mine)
 
 
-def play(path, who, parts, mine):
+def play(path, who, parts, words, mine):
     """A kept message, again."""
     out = Files() if PLAYER else Speakers()
-    track = Track(who, parts, replay=True)
+    track = Track(who, parts, out, replay=True)
     with lock:
         if current["id"] != mine:
             return
@@ -376,6 +457,9 @@ def play(path, who, parts, mine):
         current["track"] = track
     try:
         audio, rate = decode(path)
+        # Kept before its words' timing was: spread them over it.
+        text = " ".join(part.get("text", "") for part in parts)
+        track.mark(words or spread(text, audio, rate))
         out.add(audio, rate)
         track.add(audio, rate)
     except Exception:
@@ -396,7 +480,9 @@ def played(out, mine):
 
 
 def pieces(text, tone, voice, engine, pace):
-    """`text` as audio, a piece at a time as it's made: (samples, rate)."""
+    """`text` as audio, a piece at a time as it's made: (samples, rate,
+    when its words are said, its text). Chatterbox doesn't say when, nor
+    keep a pace of its own: both come after (None)."""
     if engine == "chatterbox":
         try:
             box = model("chatterbox")
@@ -415,15 +501,26 @@ def pieces(text, tone, voice, engine, pace):
                     verbose=False,
                 )
                 audio = [np.array(result.audio, dtype=np.float32).reshape(-1) for result in results]
-                yield np.concatenate(audio), box.sample_rate
+                yield np.concatenate(audio), box.sample_rate, None, sentence
             return
         except Exception:
             # Chatterbox can't: Kokoro reads it plainly instead.
             traceback.print_exc()
     kokoro = model("kokoro")
-    # Kokoro keeps its own pace.
-    for result in kokoro.generate(text=text, voice=voice, lang_code=voice[0], speed=pace):
-        yield np.array(result.audio, dtype=np.float32).reshape(-1), kokoro.sample_rate
+    # Kokoro keeps its own pace, and knows when it says each word: its
+    # pipeline does, under its generate, which drops that.
+    pipeline = getattr(kokoro, "_get_pipeline", None)
+    if pipeline is None:
+        for result in kokoro.generate(text=text, voice=voice, lang_code=voice[0], speed=pace):
+            audio = np.array(result.audio, dtype=np.float32).reshape(-1)
+            yield audio, kokoro.sample_rate, spread(text, audio, kokoro.sample_rate), text
+        return
+    for result in pipeline(voice[0])(text, voice=voice, speed=pace, split_pattern=r"\n+"):
+        if result.audio is None:
+            continue
+        audio = np.array(result.audio, dtype=np.float32).reshape(-1)
+        words = kokoro_words(result.tokens)
+        yield audio, kokoro.sample_rate, words or spread(result.graphemes, audio, kokoro.sample_rate), result.graphemes
 
 
 def write_wav(audio, rate, path):
@@ -478,7 +575,7 @@ def handle(conn):
             mine = current["id"]
             current["busy"] = True
         path = os.path.join(LIBRARY, os.path.basename(request["play"]))
-        jobs.put(("play", path, request.get("who") or "", request.get("parts") or [], mine))
+        jobs.put(("play", path, request.get("who") or "", request.get("parts") or [], request.get("words") or [], mine))
     last_used = time.time()
 
 
@@ -493,9 +590,9 @@ def worker():
             ready = not warm_up_next()
             continue
         if job[0] == "play":
-            _, path, who, parts, mine = job
+            _, path, who, parts, words, mine = job
             if still(mine):
-                play(path, who, parts, mine)
+                play(path, who, parts, words, mine)
             continue
         _, parts, voice, engine, mine, pace, who = job
         if still(mine):
