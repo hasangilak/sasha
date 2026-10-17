@@ -163,9 +163,6 @@ impl App {
 
     /// The subscription the tower runs on, as it last said.
     pub fn tower_engine(&self) -> Engine {
-        tower::dir()
-            .and_then(|dir| std::fs::read_to_string(dir.join("engine")).ok())
-            .and_then(|name| Engine::parse(&name))
-            .unwrap_or(Engine::Claude)
+        tower::current_engine()
     }
 }

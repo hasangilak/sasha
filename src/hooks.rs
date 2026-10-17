@@ -125,14 +125,25 @@ const PEER_TOOLS: &str = "mcp__sasha__list_sessions,mcp__sasha__session_report,m
 /// What a session the tower starts is told about the others.
 fn peer_instructions(name: Option<&str>) -> String {
     let you = name.map_or_else(|| "one of the sessions".to_owned(), |name| format!("the session named \"{name}\""));
+    let tower = crate::tower::described();
     format!(
-        "You run in sasha as {you}: one of several agent sessions, each in its own terminal, coordinated by the tower. \
-         Your sasha tools reach the others: list_sessions shows who's who and what they're on, session_report what one \
-         has done, and message_session sends one a message by name, or the tower one (to: tower). Messages from them \
-         reach you as \"[message from …]\" between your turns; answer with message_session when they ask something. \
-         Message only when it helps the work: a question, a heads-up about something you changed that touches theirs, \
-         a hand-off. Keep it short and specific."
+        "You run in sasha as {you}: one of several agent sessions, each in its own terminal. The tower, {tower}, \
+         started you and coordinates every session for the user. {REPORT_BACK} Your sasha tools reach the tower and \
+         the others: list_sessions shows who's who and what they're on, session_report what one has done, and \
+         message_session sends a message by name, or to the tower (to: tower). Messages reach you as \
+         \"[message from …]\" between your turns; answer with message_session when they ask something. Message \
+         the other sessions only when it helps the work: a question, a heads-up about something you changed that \
+         touches theirs, a hand-off. Keep it short and specific."
     )
+}
+
+/// What the sessions the tower starts are asked to do with each task.
+pub const REPORT_BACK: &str = "When you're done, or stuck, report back to the tower with message_session (to: tower): \
+what you did, what's left, and anything the user needs to decide.";
+
+/// A task from the tower, asking to report back to it.
+pub fn seeded(task: &str) -> String {
+    format!("{}\n\n{REPORT_BACK}", task.trim_end())
 }
 
 /// The short command that starts Claude Code or Codex in a session's shell,
@@ -298,6 +309,8 @@ mod tests {
         assert_eq!(claude[..2], ["--settings", "/h.json"]);
         assert!(claude[3].contains(r#""SASHA_TAB":"7""#) && claude[3].contains(r#""SASHA_PEER":"1""#));
         assert_eq!(claude[claude.len() - 3..], ["--name", "api-tests", "run the tests"]);
+        let instructions = &claude[claude.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
+        assert!(instructions.contains("session named \"tower\"") && instructions.contains(REPORT_BACK));
         let codex = agent_args(Agent::Codex, "/bin/sasha", None, &here, None, Some("review it")).unwrap();
         assert!(codex.iter().any(|a| a == r#"mcp_servers.sasha.env={SASHA_PEER="1",SASHA_TAB="7",SASHA="/tmp/s",SASHA_SOCKET="/tmp/s"}"#));
         assert!(codex.iter().any(|a| a.starts_with("notify=[")));

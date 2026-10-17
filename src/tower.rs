@@ -75,6 +75,22 @@ fn codex_model() -> String {
     model.unwrap_or_else(|| "openai-codex/gpt-6.1-sol".to_owned())
 }
 
+/// What the tower runs on, as it last said (Claude the first time).
+pub fn current_engine() -> Engine {
+    dir()
+        .and_then(|dir| std::fs::read_to_string(dir.join("engine")).ok())
+        .and_then(|name| Engine::parse(&name))
+        .unwrap_or(Engine::Claude)
+}
+
+/// The tower, as the sessions it starts know it.
+pub fn described() -> &'static str {
+    match current_engine() {
+        Engine::Claude => "the Claude Code session named \"tower\"",
+        Engine::Codex => "the pi session named \"tower\" (on Codex)",
+    }
+}
+
 /// Where the tower keeps its files, beside sasha's state:
 /// `~/.config/sasha/tower`.
 pub fn dir() -> Option<PathBuf> {
@@ -92,7 +108,7 @@ pub fn run(engine: Option<Engine>) -> Result<()> {
             std::fs::write(&chosen, format!("{}\n", engine.name()))?;
             engine
         }
-        None => std::fs::read_to_string(&chosen).ok().and_then(|name| Engine::parse(&name)).unwrap_or(Engine::Claude),
+        None => current_engine(),
     };
     match engine {
         Engine::Claude => run_claude(&dir),
@@ -118,6 +134,8 @@ fn run_claude(dir: &Path) -> Result<()> {
         .arg("--mcp-config")
         .arg(&config)
         .arg("--strict-mcp-config")
+        // The sessions it starts know it by that name.
+        .args(["--name", "tower"])
         // Its news goes in before each of its turns.
         .arg("--settings")
         .arg(hooks::tower_hooks()?)
@@ -164,7 +182,7 @@ fn run_pi(dir: &Path) -> Result<()> {
         .arg(&extension)
         .arg("--append-system-prompt")
         .arg(&prompt)
-        .args(["--model", &codex_model(), "--continue"])
+        .args(["--model", &codex_model(), "--continue", "--name", "tower"])
         .env("SASHA_EXE", std::env::current_exe().context("can't find the sasha executable")?);
     // pi is a node script: the node it was installed with sits beside it.
     if let Some(bin) = pi.parent() {

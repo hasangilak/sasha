@@ -299,7 +299,11 @@ fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
             let id = id(args)?;
             let text = args["text"].as_str().context("`text` is missing")?;
             let terminal = find(id)?;
-            control::call(Request::Paste { id, text: text.trim_end_matches(['\n', '\r']).to_owned(), tower: is_tower() })?;
+            // A session the tower started can report back: ask it to.
+            let can_report = is_tower() && terminal.mission.as_ref().is_some_and(|m| m.hooked);
+            let text = text.trim_end_matches(['\n', '\r']);
+            let text = if can_report { hooks::seeded(text) } else { text.to_owned() };
+            control::call(Request::Paste { id, text, tower: is_tower() })?;
             let submit = args["submit"].as_bool().unwrap_or(true);
             if submit {
                 thread::sleep(BEFORE_ENTER);
@@ -339,7 +343,8 @@ fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
             let (command, task) = match agent {
                 Some(agent) => {
                     let task = prompt.map_or_else(|| format!("{} session, waiting for a prompt", agent.name()), str::to_owned);
-                    (Some(hooks::agent_command(agent, name, prompt)?), Some(task))
+                    let seeded = prompt.map(hooks::seeded);
+                    (Some(hooks::agent_command(agent, name, seeded.as_deref())?), Some(task))
                 }
                 None => (args["command"].as_str().map(str::to_owned), None),
             };

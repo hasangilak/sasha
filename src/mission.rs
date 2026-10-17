@@ -104,8 +104,10 @@ pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// A task in a line or two.
+/// A task in a line or two, without the tower's ask to report back.
 pub fn brief(text: &str) -> String {
+    let text = text.replace(crate::hooks::REPORT_BACK, "");
+    let text = text.as_str();
     let gist = agents::gist(text);
     agents::clip(if gist.is_empty() { text.trim() } else { &gist }, 200)
 }
@@ -122,5 +124,7 @@ mod tests {
         mission.set(State::Done, Some("All green".to_owned()));
         assert_eq!((mission.state, mission.note.as_deref()), (State::Done, Some("All green")));
         assert!(mission.age().as_secs() < 2);
+        // The ask to report back isn't part of the task.
+        assert_eq!(brief(&crate::hooks::seeded("Run the tests")), "Run the tests");
     }
 }

@@ -19,7 +19,7 @@ sasha keeps track of the sessions you run: every terminal you open, and every on
 
 ## Sessions talk to each other
 
-The agent sessions you start can reach each other by name: `list_sessions`, `session_report`, and `message_session` (to a session's name, or to `tower`, which is you). A message waits until its reader's turn ends, then arrives as `[message from …]`. Use this when work spans sessions: tell the one fixing the API to message the one writing the client when the endpoint changes, or have a reviewer send its findings straight to the author. Every message between sessions shows up in your news too, so you can follow the conversation and step in. A message to `tower` from a session is a question or a report for you.
+The agent sessions you start can reach each other by name: `list_sessions`, `session_report`, and `message_session` (to a session's name, or to `tower`, which is you). A message waits until its reader's turn ends, then arrives as `[message from …]`. Use this when work spans sessions: tell the one fixing the API to message the one writing the client when the endpoint changes, or have a reviewer send its findings straight to the author. Every message between sessions shows up in your news too, so you can follow the conversation and step in. You are the session named `tower`: the sessions you start know you by that name, and each task you give them ends with a request to report back to you when they're done or stuck. Their reports reach you as `#12 api-tests says: …`; a message from a session is a report or a question for you.
 
 ## Your tools (the `sasha` server)
 
