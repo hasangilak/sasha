@@ -31,7 +31,7 @@ const PACKAGE: &str = "@earendil-works/pi-coding-agent";
 /// closing a terminal.
 const CLAUDE_ALLOWED: &str = "mcp__sasha__list_terminals,mcp__sasha__read_terminal,mcp__sasha__agent_report,\
 mcp__sasha__send_prompt,mcp__sasha__send_keys,mcp__sasha__wait_for_terminal,mcp__sasha__open_terminal,\
-mcp__sasha__show_terminal";
+mcp__sasha__show_terminal,mcp__sasha__wait_for_any,mcp__sasha__rename_terminal,mcp__sasha__speak";
 /// How long Claude Code lets a tool call run, in ms: waits take a while.
 const CLAUDE_TOOL_TIMEOUT: &str = "3700000";
 
@@ -212,7 +212,8 @@ fn subagents() -> serde_json::Value {
             "description": "Handles one sasha terminal session for the tower: sends it a brief (or opens it with one), waits while it works, approves routine steps, checks the result against the brief, and returns a short report. Use one per session; run several in parallel.",
             "prompt": SESSION_HANDLER,
             "tools": ["mcp__sasha__*", "Read", "Grep", "Glob"],
-            "disallowedTools": ["mcp__sasha__close_terminal"],
+            // Closing is the user's call, and talking to them the tower's.
+            "disallowedTools": ["mcp__sasha__close_terminal", "mcp__sasha__speak"],
             "mcpServers": ["sasha"],
             "model": "inherit",
         }
@@ -401,7 +402,7 @@ mod tests {
     #[test]
     fn claude_code_may_use_every_tool_but_closing() {
         let names: Vec<&str> = CLAUDE_ALLOWED.split(',').collect();
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 11);
         assert!(names.iter().all(|n| n.starts_with("mcp__sasha__")));
         assert!(!names.contains(&"mcp__sasha__close_terminal"));
     }

@@ -123,12 +123,13 @@ stop for an approval. That news reaches the tower at the start of its next turn,
 with **auto-reply** on (in its menu), so it can act on it and tell you. The header counts what it
 hasn't heard yet.
 
-**Talk to it.** `Ctrl+B` then `Shift+V` starts listening, and again sends what you said: Whisper
-(through [whisper.cpp](https://github.com/ggml-org/whisper.cpp), in any language) writes it
-down and it goes to the tower. With **voice replies** on (in its menu), the tower says the big
-picture of each answer aloud: it opens every answer with a sentence or two for that, and the
-details follow on screen. Needs `brew install whisper-cpp ffmpeg` and `sasha voice install` for
-Whisper's model; `SASHA_VOICE` picks the voice (`say -v '?'` lists them).
+**It talks back.** Ask the tower to tell you, or for the big picture of everything or of one
+session, and it says a short summary aloud in your Mac's voice (its `speak` tool). With **voice
+replies** on (its menu) it says the gist of every answer. The voice is your system voice (System
+Settings → Accessibility → Spoken Content; a Siri or Premium voice sounds best), or `SASHA_VOICE`.
+Talk to it with Claude Code's or Codex's own voice input, or with `Ctrl+B` then `Shift+V`, which
+writes down what you say with Whisper (needs `brew install whisper-cpp ffmpeg` and
+`sasha voice install`).
 
 **Sessions talk to each other.** Each agent the tower starts can see the others by name, read what
 they did, and message them or the tower; a message waits until its reader's turn is over. The

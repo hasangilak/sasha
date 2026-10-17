@@ -14,7 +14,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::agents::{self, Agent};
-use crate::hooks;
+use crate::{hooks, voice};
 use crate::mission::{Ended, Mission, State};
 use crate::control::{self, Reply, Request, Terminal};
 use crate::notify;
@@ -195,6 +195,12 @@ fn tools() -> Value {
             "annotations": read_only,
         },
         {
+            "name": "speak",
+            "description": "Says text aloud to the user, in their Mac's voice, cutting off anything it was saying. Use it when the user asks you to talk to them, to tell them, or for a spoken summary of everything or of one session. Write it to be heard: plain sentences, the big picture, sessions by their names, what needs the user. No code, paths, ids or symbols, and a few sentences unless they ask for more. Empty text stops it talking.",
+            "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "What to say"}}, "required": ["text"]},
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        },
+        {
             "name": "show_terminal",
             "description": "Brings a terminal on screen for the user.",
             "inputSchema": {"type": "object", "properties": {"id": id}, "required": ["id"]},
@@ -368,6 +374,15 @@ fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
             Ok(format!("#{id} is called {}", if name.trim().is_empty() { "after its folder again" } else { name.trim() }))
         }
         "wait_for_any" => wait_for_any(args, progress),
+        "speak" => {
+            let text = args["text"].as_str().unwrap_or_default().trim();
+            if text.is_empty() {
+                voice::hush();
+                return Ok("Stopped talking.".to_owned());
+            }
+            voice::say(text);
+            Ok(format!("Saying it aloud ({} words).", text.split_whitespace().count()))
+        }
         "show_terminal" => {
             let id = id(args)?;
             control::call(Request::Show { id })?;
@@ -657,7 +672,7 @@ mod tests {
     fn every_tool_has_a_schema_and_is_answered() {
         let tools = tools();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 12);
         // Sessions get only what reaches the others.
         let peers: Vec<String> = peer_tools().as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect();
         assert_eq!(peers, ["list_sessions", "session_report", "message_session"]);
