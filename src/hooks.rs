@@ -107,7 +107,28 @@ fn codex_notify() -> Option<Vec<String>> {
 
 /// `sasha inbox`: prints the tower's news, taking it off the pile, for its
 /// hook to put before its next turn.
-pub fn inbox() -> Result<()> {
+///
+/// It also hears who you called: open or close your message with one of
+/// the tower's voices ("Hey Bella, …") and that voice speaks from now on,
+/// whether or not the tower remembers to ask for it. The prompt comes from
+/// `prompt`, else from the hook's input on stdin (Claude Code's).
+pub fn inbox(prompt: Option<&str>) -> Result<()> {
+    let prompt = match prompt {
+        Some(prompt) => prompt.to_owned(),
+        None if !std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+            let mut input = String::new();
+            let _ = std::io::stdin().take(INPUT_MAX).read_to_string(&mut input);
+            serde_json::from_str::<Value>(&input).ok().and_then(|v| v["prompt"].as_str().map(str::to_owned)).unwrap_or_default()
+        }
+        None => String::new(),
+    };
+    if let Some(name) = crate::voice::called(&prompt) {
+        crate::voice::set_current(&name);
+        let shown = crate::voice::shown(&name);
+        println!(
+            "[sasha] The user called {shown} by name: answer aloud as {shown} (`speak` with as: {name}), and keep that voice until they call another."
+        );
+    }
     let Ok(updates) = control::updates(None, true) else { return Ok(()) };
     if updates.is_empty() {
         return Ok(());

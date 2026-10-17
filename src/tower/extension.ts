@@ -17,8 +17,9 @@ export default function (pi: any) {
   });
 
   // The news from its sessions goes in before each turn.
-  pi.on("before_agent_start", async () => {
-    const result = await pi.exec(sasha, ["inbox"], { timeout: 5000 });
+  // So does who the user called, by name ("hey Bella").
+  pi.on("before_agent_start", async (event: any) => {
+    const result = await pi.exec(sasha, ["inbox", "--prompt", event.prompt ?? ""], { timeout: 5000 });
     const news = (result.stdout ?? "").trim();
     if (news) {
       return { message: { customType: "sasha", content: news, display: true } };

@@ -46,7 +46,7 @@ fn main() -> Result<()> {
         Command::Tower(engine) => tower::run(engine),
         Command::Mcp => mcp::run(),
         Command::Event(source, payload) => hooks::event(&source, payload.as_deref()),
-        Command::Inbox => hooks::inbox(),
+        Command::Inbox(prompt) => hooks::inbox(prompt.as_deref()),
         Command::Agent(spec) => hooks::run_agent(&spec),
         Command::Speak => voice::speak_tower(),
         Command::VoiceInstall => voice::install(),

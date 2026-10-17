@@ -49,8 +49,9 @@ pub enum Command {
     /// An agent's hook: what it just did (`claude`, input on stdin; or
     /// `codex` and its JSON).
     Event(String, Option<String>),
-    /// The tower's hook: its news.
-    Inbox,
+    /// The tower's hook: its news, and who the user called (the prompt,
+    /// when it isn't on stdin).
+    Inbox(Option<String>),
     /// Start the agent a session was opened for.
     Agent(std::path::PathBuf),
     /// The tower's hook: say the big picture of its answer.
@@ -72,7 +73,12 @@ impl Config {
         let mut args = std::env::args().skip(1).peekable();
         match args.peek().map(String::as_str) {
             Some("mcp") => return Ok(Some(Command::Mcp)),
-            Some("inbox") => return Ok(Some(Command::Inbox)),
+            Some("inbox") => {
+                args.next();
+                // pi gives the prompt here; Claude Code on stdin.
+                let prompt = (args.next().as_deref() == Some("--prompt")).then(|| args.next().unwrap_or_default());
+                return Ok(Some(Command::Inbox(prompt)));
+            }
             Some("speak") => return Ok(Some(Command::Speak)),
             Some("voice") => {
                 args.next();

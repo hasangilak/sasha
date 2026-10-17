@@ -158,7 +158,63 @@ pub fn current_person() -> Option<Person> {
     found.or_else(|| people.into_iter().next())
 }
 
-fn set_current(name: &str) {
+/// The voice a message calls, if it opens or closes with one's name:
+/// "Hey Bella, …", "Fable, what's…", "…, Bella?". Misheard names a letter
+/// off count ("Bela", "Fabel").
+pub fn called(message: &str) -> Option<String> {
+    let names: Vec<String> = people().into_iter().map(|p| p.name).collect();
+    called_among(message, &names)
+}
+
+/// `called`, among `names`.
+fn called_among(message: &str, names: &[String]) -> Option<String> {
+    const FILLER: [&str; 12] = ["hey", "hi", "hello", "ok", "okay", "yo", "so", "and", "um", "uh", "oh", "well"];
+    let words: Vec<String> = message
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let opening = words.iter().filter(|w| !FILLER.contains(&w.as_str())).take(2);
+    let closing = words.last();
+    opening.chain(closing).find_map(|word| names.iter().find(|name| sounds_like(word, &name.to_lowercase())).cloned())
+}
+
+/// The same word, or for names of four letters or more one letter off
+/// (added, dropped, changed or swapped) after the same first letter:
+/// "Bela" is Bella, "table" isn't Fable.
+fn sounds_like(word: &str, name: &str) -> bool {
+    word == name || (name.chars().count() >= 4 && word.chars().next() == name.chars().next() && edits(word, name) <= 1)
+}
+
+/// Edits between two words, a swap of neighbours counting as one.
+fn edits(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut d = vec![vec![0; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+/// A name as it's written in a sentence.
+pub fn shown(name: &str) -> String {
+    let mut chars = name.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+pub fn set_current(name: &str) {
     let person = people().into_iter().find(|p| p.name.eq_ignore_ascii_case(name.trim()));
     if let (Some(person), Some(dir)) = (person, dir()) {
         let _ = std::fs::write(dir.join("current"), format!("{}\n", person.name));
@@ -345,6 +401,22 @@ pub fn install() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_is_called_at_the_start_or_the_end() {
+        let names = ["bella".to_owned(), "fable".to_owned()];
+        let called = |message: &str| called_among(message, &names);
+        assert_eq!(called("Hey Bella, what's up?").as_deref(), Some("bella"));
+        assert_eq!(called("Uh, hey, Bela, the sign page?").as_deref(), Some("bella"));
+        assert_eq!(called("Fable, what has been pushed to main?").as_deref(), Some("fable"));
+        assert_eq!(called("Fabel what's new").as_deref(), Some("fable"));
+        assert_eq!(called("what's new on main, Fable?").as_deref(), Some("fable"));
+        // Only a name that addresses, not one that's talked about, nor a
+        // word that's merely close.
+        assert_eq!(called("make the voice that Fable uses a bit slower please"), None);
+        assert_eq!(called("tell me about the table"), None);
+        assert_eq!((edits("fabel", "fable"), edits("bela", "bella")), (1, 1));
+    }
 
     #[test]
     fn kokoro_voices_are_told_from_macs() {
