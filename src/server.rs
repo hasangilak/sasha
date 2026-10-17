@@ -133,6 +133,10 @@ fn read_client(id: ClientId, stream: UnixStream, events: &Sender<AppEvent>) {
             },
             Ok(ClientMessage::Input(event)) => AppEvent::Input(id, event),
             Ok(ClientMessage::Kill) => AppEvent::Kill,
+            Ok(ClientMessage::Control(request)) => match stream.take() {
+                Some(stream) => AppEvent::Control(request, stream),
+                None => continue,
+            },
             Err(_) => {
                 let _ = events.send(AppEvent::Gone(id));
                 return;

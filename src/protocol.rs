@@ -12,6 +12,7 @@ use crossterm::event::Event;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::control::Request;
 use crate::theme::Rgb;
 
 /// Bumped whenever the messages change.
@@ -23,6 +24,8 @@ pub const OUTPUT: u8 = 0;
 pub const EXIT: u8 = 1;
 /// Client → server: a JSON `ClientMessage`.
 const MESSAGE: u8 = 2;
+/// Server → client: the JSON `control::Reply` to a request.
+pub const REPLY: u8 = 3;
 
 const MAX_FRAME: usize = 64 << 20;
 
@@ -33,6 +36,8 @@ pub enum ClientMessage {
     Input(Event),
     /// Close every tab and stop the server.
     Kill,
+    /// A question or an order from another program, answered with a reply.
+    Control(Request),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

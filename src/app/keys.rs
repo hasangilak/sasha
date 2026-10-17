@@ -136,6 +136,8 @@ impl App {
             Command::PullRequests => self.open_prs(),
             Command::Ports => self.open_ports(0),
             Command::Files => self.browse_files(),
+            Command::Tower => self.toggle_tower(),
+            Command::TowerOn(engine) => self.tower_on(engine),
             Command::SideBars => self.toggle_side_bars(),
             Command::Narrower => self.resize_sidebar(-2),
             Command::Wider => self.resize_sidebar(2),

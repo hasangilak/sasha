@@ -115,6 +115,9 @@ pub struct SavedTab {
     /// Index into the state's `groups`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<usize>,
+    /// The tower's tab, which comes back running the tower.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tower: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

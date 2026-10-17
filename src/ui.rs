@@ -88,6 +88,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("P", "open pull requests (gh) and their diffs"),
         ("O", "open ports in your tabs; x x force-kills"),
         ("F", "browse the terminal's folder: ↑↓ ← →, ⏎ read, e edit, y copy path"),
+        ("T", "tower: pi steering every terminal (Claude or Codex); T again goes back"),
         ("i", "show / hide the ports and pull request bars"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
@@ -116,7 +117,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("2×-click badge", "rename the workspace (or 2× its name)"),
         ("heading – ×", "minimize / close a workspace's section"),
         ("header title", "this terminal's menu: rename, pin, group, close"),
-        ("header icons", "sidebar · new terminal · PR, ports, files bars · ⋮ all"),
+        ("header icons", "sidebar · new terminal · ♜ tower · PR, ports, files bars · ⋮ all"),
         ("files bar", "click a folder to open it, a file to read it; × hides"),
         ("drag an edge", "resize that bar (wide workspace bar: names)"),
         ("drag in terminal", "select & copy (2× word, 3× line)"),
@@ -333,7 +334,7 @@ fn render_menu(frame: &mut Frame, app: &App, menu: Menu) {
             badge: None,
             icon: (" ", p.text),
             title: entry.label,
-            detail: format!("{prefix} {}", entry.key),
+            detail: if entry.key.is_empty() { String::new() } else { format!("{prefix} {}", entry.key) },
         })
         .collect();
     let title = match menu {

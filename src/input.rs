@@ -66,6 +66,59 @@ pub fn encode_key(key: &KeyEvent, application_cursor: bool) -> Vec<u8> {
     }
 }
 
+/// A key by its name, as the tower's tools give it: `enter`, `esc`, `tab`,
+/// `shift-tab`, `up`, `pagedown`, `f5`, `space`, a character, any of them
+/// after `ctrl-`, `alt-` or `shift-`.
+pub fn parse_key(name: &str) -> Option<KeyEvent> {
+    let mut rest = name.trim();
+    let mut modifiers = KeyModifiers::NONE;
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let found = [("ctrl", KeyModifiers::CONTROL), ("control", KeyModifiers::CONTROL), ("alt", KeyModifiers::ALT), ("option", KeyModifiers::ALT), ("shift", KeyModifiers::SHIFT)]
+            .into_iter()
+            .find(|(word, _)| lower.len() > word.len() + 1 && lower.starts_with(word) && matches!(lower.as_bytes()[word.len()], b'-' | b'+'));
+        let Some((word, modifier)) = found else { break };
+        modifiers |= modifier;
+        rest = &rest[word.len() + 1..];
+    }
+    let code = match rest.to_ascii_lowercase().as_str() {
+        "enter" | "return" => KeyCode::Enter,
+        "esc" | "escape" => KeyCode::Esc,
+        "tab" if modifiers.contains(KeyModifiers::SHIFT) => {
+            modifiers.remove(KeyModifiers::SHIFT);
+            KeyCode::BackTab
+        }
+        "tab" => KeyCode::Tab,
+        "backtab" => KeyCode::BackTab,
+        "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
+        "insert" => KeyCode::Insert,
+        "space" => KeyCode::Char(' '),
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" | "page-up" => KeyCode::PageUp,
+        "pagedown" | "page-down" => KeyCode::PageDown,
+        lower => match (lower.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()), rest.chars().count()) {
+            (Some(n @ 1..=12), _) => KeyCode::F(n),
+            (_, 1) => KeyCode::Char(rest.chars().next()?),
+            _ => return None,
+        },
+    };
+    // Shift and a letter is the capital.
+    let code = match code {
+        KeyCode::Char(c) if modifiers.contains(KeyModifiers::SHIFT) => {
+            modifiers.remove(KeyModifiers::SHIFT);
+            KeyCode::Char(c.to_ascii_uppercase())
+        }
+        code => code,
+    };
+    Some(KeyEvent::new(code, modifiers))
+}
+
 /// The C0 control byte for Ctrl+<c>, following xterm's legacy mapping.
 pub fn control_byte(c: char) -> Option<u8> {
     match c {
@@ -152,5 +205,33 @@ pub fn encode_mouse(
             }
             Some(out)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bytes(name: &str) -> Vec<u8> {
+        encode_key(&parse_key(name).unwrap(), false)
+    }
+
+    #[test]
+    fn keys_go_by_their_names() {
+        assert_eq!(bytes("enter"), b"\r");
+        assert_eq!(bytes("Esc"), b"\x1b");
+        assert_eq!(bytes("ctrl-c"), [3]);
+        assert_eq!(bytes("ctrl+C"), [3]);
+        assert_eq!(bytes("shift-tab"), b"\x1b[Z");
+        assert_eq!(bytes("up"), b"\x1b[A");
+        assert_eq!(bytes("alt-b"), b"\x1bb");
+        assert_eq!(bytes("shift-a"), b"A");
+        assert_eq!(bytes("y"), b"y");
+        assert_eq!(bytes("-"), b"-");
+        assert_eq!(bytes("F"), b"F");
+        assert_eq!(bytes("f5"), b"\x1b[15~");
+        assert_eq!(bytes("space"), b" ");
+        assert!(parse_key("ctrl-").is_none());
+        assert!(parse_key("hello").is_none());
     }
 }

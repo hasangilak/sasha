@@ -39,6 +39,7 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `P` | open pull requests and their diffs (needs `gh`) |
 | `O` | ports your tabs listen on; `x` `x` force-kills |
 | `F` | browse the terminal's folder: arrows, `⏎` reads a file, `e` edits it |
+| `T` | the tower: an agent steering every terminal (`T` again goes back) |
 | `i` | show / hide the ports and pull request bars |
 | `q` | quit |
 | `?` | every key |
@@ -77,6 +78,31 @@ new terminal and `⋮` for everything else.
   won't sleep, hibernate or turn off and lock its screen, even with the window closed. It stays
   on across restarts until you switch it off.
 - **Your terminal's colours**, transparency included.
+
+## The tower
+
+`Ctrl+B T` (or ♜ in the header) opens the tower: [pi](https://pi.dev), the coding-agent harness,
+in a pinned tab, with every terminal in sasha as its tools. Ask it what your sessions are doing,
+hand a task to the Claude Code in one terminal and a review to the Codex in another, and it types
+the prompts, waits for them to finish, answers their menus when you say so, and comes back with
+the results. It can open terminals for new work and bring one on screen for you.
+
+It runs on your Claude subscription, or your ChatGPT one through Codex:
+
+- The first time, sasha offers to install pi (`npm install -g @earendil-works/pi-coding-agent`).
+  Then sign in inside the tower with `/login`: *Anthropic (Claude Pro/Max)*, *ChatGPT Plus/Pro
+  (Codex)*, or both.
+- `/codex` and `/claude` switch between them mid-conversation, and so does the tower's title
+  menu. It starts on the last one you used. `SASHA_TOWER_CLAUDE_MODEL` and
+  `SASHA_TOWER_CODEX_MODEL` pick the models (`anthropic/claude-opus-5-5` and
+  `openai-codex/gpt-6.1-sol` by default).
+- The tower keeps its conversation across restarts, and its notifications say what it found.
+
+Its tools come from `sasha mcp`, an MCP server you can give any agent: `list_terminals`,
+`read_terminal`, `agent_report` (what Claude or Codex last did, from its log), `send_prompt`,
+`send_keys`, `wait_for_terminal`, `open_terminal`, `show_terminal` and `close_terminal`.
+
+## More
 
 Use another prefix with `sasha --prefix ctrl-a`. Turn notifications off with `SASHA_NOTIFY=0`.
 

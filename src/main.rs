@@ -6,6 +6,7 @@ mod bars;
 mod client;
 mod clipboard;
 mod config;
+mod control;
 mod files;
 mod github;
 mod header;
@@ -13,6 +14,7 @@ mod highlight;
 mod input;
 mod layout;
 mod links;
+mod mcp;
 mod notify;
 mod panel_view;
 mod ports;
@@ -24,6 +26,7 @@ mod store;
 mod tab;
 mod termcolors;
 mod theme;
+mod tower;
 mod ui;
 mod workspace;
 
@@ -37,5 +40,7 @@ fn main() -> Result<()> {
         Command::Attach(config) => client::run(config),
         Command::Server => server::run(),
         Command::KillServer => client::kill_server(),
+        Command::Tower(engine) => tower::run(engine),
+        Command::Mcp => mcp::run(),
     }
 }

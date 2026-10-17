@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::panels::Panel;
+use crate::tower::Engine;
 use crate::files::Preview;
 use crate::tab::TabId;
 use crate::workspace::{GroupId, WorkspaceId};
@@ -130,6 +131,10 @@ pub enum Command {
     PullRequests,
     Ports,
     Files,
+    /// Goes to the tower, or back from it.
+    Tower,
+    /// Runs the tower on this subscription.
+    TowerOn(Engine),
     SideBars,
     Narrower,
     Wider,
@@ -188,6 +193,7 @@ impl Command {
             KeyCode::Char('P') => Command::PullRequests,
             KeyCode::Char('O') => Command::Ports,
             KeyCode::Char('F') => Command::Files,
+            KeyCode::Char('T') => Command::Tower,
             KeyCode::Char('i') => Command::SideBars,
             KeyCode::Char('<') => Command::Narrower,
             KeyCode::Char('>') => Command::Wider,
@@ -203,7 +209,13 @@ impl Command {
 
     pub fn after(self) -> After {
         match self {
-            Command::Jump(_) | Command::PreviousTab | Command::PreviousWorkspace | Command::NewTab | Command::Leave => {
+            Command::Jump(_)
+            | Command::PreviousTab
+            | Command::PreviousWorkspace
+            | Command::NewTab
+            | Command::Tower
+            | Command::TowerOn(_)
+            | Command::Leave => {
                 After::Leave
             }
             Command::GroupPicker

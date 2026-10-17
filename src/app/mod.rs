@@ -1,9 +1,11 @@
+mod control;
 mod files;
 mod header;
 mod keys;
 mod mouse;
 mod panels;
 mod state;
+mod tower;
 
 pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel};
 pub use state::{Confirm, Menu, Mode, Picker, PickerKind, Rename, Renaming};
@@ -25,6 +27,7 @@ use ratatui::style::Color;
 
 use crate::agents::Agent;
 use crate::config::Config;
+use crate::control::Request;
 use crate::awake::Awake;
 use crate::github::{FileDiff, Pr};
 use crate::ports::Port;
@@ -61,6 +64,8 @@ pub enum AppEvent {
     Gone(ClientId),
     /// `sasha --kill-server`.
     Kill,
+    /// Another program asking, on a connection to answer on.
+    Control(Request, UnixStream),
     /// Background work for the panels finishing.
     Prs(PathBuf, Result<Vec<Pr>, String>),
     PrFiles(u64, Result<Vec<FileDiff>, String>),
@@ -194,6 +199,8 @@ pub struct App {
     /// The width it goes back to when it shows names again.
     wide_activity_width: u16,
     drag: Option<Drag>,
+    /// The tab the tower was opened from, to go back to.
+    before_tower: Option<TabId>,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
     next_group_id: GroupId,
@@ -254,6 +261,7 @@ impl App {
             activity_width: layout::ACTIVITY_COMPACT,
             wide_activity_width: layout::ACTIVITY_WIDE_DEFAULT,
             drag: None,
+            before_tower: None,
             next_tab_id: 0,
             next_workspace_id: 0,
             next_group_id: 0,
@@ -364,7 +372,9 @@ impl App {
     /// workspace's, if that's gone), at the end of workspace `index`.
     fn reopen(&mut self, index: usize, saved: SavedTab, group: Option<GroupId>) -> Option<TabId> {
         let cwd = if saved.cwd.is_dir() { saved.cwd } else { self.workspaces[index].path.clone() };
-        match self.spawn_tab(&cwd) {
+        // The tower comes back as the tower, its conversation and all.
+        let spawned = if saved.tower { self.spawn_tower(None) } else { self.spawn_tab(&cwd) };
+        match spawned {
             Ok(mut tab) => {
                 tab.pinned = saved.pinned;
                 tab.custom_prefix = saved.title;
@@ -1580,8 +1590,9 @@ impl App {
                     continue;
                 }
                 tab.last_notified = Some(Instant::now());
-                // Claude and Codex get told from what they did.
-                match (Agent::of(tab.process_name()), tab.program_cwd()) {
+                // Claude, Codex and the tower get told from what they did.
+                let agent = if tab.tower { Some(Agent::Pi) } else { Agent::of(tab.process_name()) };
+                match (agent, tab.program_cwd()) {
                     (Some(agent), Some(cwd)) => notify::send_agent(agent, cwd, tab.prefix(), tab.title(), news),
                     _ => notify::send(&tab.title(), &news),
                 }
@@ -1854,6 +1865,7 @@ impl App {
                 }
             }
             AppEvent::Kill => self.quit = true,
+            AppEvent::Control(request, stream) => self.answer(request, stream),
             AppEvent::Prs(dir, prs) => self.prs_loaded(dir, prs),
             AppEvent::PrFiles(number, files) => self.pr_files_loaded(number, files),
             AppEvent::Ports(ports) => self.ports_loaded(ports),
@@ -1981,13 +1993,8 @@ impl App {
             Mode::Picker(picker) => return picker.query.push_str(line),
             _ => {}
         }
-        let Some(tab) = self.ws_mut().active_tab_mut() else { return };
-        // Terminals send pasted line breaks as carriage returns.
-        let text = text.replace("\r\n", "\r").replace('\n', "\r");
-        if tab.screen().bracketed_paste() {
-            tab.write(format!("\x1b[200~{text}\x1b[201~"));
-        } else {
-            tab.write(text);
+        if let Some(tab) = self.ws_mut().active_tab_mut() {
+            tab.paste(text);
         }
     }
 }
@@ -2012,6 +2019,7 @@ fn save_workspace(ws: &Workspace, groups: &[Group]) -> SavedWorkspace {
             title: tab.custom_prefix.clone(),
             pinned: tab.pinned,
             group: tab.group.and_then(|id| groups.iter().position(|g| g.id == id)),
+            tower: tab.tower,
         })
         .collect();
     SavedWorkspace {

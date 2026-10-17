@@ -53,6 +53,8 @@ pub enum HeaderButton {
     /// Collapses and expands the tab sidebar.
     Sidebar,
     NewTerminal,
+    /// Goes to the tower and back.
+    Tower,
     PullRequests,
     Ports,
     Files,
@@ -62,9 +64,10 @@ pub enum HeaderButton {
 
 impl HeaderButton {
     /// In order, left to right.
-    pub const ALL: [HeaderButton; 6] = [
+    pub const ALL: [HeaderButton; 7] = [
         HeaderButton::Sidebar,
         HeaderButton::NewTerminal,
+        HeaderButton::Tower,
         HeaderButton::PullRequests,
         HeaderButton::Ports,
         HeaderButton::Files,
@@ -75,6 +78,7 @@ impl HeaderButton {
         match self {
             HeaderButton::Sidebar => "◧",
             HeaderButton::NewTerminal => ">_",
+            HeaderButton::Tower => "♜",
             HeaderButton::PullRequests => "±",
             HeaderButton::Ports => "⇄",
             HeaderButton::Files => "▤",
@@ -91,6 +95,7 @@ impl HeaderButton {
         match self {
             HeaderButton::Sidebar => ("tab sidebar", "s"),
             HeaderButton::NewTerminal => ("new terminal", "t"),
+            HeaderButton::Tower => ("tower: steer every terminal", "T"),
             HeaderButton::PullRequests => ("pull requests bar", "P"),
             HeaderButton::Ports => ("ports bar", "O"),
             HeaderButton::Files => ("files bar", "F"),
@@ -648,7 +653,7 @@ mod tests {
         // terminals keep their title room, and the menu of everything.
         let narrow = Layout::new(Rect::new(0, 0, 60, 20), ACTIVITY_COMPACT, DEFAULT_WIDTH, true, Bars::default());
         let buttons: Vec<_> = narrow.header_buttons().into_iter().map(|(b, _)| b).collect();
-        assert_eq!(buttons, [HeaderButton::Sidebar, HeaderButton::NewTerminal, HeaderButton::More]);
+        assert_eq!(buttons, [HeaderButton::Sidebar, HeaderButton::NewTerminal, HeaderButton::Tower, HeaderButton::More]);
         let narrow = Layout::new(Rect::new(0, 0, 110, 20), ACTIVITY_COMPACT, 80, false, Bars::default());
         let buttons = narrow.header_buttons();
         assert!(narrow.title().width >= TITLE_MIN);

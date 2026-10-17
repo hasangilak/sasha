@@ -9,6 +9,7 @@ use super::App;
 use super::state::{Command, Menu, Mode, Picker, PickerKind};
 use crate::layout::HeaderButton;
 use crate::tab::split_glyph;
+use crate::tower::Engine;
 use crate::ui;
 
 /// A row of a menu: what it says, its key after the prefix, and what it
@@ -36,6 +37,7 @@ impl App {
         match button {
             HeaderButton::Sidebar => !self.collapsed && !self.layout.sidebar.is_empty(),
             HeaderButton::NewTerminal => false,
+            HeaderButton::Tower => self.tower_on_screen(),
             HeaderButton::PullRequests => !self.layout.pr_bar.is_empty(),
             HeaderButton::Ports => !self.layout.ports_bar.is_empty(),
             HeaderButton::Files => !self.layout.files_bar.is_empty(),
@@ -55,6 +57,7 @@ impl App {
         match button {
             HeaderButton::Sidebar => self.set_collapsed(!self.collapsed),
             HeaderButton::NewTerminal => self.run_command(Command::NewTab),
+            HeaderButton::Tower => self.run_command(Command::Tower),
             HeaderButton::PullRequests => self.toggle_prs_bar(),
             HeaderButton::Ports => self.toggle_ports_bar(),
             HeaderButton::Files => self.toggle_files_bar(),
@@ -82,12 +85,20 @@ impl App {
                 if grouped {
                     entries.push(entry("Take out of its group", "u", Command::Ungroup));
                 }
+                if tab.is_some_and(|t| t.tower) {
+                    let other = match self.tower_engine() {
+                        Engine::Claude => entry("Run on Codex (ChatGPT subscription)", "", Command::TowerOn(Engine::Codex)),
+                        Engine::Codex => entry("Run on Claude (Claude subscription)", "", Command::TowerOn(Engine::Claude)),
+                    };
+                    entries.insert(0, other);
+                }
                 entries.push(entry("Scroll back", "[", Command::Scroll));
                 entries.push(entry("Close", "x", Command::Close));
                 entries
             }
             Menu::More => vec![
                 entry("New terminal", "t", Command::NewTab),
+                entry(if self.tower_on_screen() { "Back from the tower" } else { "Tower: steer every terminal" }, "T", Command::Tower),
                 entry("Search terminals", "/", Command::Search),
                 entry("Workspaces", "w", Command::Workspaces),
                 entry("Browse files", "F", Command::Files),

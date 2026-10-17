@@ -3,12 +3,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
 use crate::input;
+use crate::tower::Engine;
 
 const USAGE: &str = "\
 sasha — a terminal with Chrome-style vertical tabs
 
 USAGE:
     sasha [--prefix KEY]
+    sasha tower [claude|codex]
+    sasha mcp
 
 Your tabs live in a background server: closing the window (or detaching
 with the prefix, then d) leaves them running, and running sasha again
@@ -21,6 +24,13 @@ OPTIONS:
     -h, --help         Show this help.
     -V, --version      Show the version.
 
+COMMANDS:
+    tower              Run pi as the control tower over your terminals, on your
+                       Claude subscription (default) or Codex. The tower's tab
+                       (prefix, then T) runs this.
+    mcp                Serve the terminals as tools over MCP on stdin/stdout:
+                       list, read, prompt, wait for, open and close them.
+
 Press the prefix, then ? inside sasha to see every key binding.";
 
 /// What this run of sasha does.
@@ -30,6 +40,10 @@ pub enum Command {
     /// Be the server (clients start it).
     Server,
     KillServer,
+    /// Be the tower: pi, steering the terminals.
+    Tower(Option<Engine>),
+    /// Serve the terminals as MCP tools.
+    Mcp,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,7 +56,19 @@ impl Config {
     /// right away (after printing help or the version).
     pub fn from_args() -> Result<Option<Command>> {
         let mut prefix = std::env::var("SASHA_PREFIX").ok();
-        let mut args = std::env::args().skip(1);
+        let mut args = std::env::args().skip(1).peekable();
+        match args.peek().map(String::as_str) {
+            Some("mcp") => return Ok(Some(Command::Mcp)),
+            Some("tower") => {
+                args.next();
+                let engine = match args.next() {
+                    Some(name) => Some(Engine::parse(&name).ok_or_else(|| anyhow::anyhow!("the tower runs on claude or codex, not `{name}`"))?),
+                    None => None,
+                };
+                return Ok(Some(Command::Tower(engine)));
+            }
+            _ => {}
+        }
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--server" => return Ok(Some(Command::Server)),

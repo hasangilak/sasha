@@ -24,6 +24,8 @@ const BODY_MAX: usize = 220;
 pub enum Agent {
     Claude,
     Codex,
+    /// pi, as the tower.
+    Pi,
 }
 
 impl Agent {
@@ -36,10 +38,11 @@ impl Agent {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Agent::Claude => "Claude",
             Agent::Codex => "Codex",
+            Agent::Pi => "The tower",
         }
     }
 
@@ -49,6 +52,7 @@ impl Agent {
         match self {
             Agent::Claude => claude_turn(&read_tail(&claude_log(cwd)?)),
             Agent::Codex => codex_turn(&read_tail(&codex_log(cwd)?)),
+            Agent::Pi => pi_turn(&read_tail(&pi_log(cwd)?)),
         }
     }
 
@@ -59,7 +63,8 @@ impl Agent {
         if let Some(ask) = &report.waiting {
             return (format!("{name} needs you · {place}"), clip(ask, BODY_MAX));
         }
-        let mut heading = format!("{name} finished · {place}");
+        // The tower is a place of its own.
+        let mut heading = if self == Agent::Pi { format!("{name} finished") } else { format!("{name} finished · {place}") };
         if let Some(took) = report.took {
             heading.push_str(&format!(" · {}", notify::duration(took)));
         }
@@ -130,6 +135,15 @@ fn codex_log(cwd: &Path) -> Option<PathBuf> {
     let mut logs: Vec<(SystemTime, PathBuf)> = fresh_jsonl(logs).collect();
     logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     logs.into_iter().map(|(_, path)| path).find(|path| codex_cwd(path).as_deref() == Some(cwd))
+}
+
+/// pi's log of the newest session in `cwd`: in its sessions folder, under
+/// the path with its separators made `-`, between `--`.
+fn pi_log(cwd: &Path) -> Option<PathBuf> {
+    let base = std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from).or_else(|| Some(home()?.join(".pi/agent")))?;
+    let path = cwd.to_string_lossy();
+    let name = format!("--{}--", path.trim_start_matches('/').replace(['/', '\\', ':'], "-"));
+    newest(fs::read_dir(base.join("sessions").join(name)).ok()?.flatten().map(|e| e.path()))
 }
 
 fn sorted_dirs(dir: &Path) -> Vec<PathBuf> {
@@ -272,6 +286,48 @@ fn claude_turn(entries: &[Value]) -> Option<Report> {
     report.files = files.len();
     // A call still open when the agent has gone quiet is waiting for a yes.
     report.waiting = open.into_values().next();
+    Some(report)
+}
+
+/// pi's last turn: the prompt that started it, its last words, the
+/// commands it ran and files it changed.
+fn pi_turn(entries: &[Value]) -> Option<Report> {
+    let mut report = None::<Report>;
+    let mut files = HashSet::new();
+    let mut started = None;
+    for entry in entries.iter().filter(|e| str_at(e, "/type") == "message") {
+        let content = entry.pointer("/message/content");
+        let at = entry.pointer("/message/timestamp").and_then(Value::as_u64);
+        match str_at(entry, "/message/role") {
+            "user" => {
+                report = Some(Report { prompt: text_of(content), ..Report::default() });
+                files.clear();
+                started = at;
+            }
+            "assistant" => {
+                let report = report.get_or_insert_with(Report::default);
+                for block in content.and_then(Value::as_array).into_iter().flatten() {
+                    match str_at(block, "/type") {
+                        "text" if !str_at(block, "/text").trim().is_empty() => report.answer = str_at(block, "/text").to_owned(),
+                        "toolCall" => match str_at(block, "/name") {
+                            "bash" => report.commands += 1,
+                            "edit" | "write" => {
+                                files.insert(str_at(block, "/arguments/path").to_owned());
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+                if let (Some(start), Some(end)) = (started, at) {
+                    report.took = Some(Duration::from_millis(end.saturating_sub(start)));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut report = report?;
+    report.files = files.len();
     Some(report)
 }
 
@@ -496,6 +552,28 @@ mod tests {
         );
         let (heading, body) = Agent::Codex.message(&codex_turn(&waiting).unwrap(), "web");
         assert_eq!((heading.as_str(), body.as_str()), ("Codex needs you · web", "Wants to run: rm -rf dist"));
+    }
+
+    #[test]
+    fn pi_turns_say_what_the_tower_did() {
+        let log = lines(
+            r#"{"type":"session","version":3,"id":"s","cwd":"/t"}
+{"type":"message","id":"a","message":{"role":"user","content":"old","timestamp":1000}}
+{"type":"message","id":"b","message":{"role":"assistant","content":[{"type":"text","text":"Old."}],"timestamp":2000}}
+{"type":"message","id":"c","message":{"role":"user","content":[{"type":"text","text":"Get the api tests green"}],"timestamp":10000}}
+{"type":"message","id":"d","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"toolCall","id":"1","name":"mcp__sasha__send_prompt","arguments":{"id":3}}],"timestamp":11000}}
+{"type":"message","id":"e","message":{"role":"toolResult","toolCallId":"1","content":[{"type":"text","text":"Sent"}],"timestamp":11500}}
+{"type":"message","id":"f","message":{"role":"assistant","content":[{"type":"toolCall","id":"2","name":"bash","arguments":{"command":"ls"}},{"type":"toolCall","id":"3","name":"edit","arguments":{"path":"a.rs"}}],"timestamp":12000}}
+{"type":"message","id":"g","message":{"role":"assistant","content":[{"type":"text","text":"All green: api 42 passed."}],"timestamp":70000}}"#,
+        );
+        let report = pi_turn(&log).unwrap();
+        assert_eq!(report.prompt, "Get the api tests green");
+        assert_eq!(report.answer, "All green: api 42 passed.");
+        assert_eq!((report.commands, report.files, report.waiting.as_deref()), (1, 1, None));
+        assert_eq!(report.took, Some(Duration::from_secs(60)));
+        let (heading, body) = Agent::Pi.message(&report, "tower");
+        assert_eq!(heading, "The tower finished · 1m 0s");
+        assert!(body.starts_with("All green"));
     }
 
     #[test]

@@ -122,6 +122,8 @@ pub struct Tab {
     pub group: Option<GroupId>,
     /// The group it was in before it was pinned: unpinning puts it back.
     pub group_before_pin: Option<GroupId>,
+    /// The tower's terminal: pi, watching and steering the others.
+    pub tower: bool,
     /// Name of the process in the foreground of this tab's tty.
     fg_name: String,
     fg_pgid: Option<i32>,
@@ -224,6 +226,7 @@ impl Tab {
             pinned: false,
             group: None,
             group_before_pin: None,
+            tower: false,
             fg_name: String::new(),
             fg_pgid: shell_pid,
             title_owner: None,
@@ -272,6 +275,55 @@ impl Tab {
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {
         let _ = self.input.send(bytes.into());
+    }
+
+    /// Types `text` the way a terminal sends a paste: line breaks as
+    /// carriage returns, bracketed when the program asked for that.
+    pub fn paste(&self, text: &str) {
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        if self.screen().bracketed_paste() {
+            self.write(format!("\x1b[200~{text}\x1b[201~"));
+        } else {
+            self.write(text);
+        }
+    }
+
+    /// The last `lines` lines of text: the screen, and the scrollback above
+    /// it when that's asked for. Rows a long line wrapped onto join it
+    /// again, and trailing blank lines are left out.
+    pub fn text(&mut self, lines: usize) -> String {
+        let screen = self.parser.screen_mut();
+        let (rows, cols) = screen.size();
+        let viewed = screen.scrollback();
+        screen.set_scrollback(usize::MAX);
+        let mut offset = lines.saturating_sub(usize::from(rows)).min(screen.scrollback());
+        // Each row, and whether it runs on into the next.
+        let mut text: Vec<(String, bool)> = Vec::new();
+        let mut take_rows = |screen: &vt100::Screen, take: usize| {
+            for (row, line) in (0..).zip(screen.rows(0, cols).take(take)) {
+                text.push((line, screen.row_wrapped(row)));
+            }
+        };
+        // The view `offset` lines up starts at the line wanted next.
+        while offset > 0 {
+            screen.set_scrollback(offset);
+            let take = offset.min(usize::from(rows));
+            take_rows(screen, take);
+            offset -= take;
+        }
+        screen.set_scrollback(0);
+        take_rows(screen, usize::from(rows));
+        screen.set_scrollback(viewed);
+        let mut joined = String::new();
+        for (line, wrapped) in text {
+            if wrapped {
+                joined.push_str(&line);
+            } else {
+                joined.push_str(line.trim_end());
+                joined.push('\n');
+            }
+        }
+        joined.trim_end().to_owned()
     }
 
     /// Feeds child output into the emulator. Returns an OSC 52 clipboard
