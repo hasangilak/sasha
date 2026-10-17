@@ -230,6 +230,8 @@ pub struct App {
     pane_last_key: Option<(TabId, Instant)>,
     /// When to press Enter on messages typed into sessions.
     enters: Vec<(TabId, Instant)>,
+    /// Sessions a handler is waiting on, and when it last looked.
+    watched: HashMap<TabId, Instant>,
     /// The tower's sessions whose terminals are gone.
     ended_missions: Vec<Ended>,
     /// You, being recorded for the tower.
@@ -309,6 +311,7 @@ impl App {
             tower_last_key: None,
             pane_last_key: None,
             enters: Vec::new(),
+            watched: HashMap::new(),
             ended_missions: Vec::new(),
             recording: None,
             transcribing: false,

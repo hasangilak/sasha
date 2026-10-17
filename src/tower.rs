@@ -19,6 +19,12 @@ const EXTENSION: &str = include_str!("tower/extension.ts");
 const PROMPT: &str = include_str!("tower/prompt.md");
 /// What `role.md` starts as: how to use it, in a comment.
 const ROLE_TEMPLATE: &str = include_str!("tower/role.md");
+/// On Claude Code, the tower hands each session to a subagent: how it does
+/// that, and the subagent's own role.
+const DELEGATE: &str = include_str!("tower/delegate.md");
+const SESSION_HANDLER: &str = include_str!("tower/session-handler.md");
+/// How long Claude Code lets a tool call go without word: waits are long.
+const CLAUDE_TOOL_IDLE: &str = "3700000";
 /// pi's npm package.
 const PACKAGE: &str = "@earendil-works/pi-coding-agent";
 /// The tower's tools Claude Code may use without asking each time: all but
@@ -93,9 +99,14 @@ pub fn described() -> &'static str {
     }
 }
 
-/// The tower's role: sasha's, then yours from `role.md`.
-pub fn role() -> String {
+/// The tower's role on `engine`: sasha's, how it delegates where it can,
+/// then yours from `role.md`.
+pub fn role(engine: Engine) -> String {
     let mut role = PROMPT.to_owned();
+    if engine == Engine::Claude {
+        role.push('\n');
+        role.push_str(DELEGATE);
+    }
     let yours = dir().and_then(|dir| std::fs::read_to_string(dir.join("role.md")).ok()).map(|text| uncommented(&text));
     if let Some(yours) = yours.filter(|text| !text.is_empty()) {
         role.push_str("\n\n## From the user\n\nThe user wrote these instructions for you themselves. Where they differ from the above, follow them.\n\n");
@@ -177,7 +188,9 @@ fn run_claude(dir: &Path) -> Result<()> {
         .arg("--settings")
         .arg(hooks::tower_hooks()?)
         .args(["--allowedTools", CLAUDE_ALLOWED])
-        .args(["--append-system-prompt", &role()])
+        .args(["--append-system-prompt", &role(Engine::Claude)])
+        .args(["--agents", &subagents().to_string()])
+        .env("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", CLAUDE_TOOL_IDLE)
         .env("MCP_TOOL_TIMEOUT", CLAUDE_TOOL_TIMEOUT);
     if let Some(model) = claude_model() {
         command.args(["--model", &model]);
@@ -187,6 +200,23 @@ fn run_claude(dir: &Path) -> Result<()> {
     }
     let err = command.exec();
     bail!("can't start {}: {err}", claude.display())
+}
+
+/// The tower's subagents on Claude Code: a session handler, which takes
+/// one session's sending, waiting, routine approvals and checking off its
+/// hands. It has sasha's tools but closing a terminal, and can read the
+/// project to check a claim.
+fn subagents() -> serde_json::Value {
+    json!({
+        "session-handler": {
+            "description": "Handles one sasha terminal session for the tower: sends it a brief (or opens it with one), waits while it works, approves routine steps, checks the result against the brief, and returns a short report. Use one per session; run several in parallel.",
+            "prompt": SESSION_HANDLER,
+            "tools": ["mcp__sasha__*", "Read", "Grep", "Glob"],
+            "disallowedTools": ["mcp__sasha__close_terminal"],
+            "mcpServers": ["sasha"],
+            "model": "inherit",
+        }
+    })
 }
 
 /// The MCP server Claude Code starts: this sasha's `sasha mcp`, told which
@@ -209,7 +239,7 @@ fn run_pi(dir: &Path) -> Result<()> {
     let extension = dir.join("extension.ts");
     let prompt = dir.join("prompt.md");
     std::fs::write(&extension, EXTENSION)?;
-    std::fs::write(&prompt, role())?;
+    std::fs::write(&prompt, role(Engine::Codex))?;
     let Some(pi) = find_pi().or_else(install_pi) else { return Ok(()) };
 
     let mut command = Command::new(&pi);
@@ -342,6 +372,16 @@ mod tests {
         assert_eq!(Engine::parse("chatgpt"), Some(Engine::Codex));
         assert_eq!(Engine::parse("gemini"), None);
         assert!(codex_model().contains('/'));
+    }
+
+    #[test]
+    fn on_claude_the_tower_hands_sessions_to_handlers() {
+        assert!(role(Engine::Claude).contains("session-handler"));
+        assert!(!role(Engine::Codex).contains("session-handler"));
+        let agents = subagents();
+        let handler = &agents["session-handler"];
+        assert!(handler["prompt"].as_str().is_some_and(|p| p.contains("wait_for_any")));
+        assert_eq!(handler["disallowedTools"][0], "mcp__sasha__close_terminal");
     }
 
     #[test]

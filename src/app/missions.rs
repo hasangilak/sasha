@@ -15,6 +15,8 @@ const TOWER_IDLE: Duration = Duration::from_secs(3);
 const YOUR_TURN: Duration = Duration::from_secs(30);
 /// Between typing the news into the tower and the Enter that sends it.
 const BEFORE_ENTER: Duration = Duration::from_millis(300);
+/// A session stays watched by a handler this long after its last look.
+const WATCHED: Duration = Duration::from_secs(10);
 /// How a message from another session starts, as its reader sees it.
 const MAIL_MARK: &str = "[message from";
 
@@ -169,8 +171,21 @@ impl App {
     }
 
     /// The news about `ids` (else all), taken off the pile with `take`.
+    /// A wait on particular sessions (a session handler's) marks them
+    /// watched: their news stays for it rather than going to the tower.
     pub(super) fn updates(&mut self, ids: Option<&[TabId]>, take: bool) -> Vec<Update> {
-        let wanted = |u: &Update| ids.is_none_or(|ids| ids.contains(&u.id));
+        let now = Instant::now();
+        if let Some(ids) = ids {
+            for id in ids {
+                self.watched.insert(*id, now);
+            }
+        }
+        self.watched.retain(|_, at| at.elapsed() < WATCHED);
+        let watched = &self.watched;
+        let wanted = |u: &Update| match ids {
+            Some(ids) => ids.contains(&u.id),
+            None => !watched.contains_key(&u.id),
+        };
         let news: Vec<Update> = self.tower_inbox.iter().filter(|u| wanted(u)).cloned().collect();
         if take {
             self.tower_inbox.retain(|u| !wanted(u));
@@ -178,9 +193,10 @@ impl App {
         news
     }
 
-    /// How much news the tower hasn't heard.
+    /// How much news the tower hasn't heard, but what handlers wait for.
     pub fn tower_news(&self) -> usize {
-        self.tower_inbox.len()
+        let watched = |id: &TabId| self.watched.get(id).is_some_and(|at| at.elapsed() < WATCHED);
+        self.tower_inbox.iter().filter(|u| !watched(&u.id)).count()
     }
 
     pub fn tower_autopilot(&self) -> bool {
@@ -221,7 +237,7 @@ impl App {
             }
             return;
         }
-        if !self.tower_autopilot || self.tower_inbox.is_empty() || self.tower_enter_at.is_some() {
+        if !self.tower_autopilot || self.tower_news() == 0 || self.tower_enter_at.is_some() {
             return;
         }
         let Some(tower) = &self.tower else { return };
@@ -230,7 +246,11 @@ impl App {
         if !idle || typing {
             return;
         }
-        let news: Vec<String> = self.tower_inbox.drain(..).map(|u| format!("- {}", u.text)).collect();
+        // News a session handler is waiting for is its, not the tower's.
+        let news: Vec<String> = self.updates(None, true).into_iter().map(|u| format!("- {}", u.text)).collect();
+        if news.is_empty() {
+            return;
+        }
         let message = format!(
             "[sasha] News from your sessions:\n{}\nLook into what needs it, carry on with what you were asked to see through, and tell me briefly.",
             news.join("\n")

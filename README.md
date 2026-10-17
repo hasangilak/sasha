@@ -108,7 +108,10 @@ restart it; each picks up its own last conversation.
 workstreams, picks or opens a session for each (named after its job, Claude Code by default,
 Codex for second opinions), briefs each fully with a definition of done, keeps them out of each
 other's files, acts on every finish, approval, question or failure, and brings you the big
-picture and only the decisions that are yours. **Edit its role** in its menu opens `role.md`,
+picture and only the decisions that are yours. On Claude it hands each session to a
+`session-handler` subagent of its own, several in parallel: the handler sends the brief, waits,
+approves routine steps, checks the result against the brief and reports back, so the tower's
+conversation stays on the plan. **Edit its role** in its menu opens `role.md`,
 where your own instructions go ("Codex reviews, Claude Code builds", "report in Persian");
 they win where they differ, from the tower's next start.
 
