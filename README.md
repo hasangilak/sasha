@@ -40,6 +40,7 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `O` | ports your tabs listen on; `x` `x` force-kills |
 | `F` | browse the terminal's folder: arrows, `⏎` reads a file, `e` edits it |
 | `T` | the tower: an agent steering every terminal (`T` again hides it) |
+| `S` | stop the tower talking |
 | `i` | show / hide the ports and pull request bars |
 | `q` | quit |
 | `?` | every key |
@@ -146,7 +147,10 @@ with its model voice, `engine` (`kokoro` or `chatterbox`), and optionally `pace`
 ```
 
 Then "hey Bella, tell me about the open PRs" or "Fable, what's been pushed to main?" brings that
-voice up: the tower answers in it, and keeps it until you call the other. Without Kokoro it uses your Mac's
+voice up: the tower answers in it, and keeps it until you call the other.
+
+**Stop it talking** with `Ctrl+B` then `Shift+S`, the **■ stop** beside the tower's name while it
+talks, or by starting to type to it; `sasha hush` does it from anywhere (a keyboard shortcut, say). Without Kokoro it uses your Mac's
 system voice.
 Talk to it with Claude Code's or Codex's own voice input.
 

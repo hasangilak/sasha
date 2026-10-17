@@ -132,6 +132,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("O", "open ports in your tabs; x x force-kills"),
         ("F", "browse the terminal's folder: ↑↓ ← →, ⏎ read, e edit, y copy path"),
         ("T", "tower: show it and type there; T again hides it (it keeps running)"),
+        ("S", "stop the tower talking (so does typing to it, or ■ stop)"),
         ("i", "show / hide the ports and pull request bars"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),

@@ -32,6 +32,7 @@ COMMANDS:
                        list, read, prompt, wait for, open and close them.
     event, inbox       Run by agents' hooks and the tower's, to pass news on.
     voice install      Set Kokoro up, a natural voice for the tower (needs uv).
+    hush               Stop the tower talking, from anywhere.
 
 Press the prefix, then ? inside sasha to see every key binding.";
 
@@ -56,6 +57,8 @@ pub enum Command {
     Agent(std::path::PathBuf),
     /// The tower's hook: say the big picture of its answer.
     Speak,
+    /// Stop the tower talking.
+    Hush,
     /// Set Kokoro up, the tower's natural voice.
     VoiceInstall,
 }
@@ -80,6 +83,7 @@ impl Config {
                 return Ok(Some(Command::Inbox(prompt)));
             }
             Some("speak") => return Ok(Some(Command::Speak)),
+            Some("hush") => return Ok(Some(Command::Hush)),
             Some("voice") => {
                 args.next();
                 return match args.next().as_deref() {

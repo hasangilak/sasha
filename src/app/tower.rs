@@ -56,6 +56,11 @@ impl App {
         let now = Instant::now();
         if self.tower_focused() {
             self.tower_last_key = Some(now);
+            // Starting a new message talks over it: it stops.
+            if self.voice_speaking {
+                crate::voice::hush();
+                self.voice_speaking = false;
+            }
         } else if let Some(tab) = self.active_tab() {
             self.pane_last_key = Some((tab.id, now));
         }

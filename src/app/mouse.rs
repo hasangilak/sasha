@@ -179,6 +179,7 @@ impl App {
             Hit::FilesDivider => self.drag = Some(Drag::FilesDivider),
             Hit::TowerDivider => self.drag = Some(Drag::TowerDivider),
             Hit::TowerTitle => self.open_menu(Menu::Tower),
+            Hit::TowerHush => self.hush(),
             Hit::File(index) => self.click_file(index),
             Hit::FilesHide => self.hide_files(),
             // Another workspace's tab or group, stacked in the sidebar.

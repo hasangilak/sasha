@@ -6,7 +6,8 @@ ENGINE]`, which gets that voice ready straight away. Each connection sends one l
 of JSON, either
   {"say": [{"text": "...", "tone": "pleased"}, ...], "voice": "bm_fable",
    "engine": "chatterbox", "pace": 0.9}
-or {"stop": true}. Something new to say cuts off what it was saying.
+or {"stop": true}, or {"status": true}, answered with {"speaking": true or
+false, "version": ...}, or {"quit": true}. Something new to say cuts off what it was saying.
 
 Kokoro reads plainly in any of its voices. Chatterbox speaks with
 feeling: it copies the voice, and the delivery, from a recording of that
@@ -88,7 +89,7 @@ loading = threading.Lock()
 conds = {}
 lock = threading.Lock()
 # Which request is current, and the player playing it.
-current = {"id": 0, "player": None}
+current = {"id": 0, "player": None, "busy": False}
 last_used = time.time()
 # What there is to say, for the worker, newest last.
 jobs = queue.Queue()
@@ -159,6 +160,7 @@ def stop():
         current["id"] += 1
         player = current["player"]
         current["player"] = None
+        current["busy"] = False
     if player:
         player.cut()
 
@@ -252,7 +254,13 @@ def say(parts, voice, engine, mine, pace):
     except Exception:
         traceback.print_exc()
     # Waiting for it to finish playing isn't the worker's job.
-    threading.Thread(target=out.finish, daemon=True).start()
+    def finished():
+        out.finish()
+        with lock:
+            if current["id"] == mine:
+                current["busy"] = False
+
+    threading.Thread(target=finished, daemon=True).start()
 
 
 def pieces(text, tone, voice, engine, pace):
@@ -299,10 +307,22 @@ def handle(conn):
     global last_used
     with conn:
         line = conn.makefile("r").readline()
-    try:
-        request = json.loads(line)
-    except ValueError:
-        return
+        try:
+            request = json.loads(line)
+        except ValueError:
+            return
+        # Whether it's talking, for sasha to show a stop button; and which
+        # speaker this is, for sasha to replace an older one.
+        if request.get("status"):
+            with lock:
+                speaking = current["busy"]
+            answer = {"speaking": speaking, "version": os.environ.get("SASHA_SPEAKER_VERSION", "")}
+            conn.sendall((json.dumps(answer) + "\n").encode())
+            return
+        if request.get("quit"):
+            stop()
+            os.remove(SOCKET)
+            os._exit(0)
     last_used = time.time()
     if request.get("stop"):
         stop()
@@ -313,6 +333,7 @@ def handle(conn):
         stop()
         with lock:
             mine = current["id"]
+            current["busy"] = True
         pace = min(max(float(request.get("pace") or 1.0), 0.5), 1.5)
         jobs.put((parts, request.get("voice") or "af_heart", request.get("engine") or "kokoro", mine, pace))
     last_used = time.time()

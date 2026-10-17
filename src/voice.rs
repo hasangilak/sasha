@@ -309,6 +309,7 @@ fn start_speaker(python: &Path, dir: &Path, socket: &Path) -> Result<()> {
     let mut command = Command::new(python);
     let how = speaking();
     command.arg(&script).arg(socket).arg(dir).arg(&how.voice).arg(&how.engine);
+    command.env("SASHA_SPEAKER_VERSION", speaker_version());
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
     // A session of its own: it outlives whoever asked first.
     // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
@@ -320,12 +321,34 @@ fn start_speaker(python: &Path, dir: &Path, socket: &Path) -> Result<()> {
 }
 
 /// Starts the speaker if it isn't running, without waiting for it: the
-/// tower's voice is ready by the time it has something to say.
+/// tower's voice is ready by the time it has something to say. One left
+/// from an older sasha is replaced.
 pub fn warm_up() {
     let (Some(python), Some(dir), Ok(socket)) = (kokoro_python(), dir(), speaker_socket()) else { return };
-    if UnixStream::connect(&socket).is_err() {
-        let _ = start_speaker(&python, &dir, &socket);
+    if UnixStream::connect(&socket).is_ok() {
+        if speaker_status().and_then(|s| s["version"].as_str().map(str::to_owned)).as_deref() == Some(speaker_version().as_str()) {
+            return;
+        }
+        let _ = tell_speaker(&socket, &json!({"quit": true}));
+        std::thread::sleep(Duration::from_millis(300));
     }
+    let _ = start_speaker(&python, &dir, &socket);
+}
+
+/// Which speaker this sasha writes: a fingerprint of its script.
+fn speaker_version() -> String {
+    let hash = SPEAKER.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    format!("{hash:016x}")
+}
+
+/// What the speaker says of itself, if it's running and answers.
+fn speaker_status() -> Option<Value> {
+    let mut stream = UnixStream::connect(speaker_socket().ok()?).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(300))).ok()?;
+    writeln!(stream, "{}", json!({"status": true})).ok()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line).ok()?;
+    serde_json::from_str(&line).ok()
 }
 
 /// The speaker's socket, beside sasha's in its private folder: a socket's
@@ -353,6 +376,16 @@ fn say_with_mac(text: &str) {
     if let Some(dir) = dir() {
         let _ = std::fs::write(dir.join("saying"), child.id().to_string());
     }
+}
+
+/// Whether the tower is talking right now: its speaker, or the Mac's
+/// voice.
+pub fn speaking_now() -> bool {
+    if speaker_status().and_then(|s| s["speaking"].as_bool()) == Some(true) {
+        return true;
+    }
+    let pid = dir().and_then(|dir| std::fs::read_to_string(dir.join("saying")).ok()).and_then(|pid| pid.trim().parse::<i32>().ok());
+    pid.is_some_and(|pid| crate::procinfo::name(pid).as_deref() == Some("say"))
 }
 
 /// Stops talking, so it doesn't talk over you.

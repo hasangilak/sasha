@@ -89,7 +89,8 @@ impl App {
                 entries.push(entry("Close", "x", Command::Close));
                 entries
             }
-            Menu::Tower => vec![
+            Menu::Tower => {
+                let mut entries = vec![
                 match self.tower_engine() {
                     Engine::Claude => entry("Run on Codex (pi, ChatGPT)", "", Command::TowerOn(Engine::Codex)),
                     Engine::Codex => entry("Run on Claude (Claude Code)", "", Command::TowerOn(Engine::Claude)),
@@ -103,7 +104,12 @@ impl App {
                 entry("Edit its role (what you expect)", "", Command::TowerRole),
                 entry(if self.tower.is_some() { "Restart the tower" } else { "Start the tower" }, "", Command::TowerRestart),
                 entry("Hide the tower", "", Command::TowerHide),
-            ],
+                ];
+                if self.voice_speaking() {
+                    entries.insert(0, entry("Stop talking", "S", Command::Hush));
+                }
+                entries
+            }
             Menu::More => vec![
                 entry("New terminal", "t", Command::NewTab),
                 entry(if self.tower_focused() { "Hide the tower" } else { "Tower: steer every terminal" }, "T", Command::Tower),

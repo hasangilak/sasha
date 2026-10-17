@@ -48,6 +48,8 @@ const ACTIVITY_ROW: u16 = 2;
 const HEADER_MIN_HEIGHT: u16 = 8;
 /// Narrower headers leave out the buttons.
 const HEADER_BUTTONS_MIN_WIDTH: u16 = 40;
+/// "■ stop" while the tower talks.
+pub const HUSH_WIDTH: u16 = 8;
 /// The buttons above the terminal leave its title this much of the header.
 const TITLE_MIN: u16 = 12;
 
@@ -151,6 +153,8 @@ pub enum Hit {
     TowerDivider,
     /// The tower's name in the header, over its panel: its menu.
     TowerTitle,
+    /// "■ stop" beside it, while it talks.
+    TowerHush,
     /// A tab (workspace, tab) of another workspace, in the tab sidebar.
     OtherTab(usize, usize),
     /// A workspace's heading in the stacked tab sidebar.
@@ -365,6 +369,15 @@ impl Layout {
         Rect::new(self.tower.x + 1, self.top.y, end.saturating_sub(self.tower.x + 1), 1)
     }
 
+    /// "■ stop", at the right of the tower's name while it talks.
+    pub fn tower_hush(&self) -> Rect {
+        let title = self.tower_title();
+        if title.width < 24 {
+            return Rect::default();
+        }
+        Rect::new(title.right() - HUSH_WIDTH - 1, title.y, HUSH_WIDTH, 1)
+    }
+
     /// Where the tower's terminal is drawn: its panel but the edge.
     pub fn tower_screen(&self) -> Rect {
         if self.tower.width < 2 {
@@ -532,6 +545,7 @@ impl Layout {
             return match button {
                 Some((button, _)) => Some(Hit::Header(button)),
                 None if self.title().contains(pos) => Some(Hit::Title),
+                None if app.voice_speaking() && self.tower_hush().contains(pos) => Some(Hit::TowerHush),
                 None if self.tower_title().contains(pos) => Some(Hit::TowerTitle),
                 None => None,
             };

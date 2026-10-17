@@ -233,6 +233,8 @@ pub struct App {
     ended_missions: Vec<Ended>,
     /// The tower says the big picture of its answers aloud.
     voice_replies: bool,
+    /// The tower is talking, as last checked.
+    voice_speaking: bool,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
     next_group_id: GroupId,
@@ -307,6 +309,7 @@ impl App {
             watched: HashMap::new(),
             ended_missions: Vec::new(),
             voice_replies: false,
+            voice_speaking: false,
             next_tab_id: 0,
             next_workspace_id: 0,
             next_group_id: 0,
@@ -815,6 +818,7 @@ impl App {
                 self.check_awake();
                 self.notify();
                 self.tower_tick();
+                self.refresh_voice();
                 self.save();
                 dirty = true;
             }

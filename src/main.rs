@@ -49,6 +49,10 @@ fn main() -> Result<()> {
         Command::Inbox(prompt) => hooks::inbox(prompt.as_deref()),
         Command::Agent(spec) => hooks::run_agent(&spec),
         Command::Speak => voice::speak_tower(),
+        Command::Hush => {
+            voice::hush();
+            Ok(())
+        }
         Command::VoiceInstall => voice::install(),
     }
 }

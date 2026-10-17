@@ -143,6 +143,8 @@ pub enum Command {
     TowerVoice,
     /// Opens your instructions for the tower in your editor.
     TowerRole,
+    /// Stops the tower talking.
+    Hush,
     SideBars,
     Narrower,
     Wider,
@@ -202,6 +204,7 @@ impl Command {
             KeyCode::Char('O') => Command::Ports,
             KeyCode::Char('F') => Command::Files,
             KeyCode::Char('T') => Command::Tower,
+            KeyCode::Char('S') => Command::Hush,
             KeyCode::Char('i') => Command::SideBars,
             KeyCode::Char('<') => Command::Narrower,
             KeyCode::Char('>') => Command::Wider,
@@ -228,6 +231,7 @@ impl Command {
             | Command::TowerAutopilot
             | Command::TowerVoice
             | Command::TowerRole
+            | Command::Hush
             | Command::Leave => {
                 After::Leave
             }

@@ -91,6 +91,16 @@ fn render_tower_title(buf: &mut Buffer, app: &App) {
     }
     let style = Style::new().fg(color).bg(bg);
     let style = if focused { style.add_modifier(Modifier::BOLD) } else { style };
+    // While it talks, "■ stop" at the right; the rest gives it room.
+    let hush = app.layout.tower_hush();
+    let area = if app.voice_speaking() && !hush.is_empty() {
+        let hot = app.hover == Some(Hit::TowerHush);
+        let button = Style::new().fg(p.on_accent).bg(if hot { p.red } else { p.accent }).add_modifier(Modifier::BOLD);
+        buf.set_string(hush.x, hush.y, " ■ stop ", button);
+        ratatui::layout::Rect { width: hush.x.saturating_sub(area.x + 1), ..area }
+    } else {
+        area
+    };
     let news = app.tower_news();
     let news = (news > 0).then(|| format!(" {news} new "));
     let room = area.right().saturating_sub(x + 4 + news.as_ref().map_or(0, |n| n.width() as u16 + 1)) as usize;
