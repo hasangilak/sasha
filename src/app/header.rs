@@ -10,7 +10,6 @@ use super::state::{Command, Menu, Mode, Picker, PickerKind};
 use crate::layout::HeaderButton;
 use crate::tab::split_glyph;
 use crate::tower::Engine;
-use super::Listening;
 use crate::ui;
 
 /// A row of a menu: what it says, its key after the prefix, and what it
@@ -90,15 +89,10 @@ impl App {
                 entries.push(entry("Close", "x", Command::Close));
                 entries
             }
-            Menu::Tower => {
-                let mut entries = vec![
+            Menu::Tower => vec![
                 match self.tower_engine() {
                     Engine::Claude => entry("Run on Codex (pi, ChatGPT)", "", Command::TowerOn(Engine::Codex)),
                     Engine::Codex => entry("Run on Claude (Claude Code)", "", Command::TowerOn(Engine::Claude)),
-                },
-                match self.listening() {
-                    Listening::Recording(_) => entry("Send what you said", "V", Command::Talk),
-                    Listening::No | Listening::Transcribing => entry("Talk to it", "V", Command::Talk),
                 },
                 entry(if self.voice_replies() { "Voice replies off" } else { "Voice replies on: hear the gist" }, "", Command::TowerVoice),
                 entry(
@@ -109,12 +103,7 @@ impl App {
                 entry("Edit its role (what you expect)", "", Command::TowerRole),
                 entry(if self.tower.is_some() { "Restart the tower" } else { "Start the tower" }, "", Command::TowerRestart),
                 entry("Hide the tower", "", Command::TowerHide),
-                ];
-                if matches!(self.listening(), Listening::Recording(_)) {
-                    entries.insert(2, entry("Stop listening, send nothing", "", Command::TalkCancel));
-                }
-                entries
-            }
+            ],
             Menu::More => vec![
                 entry("New terminal", "t", Command::NewTab),
                 entry(if self.tower_focused() { "Hide the tower" } else { "Tower: steer every terminal" }, "T", Command::Tower),

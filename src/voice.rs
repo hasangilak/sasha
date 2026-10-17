@@ -1,153 +1,25 @@
-//! The tower's voice. You talk to it: sasha records you with ffmpeg and
-//! hears you with Whisper (through whisper.cpp). It talks back: the big
-//! picture of each answer in a sentence or two, in macOS's own voice.
+//! The tower's voice: it says things aloud to you in macOS's own voice,
+//! when you ask (its `speak` tool) or, with voice replies on, the big
+//! picture of each answer.
 
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::io::Read;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result, bail};
 use serde_json::Value;
+
+use anyhow::Result;
 
 use crate::agents::{self, Agent};
 use crate::{store, tower};
 
-/// Whisper's model, multilingual and quick on Apple Silicon.
-const MODEL: &str = "ggml-large-v3-turbo-q5_0.bin";
-const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 /// The most of an answer said aloud.
 const SPOKEN_MAX: usize = 400;
-/// How long ffmpeg gets to finish the recording once told to stop.
-const STOP_WAIT: Duration = Duration::from_secs(3);
 
-/// Where the voice keeps its model and state, beside sasha's:
-/// `~/.config/sasha/voice`.
+/// Where the voice keeps its state, beside sasha's: `~/.config/sasha/voice`.
 pub fn dir() -> Option<PathBuf> {
     Some(store::path()?.parent()?.join("voice"))
 }
-
-/// Whisper's model: `$SASHA_WHISPER_MODEL`, else one in the voice folder.
-pub fn model() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("SASHA_WHISPER_MODEL") {
-        return Some(PathBuf::from(path));
-    }
-    let dir = dir()?;
-    let preferred = dir.join(MODEL);
-    if preferred.is_file() {
-        return Some(preferred);
-    }
-    let mut models: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "bin") && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("ggml-")))
-        .collect();
-    models.sort();
-    models.pop()
-}
-
-/// What's missing for you to talk to the tower, said how to fix it.
-pub fn missing() -> Option<String> {
-    if tower::find_program("ffmpeg").is_none() {
-        return Some("talking to the tower needs ffmpeg: brew install ffmpeg".to_owned());
-    }
-    if tower::find_program("whisper-cli").is_none() {
-        return Some("talking to the tower needs whisper.cpp: brew install whisper-cpp".to_owned());
-    }
-    if model().is_none() {
-        return Some("no Whisper model yet: run `sasha voice install`".to_owned());
-    }
-    None
-}
-
-// ── Hearing you ─────────────────────────────────────────────────────────
-
-/// You, being recorded.
-pub struct Recording {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    path: PathBuf,
-    pub since: Instant,
-}
-
-/// Starts recording the default microphone.
-pub fn record() -> Result<Recording> {
-    let ffmpeg = tower::find_program("ffmpeg").context("ffmpeg isn't installed: brew install ffmpeg")?;
-    let dir = dir().context("no home folder")?;
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("you.wav");
-    let mic = std::env::var("SASHA_MIC").unwrap_or_else(|_| "default".to_owned());
-    let mut child = Command::new(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-f", "avfoundation", "-i", &format!(":{mic}")])
-        .args(["-ac", "1", "-ar", "16000", "-y"])
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("can't start ffmpeg")?;
-    let stdin = child.stdin.take();
-    Ok(Recording { child, stdin, path, since: Instant::now() })
-}
-
-impl Recording {
-    /// Stops recording and gives the file, finished.
-    pub fn finish(mut self) -> Result<PathBuf> {
-        // q is how ffmpeg is asked to stop and close the file properly.
-        if let Some(mut stdin) = self.stdin.take() {
-            let _ = stdin.write_all(b"q");
-        }
-        let deadline = Instant::now() + STOP_WAIT;
-        while Instant::now() < deadline {
-            if self.child.try_wait()?.is_some() {
-                return Ok(self.path.clone());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = self.child.kill();
-        bail!("the recording didn't stop")
-    }
-}
-
-impl Drop for Recording {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-}
-
-/// What you said, as Whisper heard it, in whatever language you spoke.
-pub fn transcribe(wav: &Path) -> Result<String> {
-    let whisper = tower::find_program("whisper-cli").context("whisper.cpp isn't installed: brew install whisper-cpp")?;
-    let model = model().context("no Whisper model yet: run `sasha voice install`")?;
-    let output = Command::new(whisper)
-        .args(["-l", "auto", "-nt", "-np", "-m"])
-        .arg(&model)
-        .arg("-f")
-        .arg(wav)
-        .stdin(Stdio::null())
-        .output()
-        .context("can't run whisper-cli")?;
-    if !output.status.success() {
-        bail!("whisper-cli failed: {}", String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or_default());
-    }
-    Ok(clean(&String::from_utf8_lossy(&output.stdout)))
-}
-
-/// Whisper's lines as one, without its marks for silence and noise.
-fn clean(heard: &str) -> String {
-    let words: Vec<&str> = heard
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !(line.starts_with(['[', '(']) && line.ends_with([']', ')'])))
-        .collect();
-    words.join(" ")
-}
-
-// ── Talking back ────────────────────────────────────────────────────────
 
 /// The file that says voice replies are on, for the hooks to see.
 fn on_flag() -> Option<PathBuf> {
@@ -225,38 +97,9 @@ pub fn hush() {
     let _ = std::fs::remove_file(file);
 }
 
-// ── Setting it up ───────────────────────────────────────────────────────
-
-/// `sasha voice install`: fetches Whisper's model.
-pub fn install() -> Result<()> {
-    if let Some(model) = model() {
-        println!("Whisper's model is here already: {}", model.display());
-        return Ok(());
-    }
-    let dir = dir().context("no home folder")?;
-    std::fs::create_dir_all(&dir)?;
-    let part = dir.join(format!("{MODEL}.part"));
-    println!("Fetching Whisper's model ({MODEL}, about 570 MB)…");
-    let status = Command::new("curl").args(["-fL", "--progress-bar", "-o"]).arg(&part).arg(MODEL_URL).status()?;
-    if !status.success() {
-        bail!("couldn't fetch the model");
-    }
-    std::fs::rename(&part, dir.join(MODEL))?;
-    println!("Done. Prefix, then V, talks to the tower.");
-    if let Some(missing) = missing() {
-        println!("Still to do: {missing}");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn whisper_marks_for_silence_are_left_out() {
-        assert_eq!(clean(" Run the tests\n [BLANK_AUDIO]\n and tell me.\n(music)\n"), "Run the tests and tell me.");
-    }
 
     #[test]
     fn only_the_big_picture_is_said() {

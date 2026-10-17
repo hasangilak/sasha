@@ -141,8 +141,6 @@ impl App {
             Command::TowerRestart => self.restart_tower(),
             Command::TowerHide => self.hide_tower(),
             Command::TowerAutopilot => self.toggle_autopilot(),
-            Command::Talk => self.talk(),
-            Command::TalkCancel => self.stop_listening(),
             Command::TowerVoice => self.toggle_voice(),
             Command::TowerRole => self.edit_tower_role(),
             Command::SideBars => self.toggle_side_bars(),

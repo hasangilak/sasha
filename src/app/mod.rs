@@ -10,7 +10,6 @@ mod tower;
 mod voice;
 
 pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel};
-pub use voice::Listening;
 pub use state::{Confirm, Menu, Mode, Picker, PickerKind, Rename, Renaming};
 use state::Pending;
 
@@ -76,8 +75,6 @@ pub enum AppEvent {
     PrFiles(u64, Result<Vec<FileDiff>, String>),
     Ports(Result<Vec<Port>, String>),
     Files(Box<Scan>),
-    /// What Whisper heard you say.
-    Heard(Result<String, String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -234,10 +231,6 @@ pub struct App {
     watched: HashMap<TabId, Instant>,
     /// The tower's sessions whose terminals are gone.
     ended_missions: Vec<Ended>,
-    /// You, being recorded for the tower.
-    recording: Option<crate::voice::Recording>,
-    /// Whisper is working out what you said.
-    transcribing: bool,
     /// The tower says the big picture of its answers aloud.
     voice_replies: bool,
     next_tab_id: TabId,
@@ -313,8 +306,6 @@ impl App {
             enters: Vec::new(),
             watched: HashMap::new(),
             ended_missions: Vec::new(),
-            recording: None,
-            transcribing: false,
             voice_replies: false,
             next_tab_id: 0,
             next_workspace_id: 0,
@@ -1996,7 +1987,6 @@ impl App {
             AppEvent::PrFiles(number, files) => self.pr_files_loaded(number, files),
             AppEvent::Ports(ports) => self.ports_loaded(ports),
             AppEvent::Files(scan) => self.files_loaded(*scan),
-            AppEvent::Heard(heard) => self.heard(heard),
             AppEvent::Output(id, bytes) => self.handle_output(id, &bytes),
             AppEvent::Exited(id) => {
                 if self.is_tower(id) {

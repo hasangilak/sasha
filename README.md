@@ -40,7 +40,6 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `O` | ports your tabs listen on; `x` `x` force-kills |
 | `F` | browse the terminal's folder: arrows, `⏎` reads a file, `e` edits it |
 | `T` | the tower: an agent steering every terminal (`T` again hides it) |
-| `V` | talk to the tower (`V` again sends it) |
 | `i` | show / hide the ports and pull request bars |
 | `q` | quit |
 | `?` | every key |
@@ -127,9 +126,7 @@ hasn't heard yet.
 session, and it says a short summary aloud in your Mac's voice (its `speak` tool). With **voice
 replies** on (its menu) it says the gist of every answer. The voice is your system voice (System
 Settings → Accessibility → Spoken Content; a Siri or Premium voice sounds best), or `SASHA_VOICE`.
-Talk to it with Claude Code's or Codex's own voice input, or with `Ctrl+B` then `Shift+V`, which
-writes down what you say with Whisper (needs `brew install whisper-cpp ffmpeg` and
-`sasha voice install`).
+Talk to it with Claude Code's or Codex's own voice input.
 
 **Sessions talk to each other.** Each agent the tower starts can see the others by name, read what
 they did, and message them or the tower; a message waits until its reader's turn is over. The
