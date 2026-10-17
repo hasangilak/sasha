@@ -139,23 +139,13 @@ fn kokoro_python() -> Option<PathBuf> {
 fn say_with_speaker(python: &Path, parts: &[(String, String)]) -> Result<()> {
     let dir = dir().context("no home folder")?;
     let socket = speaker_socket()?;
-    let voice = chosen_voice().filter(|v| is_kokoro_voice(v)).unwrap_or_else(|| KOKORO_VOICE.to_owned());
+    let voice = speaker_voice();
     let parts: Vec<Value> = parts.iter().map(|(text, tone)| json!({"text": text, "tone": tone})).collect();
     let request = json!({"say": parts, "voice": voice, "engine": chosen_engine()});
     if tell_speaker(&socket, &request).is_ok() {
         return Ok(());
     }
-    let script = dir.join("speaker.py");
-    std::fs::write(&script, SPEAKER)?;
-    let log = std::fs::File::create(dir.join("speaker.log")).map_or_else(|_| Stdio::null(), Stdio::from);
-    let mut command = Command::new(python);
-    command.arg(&script).arg(&socket).arg(&dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
-    // A session of its own: it outlives whoever asked first.
-    // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
-    unsafe {
-        command.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
-    }
-    command.spawn().context("can't start the speaker")?;
+    start_speaker(python, &dir, &socket)?;
     let started = Instant::now();
     while started.elapsed() < SPEAKER_START {
         std::thread::sleep(Duration::from_millis(200));
@@ -164,6 +154,37 @@ fn say_with_speaker(python: &Path, parts: &[(String, String)]) -> Result<()> {
         }
     }
     bail!("the speaker didn't start: see {}", dir.join("speaker.log").display())
+}
+
+/// The voice the speaker speaks in: yours if it's one of Kokoro's.
+fn speaker_voice() -> String {
+    chosen_voice().filter(|v| is_kokoro_voice(v)).unwrap_or_else(|| KOKORO_VOICE.to_owned())
+}
+
+/// Starts the speaker, which gets the chosen voice ready straight away.
+fn start_speaker(python: &Path, dir: &Path, socket: &Path) -> Result<()> {
+    let script = dir.join("speaker.py");
+    std::fs::write(&script, SPEAKER)?;
+    let log = std::fs::File::create(dir.join("speaker.log")).map_or_else(|_| Stdio::null(), Stdio::from);
+    let mut command = Command::new(python);
+    command.arg(&script).arg(socket).arg(dir).arg(speaker_voice()).arg(chosen_engine());
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
+    // A session of its own: it outlives whoever asked first.
+    // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
+    unsafe {
+        command.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+    }
+    command.spawn().context("can't start the speaker")?;
+    Ok(())
+}
+
+/// Starts the speaker if it isn't running, without waiting for it: the
+/// tower's voice is ready by the time it has something to say.
+pub fn warm_up() {
+    let (Some(python), Some(dir), Ok(socket)) = (kokoro_python(), dir(), speaker_socket()) else { return };
+    if UnixStream::connect(&socket).is_err() {
+        let _ = start_speaker(&python, &dir, &socket);
+    }
 }
 
 /// The speaker's socket, beside sasha's in its private folder: a socket's

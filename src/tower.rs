@@ -25,6 +25,10 @@ const DELEGATE: &str = include_str!("tower/delegate.md");
 const SESSION_HANDLER: &str = include_str!("tower/session-handler.md");
 /// How long Claude Code lets a tool call go without word: waits are long.
 const CLAUDE_TOOL_IDLE: &str = "3700000";
+/// How hard the tower thinks before it answers, unless `$SASHA_TOWER_EFFORT`
+/// says otherwise: it's a conversation, and your coding sessions keep
+/// their own effort.
+const TOWER_EFFORT: &str = "medium";
 /// pi's npm package.
 const PACKAGE: &str = "@earendil-works/pi-coding-agent";
 /// The tower's tools Claude Code may use without asking each time: all but
@@ -158,6 +162,8 @@ pub fn run(engine: Option<Engine>) -> Result<()> {
         }
         None => current_engine(),
     };
+    // Its voice gets ready while it starts.
+    crate::voice::warm_up();
     match engine {
         Engine::Claude => run_claude(&dir),
         Engine::Codex => run_pi(&dir),
@@ -190,6 +196,7 @@ fn run_claude(dir: &Path) -> Result<()> {
         .args(["--allowedTools", CLAUDE_ALLOWED])
         .args(["--append-system-prompt", &role(Engine::Claude)])
         .args(["--agents", &subagents().to_string()])
+        .args(["--effort", &tower_effort()])
         .env("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", CLAUDE_TOOL_IDLE)
         .env("MCP_TOOL_TIMEOUT", CLAUDE_TOOL_TIMEOUT);
     if let Some(model) = claude_model() {
@@ -216,8 +223,14 @@ fn subagents() -> serde_json::Value {
             "disallowedTools": ["mcp__sasha__close_terminal", "mcp__sasha__speak"],
             "mcpServers": ["sasha"],
             "model": "inherit",
+            "effort": tower_effort(),
         }
     })
+}
+
+/// `$SASHA_TOWER_EFFORT` (low, medium, high, xhigh, max), else medium.
+fn tower_effort() -> String {
+    std::env::var("SASHA_TOWER_EFFORT").ok().filter(|e| !e.trim().is_empty()).unwrap_or_else(|| TOWER_EFFORT.to_owned())
 }
 
 /// The MCP server Claude Code starts: this sasha's `sasha mcp`, told which
