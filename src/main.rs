@@ -11,10 +11,12 @@ mod files;
 mod github;
 mod header;
 mod highlight;
+mod hooks;
 mod input;
 mod layout;
 mod links;
 mod mcp;
+mod mission;
 mod notify;
 mod panel_view;
 mod ports;
@@ -42,5 +44,8 @@ fn main() -> Result<()> {
         Command::KillServer => client::kill_server(),
         Command::Tower(engine) => tower::run(engine),
         Command::Mcp => mcp::run(),
+        Command::Event(source, payload) => hooks::event(&source, payload.as_deref()),
+        Command::Inbox => hooks::inbox(),
+        Command::Agent(spec) => hooks::run_agent(&spec),
     }
 }

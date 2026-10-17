@@ -30,6 +30,7 @@ COMMANDS:
                        panel (prefix, then T) runs this.
     mcp                Serve the terminals as tools over MCP on stdin/stdout:
                        list, read, prompt, wait for, open and close them.
+    event, inbox       Run by agents' hooks and the tower's, to pass news on.
 
 Press the prefix, then ? inside sasha to see every key binding.";
 
@@ -44,6 +45,13 @@ pub enum Command {
     Tower(Option<Engine>),
     /// Serve the terminals as MCP tools.
     Mcp,
+    /// An agent's hook: what it just did (`claude`, input on stdin; or
+    /// `codex` and its JSON).
+    Event(String, Option<String>),
+    /// The tower's hook: its news.
+    Inbox,
+    /// Start the agent a session was opened for.
+    Agent(std::path::PathBuf),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,6 +67,17 @@ impl Config {
         let mut args = std::env::args().skip(1).peekable();
         match args.peek().map(String::as_str) {
             Some("mcp") => return Ok(Some(Command::Mcp)),
+            Some("inbox") => return Ok(Some(Command::Inbox)),
+            Some("agent") => {
+                args.next();
+                let spec = args.next().ok_or_else(|| anyhow::anyhow!("sasha agent needs the file of what to start"))?;
+                return Ok(Some(Command::Agent(spec.into())));
+            }
+            Some("event") => {
+                args.next();
+                let source = args.next().unwrap_or_default();
+                return Ok(Some(Command::Event(source, args.next())));
+            }
             Some("tower") => {
                 args.next();
                 let engine = match args.next() {

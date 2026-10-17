@@ -137,6 +137,8 @@ pub enum Command {
     TowerOn(Engine),
     TowerRestart,
     TowerHide,
+    /// News from its sessions goes straight to the tower, or waits.
+    TowerAutopilot,
     SideBars,
     Narrower,
     Wider,
@@ -219,6 +221,7 @@ impl Command {
             | Command::TowerOn(_)
             | Command::TowerRestart
             | Command::TowerHide
+            | Command::TowerAutopilot
             | Command::Leave => {
                 After::Leave
             }

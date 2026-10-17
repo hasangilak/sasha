@@ -14,6 +14,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::agents::{self, Agent};
+use crate::hooks;
+use crate::mission::{Ended, Mission, State};
 use crate::control::{self, Reply, Request, Terminal};
 use crate::notify;
 use crate::tab::TabId;
@@ -65,7 +67,7 @@ pub fn run() -> Result<()> {
                 answer(&out, id, info);
             }
             "ping" => answer(&out, id, json!({})),
-            "tools/list" => answer(&out, id, json!({"tools": tools()})),
+            "tools/list" => answer(&out, id, json!({"tools": if is_peer() { peer_tools() } else { tools() }})),
             "tools/call" => {
                 // Waits take minutes: each call gets its own thread.
                 let out = Arc::clone(&out);
@@ -74,7 +76,8 @@ pub fn run() -> Result<()> {
                     let progress = Progress { out: Arc::clone(&out), token: params.pointer("/_meta/progressToken").cloned() };
                     let name = params["name"].as_str().unwrap_or_default();
                     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                    let result = match call(name, &args, &progress) {
+                    let called = if is_peer() { peer_call(name, &args) } else { call(name, &args, &progress) };
+                    let result = match called {
                         Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                         Err(err) => json!({"content": [{"type": "text", "text": format!("{err:#}")}], "isError": true}),
                     };
@@ -125,7 +128,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "list_terminals",
-            "description": "Every terminal open in sasha: its id, workspace, group and name, what runs in it (Claude Code, Codex, a server, a shell…), whether it's busy or quiet, and for agents what they were last asked and whether they're waiting for the user.",
+            "description": "Every terminal open in sasha: its id, workspace, group and name, what runs in it (Claude Code, Codex, a server, a shell…), whether it's busy or quiet, and for agents what they were last asked and whether they're waiting for the user. Your sessions (the ones you opened or prompted) come first, with their task and how it's going, then the ones that ended.",
             "inputSchema": {"type": "object", "properties": {}},
             "annotations": read_only,
         },
@@ -166,13 +169,30 @@ fn tools() -> Value {
         },
         {
             "name": "open_terminal",
-            "description": "Opens a new terminal in a folder, in the background, optionally typing a command into its shell, such as `claude`, `codex`, `claude \"<prompt>\"` or `npm run dev`. Returns its id.",
+            "description": "Opens a new terminal in a folder, in the background, and returns its id. With `agent` it starts Claude Code or Codex there on `prompt`, hooked so sasha hears the moment it finishes or needs an approval; else `command` is typed into its shell (`npm run dev`, `make test`…). Name it after its job: the name shows in the sidebar, in Claude Code's own session list, and in every update.",
             "inputSchema": {"type": "object", "properties": {
                 "cwd": {"type": "string", "description": "Absolute path, or starting with ~"},
-                "name": {"type": "string", "description": "A name for it in the sidebar"},
-                "command": {"type": "string", "description": "Typed into the shell once it starts"},
+                "name": {"type": "string", "description": "A short name for its job, like api-tests or auth-fix"},
+                "agent": {"type": "string", "enum": ["claude", "codex"], "description": "Start this agent in it"},
+                "prompt": {"type": "string", "description": "The agent's task: complete and self-contained"},
+                "command": {"type": "string", "description": "Typed into the shell once it starts, when there's no agent"},
             }, "required": ["cwd"]},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "rename_terminal",
+            "description": "Names a terminal after its job (empty: back to its folder's name), as it shows in the sidebar and in updates. Name the sessions you take over.",
+            "inputSchema": {"type": "object", "properties": {"id": id, "name": {"type": "string"}}, "required": ["id", "name"]},
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "wait_for_any",
+            "description": "Waits until any of your sessions (or the ones in `ids`) has news: it finished, stopped for an approval, or closed. Returns the news; call it again for the rest. Use it to watch several sessions at once.",
+            "inputSchema": {"type": "object", "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}, "description": "Only these terminals (default: all your sessions)"},
+                "timeout_seconds": {"type": "number", "description": "Give up after this (default 1800, at most 3600)"},
+            }},
+            "annotations": read_only,
         },
         {
             "name": "show_terminal",
@@ -187,6 +207,79 @@ fn tools() -> Value {
             "annotations": {"readOnlyHint": false, "destructiveHint": true, "openWorldHint": false},
         },
     ])
+}
+
+/// What a session the tower started can do: see the others, read what
+/// they did, and message them or the tower.
+fn peer_tools() -> Value {
+    let to = json!({"type": "string", "description": "A session's name (or #id), from list_sessions"});
+    let read_only = json!({"readOnlyHint": true, "openWorldHint": false});
+    json!([
+        {
+            "name": "list_sessions",
+            "description": "The other agent sessions in sasha, by name: what each was asked and how it's going. The tower coordinates them; you're one of them.",
+            "inputSchema": {"type": "object", "properties": {}},
+            "annotations": read_only,
+        },
+        {
+            "name": "session_report",
+            "description": "What another session last did: what it was asked, its last answer, files changed, commands run, and what it's waiting for.",
+            "inputSchema": {"type": "object", "properties": {"to": to}, "required": ["to"]},
+            "annotations": read_only,
+        },
+        {
+            "name": "message_session",
+            "description": "Sends a message to another session by name, or to `tower`. It reaches them when their current turn ends, as \"[message from …]\"; their answer reaches you the same way. Keep it short and specific: a question, a heads-up, a hand-off.",
+            "inputSchema": {"type": "object", "properties": {"to": {"type": "string", "description": "A session's name or #id, or tower"}, "text": {"type": "string"}}, "required": ["to", "text"]},
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false},
+        },
+    ])
+}
+
+fn peer_call(name: &str, args: &Value) -> Result<String> {
+    let me = std::env::var("SASHA_TAB").ok().and_then(|id| id.parse::<TabId>().ok());
+    match name {
+        "list_sessions" => {
+            let terminals = terminals()?;
+            let mut text = String::from("The tower: coordinates every session (message it with to: tower)\n");
+            for terminal in terminals.iter().filter(|t| t.mission.is_some() || agent(t).is_some()) {
+                let you = if Some(terminal.id) == me { " (you)" } else { "" };
+                text.push_str(&format!("{}{you} · {}", heading(terminal), state(terminal)));
+                if let Some(mission) = &terminal.mission {
+                    text.push_str(&format!("\n    task: {}\n    {}", mission.task, mission_line(mission)));
+                }
+                text.push('\n');
+            }
+            Ok(text)
+        }
+        "session_report" => {
+            let to = args["to"].as_str().context("`to` is missing")?;
+            report(&named(to)?)
+        }
+        "message_session" => {
+            let to = args["to"].as_str().context("`to` is missing")?;
+            let text = args["text"].as_str().context("`text` is missing")?;
+            control::text(Request::Message { from: me, to: to.to_owned(), text: text.to_owned() })
+        }
+        _ => bail!("no tool called {name}"),
+    }
+}
+
+/// The terminal a session's name or `#id` stands for.
+fn named(to: &str) -> Result<Terminal> {
+    let to = to.trim();
+    let terminals = terminals()?;
+    if let Ok(id) = to.trim_start_matches('#').parse::<TabId>()
+        && let Some(terminal) = terminals.iter().find(|t| t.id == id)
+    {
+        return Ok(terminal.clone());
+    }
+    let mut named = terminals.into_iter().filter(|t| t.name.eq_ignore_ascii_case(to));
+    match (named.next(), named.next()) {
+        (Some(terminal), None) => Ok(terminal),
+        (None, _) => bail!("no session called {to}: list_sessions shows their names"),
+        (Some(_), Some(_)) => bail!("several sessions are called {to}: give its #id"),
+    }
 }
 
 fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
@@ -206,7 +299,7 @@ fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
             let id = id(args)?;
             let text = args["text"].as_str().context("`text` is missing")?;
             let terminal = find(id)?;
-            control::call(Request::Paste { id, text: text.trim_end_matches(['\n', '\r']).to_owned() })?;
+            control::call(Request::Paste { id, text: text.trim_end_matches(['\n', '\r']).to_owned(), tower: is_tower() })?;
             let submit = args["submit"].as_bool().unwrap_or(true);
             if submit {
                 thread::sleep(BEFORE_ENTER);
@@ -235,14 +328,41 @@ fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
             let cwd = args["cwd"].as_str().context("`cwd` is missing")?;
             let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             let cwd = expand_path(cwd, &home);
-            let name = args["name"].as_str().map(str::to_owned);
-            let command = args["command"].as_str().map(str::to_owned);
-            let Reply::Opened(id) = control::call(Request::Open { cwd: cwd.clone(), name, command: command.clone() })? else {
+            let name = args["name"].as_str().map(str::trim).filter(|n| !n.is_empty());
+            let prompt = args["prompt"].as_str().filter(|p| !p.trim().is_empty());
+            let agent = match args["agent"].as_str() {
+                Some("claude") => Some(Agent::Claude),
+                Some("codex") => Some(Agent::Codex),
+                Some(other) => bail!("agent is claude or codex, not {other}"),
+                None => None,
+            };
+            let (command, task) = match agent {
+                Some(agent) => {
+                    let task = prompt.map_or_else(|| format!("{} session, waiting for a prompt", agent.name()), str::to_owned);
+                    (Some(hooks::agent_command(agent, name, prompt)?), Some(task))
+                }
+                None => (args["command"].as_str().map(str::to_owned), None),
+            };
+            let request =
+                Request::Open { cwd: cwd.clone(), name: name.map(str::to_owned), command: command.clone(), tower: is_tower(), task };
+            let Reply::Opened(id) = control::call(request)? else {
                 bail!("unexpected answer from sasha");
             };
-            let running = command.map(|c| format!(", running `{c}`")).unwrap_or_default();
-            Ok(format!("Opened #{id} in {}{running}. It's in the background; show_terminal brings it on screen.", pretty_path(&cwd)))
+            let running = match (agent, &command) {
+                (Some(agent), _) => format!(", running {}", agent.name()),
+                (None, Some(command)) => format!(", running `{command}`"),
+                (None, None) => String::new(),
+            };
+            let label = name.map(|n| format!(" ({n})")).unwrap_or_default();
+            Ok(format!("Opened #{id}{label} in {}{running}. It's in the background; show_terminal brings it on screen.", pretty_path(&cwd)))
         }
+        "rename_terminal" => {
+            let id = id(args)?;
+            let name = args["name"].as_str().context("`name` is missing")?;
+            control::call(Request::Rename { id, name: name.to_owned() })?;
+            Ok(format!("#{id} is called {}", if name.trim().is_empty() { "after its folder again" } else { name.trim() }))
+        }
+        "wait_for_any" => wait_for_any(args, progress),
         "show_terminal" => {
             let id = id(args)?;
             control::call(Request::Show { id })?;
@@ -300,23 +420,57 @@ fn state(terminal: &Terminal) -> String {
 }
 
 fn list() -> Result<String> {
-    let terminals = terminals()?;
-    if terminals.is_empty() {
+    let (terminals, ended) = control::everything()?;
+    if terminals.is_empty() && ended.is_empty() {
         return Ok("No terminals are open.".to_owned());
     }
+    let (yours, others): (Vec<&Terminal>, Vec<&Terminal>) = terminals.iter().partition(|t| t.mission.is_some());
     let mut text = String::new();
-    for terminal in &terminals {
-        let mut line = format!("{} · {}", heading(terminal), state(terminal));
-        let mut place = format!("workspace {}", terminal.workspace);
-        if let Some(group) = &terminal.group {
-            place.push_str(&format!(", group {group}"));
+    if !yours.is_empty() {
+        let count = |state: State| yours.iter().filter(|t| t.mission.as_ref().is_some_and(|m| m.state == state)).count();
+        text.push_str(&format!(
+            "Your sessions: {} working, {} waiting for approval, {} done\n",
+            count(State::Working),
+            count(State::Waiting),
+            count(State::Done)
+        ));
+        for terminal in &yours {
+            text.push_str(&describe(terminal));
         }
-        line.push_str(&format!(" · {place}"));
-        if terminal.on_screen {
-            line.push_str(" · on screen");
-        } else if terminal.bell {
-            line.push_str(" · rang the bell");
+        text.push('\n');
+    }
+    if !others.is_empty() {
+        text.push_str("Other terminals:\n");
+        for terminal in &others {
+            text.push_str(&describe(terminal));
         }
+    }
+    if !ended.is_empty() {
+        text.push_str("\nYour sessions that ended:\n");
+        for Ended { id, name, workspace, mission } in ended.iter().rev().take(10) {
+            text.push_str(&format!("#{id} {name} · workspace {workspace} · {}\n", mission_line(mission)));
+        }
+    }
+    Ok(text)
+}
+
+/// A terminal in a few lines: where it is, what runs in it and how it's
+/// doing, and for the tower's sessions their task.
+fn describe(terminal: &Terminal) -> String {
+    let mut line = format!("{} · {}", heading(terminal), state(terminal));
+    let mut place = format!("workspace {}", terminal.workspace);
+    if let Some(group) = &terminal.group {
+        place.push_str(&format!(", group {group}"));
+    }
+    line.push_str(&format!(" · {place}"));
+    if terminal.on_screen {
+        line.push_str(" · on screen");
+    } else if terminal.bell {
+        line.push_str(" · rang the bell");
+    }
+    if let Some(mission) = &terminal.mission {
+        line.push_str(&format!("\n    task: {}\n    {}", mission.task, mission_line(mission)));
+    } else {
         if let Some(title) = &terminal.title {
             line.push_str(&format!("\n    title: {title}"));
         }
@@ -330,19 +484,41 @@ fn list() -> Result<String> {
                 line.push_str(&format!("\n    last asked: {}", agents::clip(&agents::gist(&report.prompt), 160)));
             }
         }
-        text.push_str(&line);
-        text.push('\n');
     }
-    Ok(text)
+    line.push('\n');
+    line
+}
+
+/// "done 3m ago: All 12 tests pass".
+fn mission_line(mission: &Mission) -> String {
+    let mut line = format!("{} {} ago", mission.state.word(), notify::duration(mission.age()));
+    if let Some(note) = &mission.note {
+        line.push_str(&format!(": {note}"));
+    }
+    if !mission.hooked && mission.state == State::Working {
+        line.push_str(" (no hooks: its state is a guess from its output)");
+    }
+    line
 }
 
 fn report(terminal: &Terminal) -> Result<String> {
-    let Some(agent) = agent(terminal) else {
+    // A log handed over by hooks is Claude Code's, whatever the program's name.
+    let hooked_log = terminal.mission.as_ref().and_then(|m| m.log.as_ref());
+    let Some(agent) = agent(terminal).or_else(|| hooked_log.map(|_| Agent::Claude)) else {
         let what = if terminal.program.is_empty() { "a shell" } else { terminal.program.as_str() };
         bail!("#{} runs {what}, not Claude or Codex: read_terminal shows it", terminal.id);
     };
-    let cwd = terminal.cwd.as_deref().context("can't tell where it runs")?;
-    let report = agent.report(cwd).with_context(|| format!("no recent {} session log for {}", agent.name(), pretty_path(cwd)))?;
+    // The log its hooks named, else the newest where it runs.
+    let log = terminal.mission.as_ref().and_then(|m| m.log.as_deref());
+    let report = match log {
+        Some(log) => agent.report_from(log),
+        None => {
+            let cwd = terminal.cwd.as_deref().context("can't tell where it runs")?;
+            agent.report(cwd)
+        }
+    };
+    let place = terminal.cwd.as_deref().map(pretty_path).unwrap_or_default();
+    let report = report.with_context(|| format!("no recent {} session log for {place}", agent.name()))?;
     let mut text = format!("{} · {}\n", heading(terminal), state(terminal));
     if let Some(ask) = &report.waiting {
         text.push_str(&format!("\nWAITING for the user: {ask}\n"));
@@ -412,6 +588,54 @@ fn wait(args: &Value, progress: &Progress) -> Result<String> {
     }
 }
 
+/// The tower's sessions, or `ids`: waits for the first news about them.
+fn wait_for_any(args: &Value, progress: &Progress) -> Result<String> {
+    let ids: Option<Vec<TabId>> = args["ids"].as_array().map(|ids| ids.iter().filter_map(Value::as_u64).collect());
+    let timeout = Duration::from_secs_f64(args["timeout_seconds"].as_f64().unwrap_or(1800.0).clamp(1.0, 3600.0));
+    let started = Instant::now();
+    let mut last_tick = Instant::now();
+    loop {
+        let news = control::updates(ids.clone(), true)?;
+        if !news.is_empty() {
+            let lines: Vec<String> = news.iter().map(|u| format!("- {}", u.text)).collect();
+            return Ok(format!("After {}:\n{}", notify::duration(started.elapsed()), lines.join("\n")));
+        }
+        // Nothing left that could have news.
+        let terminals = terminals()?;
+        let watched = |t: &&Terminal| match &ids {
+            Some(ids) => ids.contains(&t.id),
+            None => t.mission.as_ref().is_some_and(|m| matches!(m.state, State::Working | State::Waiting)),
+        };
+        let live: Vec<&Terminal> = terminals.iter().filter(watched).collect();
+        if live.is_empty() {
+            return Ok(match ids {
+                Some(_) => "None of those terminals is open any more.".to_owned(),
+                None => "None of your sessions is working or waiting: nothing to wait for.".to_owned(),
+            });
+        }
+        if started.elapsed() >= timeout {
+            let names: Vec<String> = live.iter().map(|t| format!("#{} {}", t.id, t.name)).collect();
+            return Ok(format!("No news after {}; still going: {}.", notify::duration(timeout), names.join(", ")));
+        }
+        if last_tick.elapsed() >= PROGRESS_EVERY {
+            last_tick = Instant::now();
+            progress.tick(started.elapsed().as_secs(), &format!("waiting on {} sessions", live.len()));
+        }
+        thread::sleep(POLL);
+    }
+}
+
+/// Whether the tower is asking: what it prompts becomes one of its
+/// sessions.
+fn is_tower() -> bool {
+    std::env::var_os("SASHA_TOWER").is_some()
+}
+
+/// Whether a session the tower started is asking: it gets the peer tools.
+fn is_peer() -> bool {
+    std::env::var_os("SASHA_PEER").is_some()
+}
+
 /// The heading and the end of the screen.
 fn tail(terminal: &Terminal) -> Result<String> {
     let screen = control::text(Request::Read { id: terminal.id, lines: 0 })?;
@@ -428,7 +652,10 @@ mod tests {
     fn every_tool_has_a_schema_and_is_answered() {
         let tools = tools();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 11);
+        // Sessions get only what reaches the others.
+        let peers: Vec<String> = peer_tools().as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(peers, ["list_sessions", "session_report", "message_session"]);
         for tool in tools.as_array().unwrap() {
             assert_eq!(tool["inputSchema"]["type"], "object");
             assert!(tool["description"].as_str().is_some_and(|d| d.len() > 20));

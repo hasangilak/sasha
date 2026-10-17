@@ -94,6 +94,11 @@ impl App {
                     Engine::Claude => entry("Run on Codex (pi, ChatGPT)", "", Command::TowerOn(Engine::Codex)),
                     Engine::Codex => entry("Run on Claude (Claude Code)", "", Command::TowerOn(Engine::Claude)),
                 },
+                entry(
+                    if self.tower_autopilot() { "Auto-reply off: news waits for you" } else { "Auto-reply on: tower acts on news" },
+                    "",
+                    Command::TowerAutopilot,
+                ),
                 entry(if self.tower.is_some() { "Restart the tower" } else { "Start the tower" }, "", Command::TowerRestart),
                 entry("Hide the tower", "", Command::TowerHide),
             ],

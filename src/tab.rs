@@ -13,6 +13,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::AppEvent;
+use crate::mission::Mission;
 use crate::{notify, procinfo};
 use crate::workspace::GroupId;
 
@@ -122,6 +123,10 @@ pub struct Tab {
     pub group: Option<GroupId>,
     /// The group it was in before it was pinned: unpinning puts it back.
     pub group_before_pin: Option<GroupId>,
+    /// What the tower set it to do, if it's one of the tower's sessions.
+    pub mission: Option<Mission>,
+    /// Messages from other sessions, waiting for its turn to end.
+    pub mailbox: Vec<String>,
     /// Name of the process in the foreground of this tab's tty.
     fg_name: String,
     fg_pgid: Option<i32>,
@@ -174,6 +179,8 @@ impl Tab {
         if let Ok(socket) = crate::protocol::socket_path() {
             cmd.env("SASHA", socket);
         }
+        // So hooks of the agents in it can say which terminal they're in.
+        cmd.env("SASHA_TAB", id.to_string());
         for var in ["TERM_PROGRAM_VERSION", "TERMINFO", "TERMCAP"] {
             cmd.env_remove(var);
         }
@@ -224,6 +231,8 @@ impl Tab {
             pinned: false,
             group: None,
             group_before_pin: None,
+            mission: None,
+            mailbox: Vec::new(),
             fg_name: String::new(),
             fg_pgid: shell_pid,
             title_owner: None,

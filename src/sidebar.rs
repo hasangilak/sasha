@@ -10,6 +10,7 @@ use crate::app::Activity;
 use crate::layout::{Hit, ListItem, Row};
 use crate::tab::{Tab, split_glyph};
 use crate::workspace::GroupId;
+use crate::mission::State;
 use crate::theme::{self, BG};
 
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -268,9 +269,21 @@ fn render_tab(buf: &mut Buffer, app: &App, tab: &Tab, pill: Rect, state: TabStat
     } else {
         None
     };
-    let reserved = if marker.is_some() { 6 } else { 4 };
+    let mut reserved = if marker.is_some() { 6 } else { 4 };
     if let Some((glyph, color)) = marker {
         buf.set_string(pill.right() - 2, pill.y, glyph, Style::new().fg(color).bg(bg));
+    }
+    // One of the tower's sessions: ♜, coloured by how it's going.
+    if let Some(mission) = &tab.mission {
+        let color = match mission.state {
+            State::Working => p.accent,
+            State::Waiting => p.yellow,
+            State::Done => p.green,
+            State::Ended => p.text_dim,
+        };
+        let x = pill.right() - if marker.is_some() { 4 } else { 2 };
+        buf.set_string(x, pill.y, "♜", Style::new().fg(color).bg(bg));
+        reserved += 2;
     }
 
     let mut title_style = Style::new().fg(fg).bg(bg);

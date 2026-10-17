@@ -13,7 +13,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 
-use crate::{agents, store};
+use crate::{agents, hooks, store};
 
 const EXTENSION: &str = include_str!("tower/extension.ts");
 const PROMPT: &str = include_str!("tower/prompt.md");
@@ -118,6 +118,9 @@ fn run_claude(dir: &Path) -> Result<()> {
         .arg("--mcp-config")
         .arg(&config)
         .arg("--strict-mcp-config")
+        // Its news goes in before each of its turns.
+        .arg("--settings")
+        .arg(hooks::tower_hooks()?)
         .args(["--allowedTools", CLAUDE_ALLOWED])
         .args(["--append-system-prompt", PROMPT])
         .env("MCP_TOOL_TIMEOUT", CLAUDE_TOOL_TIMEOUT);
@@ -135,7 +138,8 @@ fn run_claude(dir: &Path) -> Result<()> {
 /// sasha to reach.
 fn mcp_config() -> Result<serde_json::Value> {
     let exe = std::env::current_exe().context("can't find the sasha executable")?;
-    let mut env = serde_json::Map::new();
+    // It's the tower asking: what it prompts becomes one of its sessions.
+    let mut env = serde_json::Map::from_iter([("SASHA_TOWER".to_owned(), "1".into())]);
     for var in ["SASHA_SOCKET", "SASHA"] {
         if let Ok(value) = std::env::var(var) {
             env.insert(var.to_owned(), value.into());

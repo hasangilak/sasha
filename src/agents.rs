@@ -56,6 +56,22 @@ impl Agent {
         }
     }
 
+    /// What the agent last did, from the session log at `log`.
+    pub fn report_from(self, log: &Path) -> Option<Report> {
+        let entries = read_tail(log);
+        match self {
+            Agent::Claude => claude_turn(&entries),
+            Agent::Codex => codex_turn(&entries),
+            Agent::Pi => pi_turn(&entries),
+        }
+    }
+
+    /// A report in a line: the gist of the answer and what was done, or
+    /// what it waits for.
+    pub fn summary(self, report: &Report) -> String {
+        self.message(report, "").1
+    }
+
     /// The notification's heading and text for a report, in the tab called
     /// `place`.
     pub fn message(self, report: &Report, place: &str) -> (String, String) {

@@ -82,14 +82,23 @@ fn render_tower_title(buf: &mut Buffer, app: &App) {
     let color = if hot || focused { p.accent } else { p.text };
     let x = area.x + 1;
     buf.set_string(x, area.y, "♜", Style::new().fg(color).bg(bg));
-    let state = match app.tower() {
-        Some(_) => app.tower_engine().label(),
-        None => "stopped",
+    let mut label = match app.tower() {
+        Some(_) => format!("tower · {}", app.tower_engine().label()),
+        None => "tower · stopped".to_owned(),
     };
+    if app.tower_autopilot() {
+        label.push_str(" · auto");
+    }
     let style = Style::new().fg(color).bg(bg);
     let style = if focused { style.add_modifier(Modifier::BOLD) } else { style };
-    let room = area.right().saturating_sub(x + 4) as usize;
-    let end = render_faded(buf, x + 2, area.y, &format!("tower · {state}"), room, style, bg);
+    let news = app.tower_news();
+    let news = (news > 0).then(|| format!(" {news} new "));
+    let room = area.right().saturating_sub(x + 4 + news.as_ref().map_or(0, |n| n.width() as u16 + 1)) as usize;
+    let mut end = render_faded(buf, x + 2, area.y, &label, room, style, bg);
+    if let Some(news) = news {
+        buf.set_string(end + 1, area.y, &news, Style::new().fg(p.on_accent).bg(p.yellow));
+        end += news.width() as u16 + 1;
+    }
     buf.set_string(end + 1, area.y, "▾", Style::new().fg(if hot { p.accent } else { p.text_dim }).bg(bg));
 }
 

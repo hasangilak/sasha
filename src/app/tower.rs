@@ -4,6 +4,7 @@
 //! or not, across restarts.
 
 use std::ffi::OsString;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 
@@ -47,6 +48,17 @@ impl App {
     /// The terminal keys go to: the tower's, or the one in the pane.
     pub(super) fn focused_tab_mut(&mut self) -> Option<&mut Tab> {
         if self.tower_focused() { self.tower.as_mut() } else { self.ws_mut().active_tab_mut() }
+    }
+
+    /// You typed: into the tower, or the terminal in the pane. Messages and
+    /// news wait while you do.
+    pub(super) fn note_typing(&mut self) {
+        let now = Instant::now();
+        if self.tower_focused() {
+            self.tower_last_key = Some(now);
+        } else if let Some(tab) = self.active_tab() {
+            self.pane_last_key = Some((tab.id, now));
+        }
     }
 
     pub(super) fn focused_tab(&self) -> Option<&Tab> {

@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::mission::{Ended, Mission};
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
@@ -21,6 +23,9 @@ pub struct State {
     /// Keeping the computer awake was on: it's switched on again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub keep_awake: bool,
+    /// The tower's sessions whose terminals are gone, newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended_missions: Vec<Ended>,
 }
 
 /// Sidebar and workspace bar sizes.
@@ -59,6 +64,9 @@ pub struct SavedLayout {
     pub hide_tower: bool,
     #[serde(default)]
     pub tower_width: u16,
+    /// News from its sessions goes straight to the tower when it's idle.
+    #[serde(default)]
+    pub tower_autopilot: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -126,6 +134,9 @@ pub struct SavedTab {
     /// The tower's tab, from the version that kept it in a workspace.
     #[serde(default, skip_serializing)]
     pub tower: bool,
+    /// What the tower set it to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission: Option<Mission>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -140,6 +140,7 @@ impl App {
             Command::TowerOn(engine) => self.tower_on(engine),
             Command::TowerRestart => self.restart_tower(),
             Command::TowerHide => self.hide_tower(),
+            Command::TowerAutopilot => self.toggle_autopilot(),
             Command::SideBars => self.toggle_side_bars(),
             Command::Narrower => self.resize_sidebar(-2),
             Command::Wider => self.resize_sidebar(2),
@@ -376,6 +377,7 @@ impl App {
             }
             return;
         }
+        self.note_typing();
         let Some(tab) = self.focused_tab_mut() else { return };
         // Typing always jumps back to the live screen.
         tab.screen_mut().set_scrollback(0);

@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::mission::{Ended, Mission, Signal, Update};
 use crate::protocol::{self, ClientMessage};
 use crate::tab::TabId;
 
@@ -22,22 +23,52 @@ pub enum Request {
     /// What a terminal shows, with the scrollback above it up to `lines`
     /// lines in all.
     Read { id: TabId, lines: usize },
-    /// Text into a terminal, the way a paste arrives.
-    Paste { id: TabId, text: String },
+    /// Text into a terminal, the way a paste arrives. From the tower, it's
+    /// a task: the terminal becomes one of its sessions.
+    Paste {
+        id: TabId,
+        text: String,
+        #[serde(default)]
+        tower: bool,
+    },
     /// Keys by name: `enter`, `esc`, `ctrl-c`, `up`, `y`…
     Keys { id: TabId, keys: Vec<String> },
     /// A new terminal in `cwd`, called `name`, with `command` typed into its
-    /// shell. It opens without taking the screen.
-    Open { cwd: PathBuf, name: Option<String>, command: Option<String> },
+    /// shell. It opens without taking the screen. From the tower, it's one
+    /// of its sessions, set to do `task`.
+    Open {
+        cwd: PathBuf,
+        name: Option<String>,
+        command: Option<String>,
+        #[serde(default)]
+        tower: bool,
+        #[serde(default)]
+        task: Option<String>,
+    },
     /// Brings a terminal on screen.
     Show { id: TabId },
+    /// Names a terminal (empty: back to its folder's name).
+    Rename { id: TabId, name: String },
     /// Closes a terminal, hanging up what runs in it.
     Close { id: TabId },
+    /// What an agent's hooks say about its terminal.
+    Signal { id: TabId, signal: Signal },
+    /// A message from the session in terminal `from` to the one called
+    /// `to` (a name, `#id`, or `tower`), delivered when it's free.
+    Message { from: Option<TabId>, to: String, text: String },
+    /// The news for the tower about its sessions (`ids`, else all), taken
+    /// off the pile with `take`.
+    Inbox {
+        ids: Option<Vec<TabId>>,
+        take: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Reply {
-    Terminals(Vec<Terminal>),
+    /// The terminals, and the tower's sessions that ended.
+    Terminals(Vec<Terminal>, Vec<Ended>),
+    Updates(Vec<Update>),
     Text(String),
     Opened(TabId),
     Done,
@@ -66,6 +97,8 @@ pub struct Terminal {
     /// Printed since the user last looked, or rang the bell.
     pub unseen: bool,
     pub bell: bool,
+    /// What the tower set it to do, if it's one of the tower's sessions.
+    pub mission: Option<Mission>,
 }
 
 /// Asks the running sasha.
@@ -98,8 +131,20 @@ fn socket() -> Result<PathBuf> {
 }
 
 pub fn terminals() -> Result<Vec<Terminal>> {
+    Ok(everything()?.0)
+}
+
+/// The terminals, and the tower's sessions that ended.
+pub fn everything() -> Result<(Vec<Terminal>, Vec<Ended>)> {
     match call(Request::List)? {
-        Reply::Terminals(terminals) => Ok(terminals),
+        Reply::Terminals(terminals, ended) => Ok((terminals, ended)),
+        _ => bail!("unexpected answer from sasha"),
+    }
+}
+
+pub fn updates(ids: Option<Vec<TabId>>, take: bool) -> Result<Vec<Update>> {
+    match call(Request::Inbox { ids, take })? {
+        Reply::Updates(updates) => Ok(updates),
         _ => bail!("unexpected answer from sasha"),
     }
 }

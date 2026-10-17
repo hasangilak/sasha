@@ -103,9 +103,22 @@ restart it; each picks up its own last conversation.
 - `SASHA_TOWER_CLAUDE_MODEL` and `SASHA_TOWER_CODEX_MODEL` pick the models (Claude Code's own
   default, and `openai-codex/gpt-6.1-sol`).
 
+**It keeps track of its sessions.** sasha remembers what the tower set each terminal to do and
+how that's going (working, waiting for approval, done, ended), across restarts, and marks them ♜
+in the sidebar, coloured by state. Agents the tower starts are named after their job, in the
+sidebar and in Claude Code's own session list, and report through hooks the moment they finish or
+stop for an approval. That news reaches the tower at the start of its next turn, or right away
+with **auto-reply** on (in its menu), so it can act on it and tell you. The header counts what it
+hasn't heard yet.
+
+**Sessions talk to each other.** Each agent the tower starts can see the others by name, read what
+they did, and message them or the tower; a message waits until its reader's turn is over. The
+tower follows every exchange in its news.
+
 Its tools come from `sasha mcp`, an MCP server you can give any agent: `list_terminals`,
 `read_terminal`, `agent_report` (what Claude or Codex last did, from its log), `send_prompt`,
-`send_keys`, `wait_for_terminal`, `open_terminal`, `show_terminal` and `close_terminal`.
+`send_keys`, `wait_for_terminal`, `wait_for_any`, `open_terminal`, `rename_terminal`,
+`show_terminal` and `close_terminal`.
 
 ## More
 

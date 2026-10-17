@@ -24,10 +24,13 @@ impl App {
 
     fn control(&mut self, request: Request) -> Result<Reply, String> {
         match request {
-            Request::List => Ok(Reply::Terminals(self.terminals())),
+            Request::List => Ok(Reply::Terminals(self.terminals(), self.ended_missions.clone())),
             Request::Read { id, lines } => Ok(Reply::Text(self.control_tab(id)?.text(lines.clamp(1, MAX_LINES)))),
-            Request::Paste { id, text } => {
+            Request::Paste { id, text, tower } => {
                 self.control_tab(id)?.paste(&text);
+                if tower {
+                    self.start_mission(id, &text);
+                }
                 Ok(Reply::Done)
             }
             Request::Keys { id, keys } => {
@@ -40,7 +43,7 @@ impl App {
                 tab.write(bytes);
                 Ok(Reply::Done)
             }
-            Request::Open { cwd, name, command } => {
+            Request::Open { cwd, name, command, tower, task } => {
                 if !cwd.is_dir() {
                     return Err(format!("{} isn't a folder", cwd.display()));
                 }
@@ -50,7 +53,7 @@ impl App {
                 };
                 let mut tab = self.spawn_tab(&cwd).map_err(|err| format!("can't start a shell: {err}"))?;
                 tab.custom_prefix = name.filter(|n| !n.trim().is_empty());
-                if let Some(command) = command.filter(|c| !c.trim().is_empty()) {
+                if let Some(command) = command.as_deref().filter(|c| !c.trim().is_empty()) {
                     // The shell reads it once it's up.
                     tab.write(format!("{command}\r"));
                 }
@@ -59,6 +62,10 @@ impl App {
                 let ws = &mut self.workspaces[w];
                 ws.section_hidden = false;
                 ws.tabs.push(tab);
+                if tower {
+                    let task = task.or(command).unwrap_or_else(|| "opened by the tower".to_owned());
+                    self.start_mission(id, &task);
+                }
                 Ok(Reply::Opened(id))
             }
             Request::Show { id } => {
@@ -66,11 +73,22 @@ impl App {
                 self.go_to(w, t);
                 Ok(Reply::Done)
             }
+            Request::Rename { id, name } => {
+                let name = name.trim();
+                self.control_tab(id)?.custom_prefix = (!name.is_empty()).then(|| name.to_owned());
+                Ok(Reply::Done)
+            }
             Request::Close { id } => {
                 let (w, t) = self.find_tab(id).ok_or_else(|| gone(id))?;
                 self.remove_tab(w, t);
                 Ok(Reply::Done)
             }
+            Request::Signal { id, signal } => {
+                self.signal(id, signal);
+                Ok(Reply::Done)
+            }
+            Request::Inbox { ids, take } => Ok(Reply::Updates(self.updates(ids.as_deref(), take))),
+            Request::Message { from, to, text } => self.message(from, &to, &text).map(Reply::Text),
         }
     }
 
@@ -92,6 +110,7 @@ impl App {
                     on_screen: on_screen == Some(tab.id),
                     unseen: tab.unseen,
                     bell: tab.bell,
+                    mission: tab.mission.clone(),
                 });
             }
         }

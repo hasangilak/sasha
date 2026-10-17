@@ -2,6 +2,7 @@ mod control;
 mod files;
 mod header;
 mod keys;
+mod missions;
 mod mouse;
 mod panels;
 mod state;
@@ -38,6 +39,7 @@ use crate::protocol::{self, Hello};
 use crate::server::{self, Attached, ClientId};
 use crate::store::{self, SavedGroup, SavedLayout, SavedTab, SavedWorkspace, State};
 use crate::tab::{Tab, TabId};
+use crate::mission::{self, Ended, Update};
 use crate::tower::Engine;
 use crate::workspace::{self, Group, GroupId, Workspace, WorkspaceId};
 use crate::{clipboard, notify, theme, ui};
@@ -212,6 +214,20 @@ pub struct App {
     /// Keys go to it rather than the pane, while its panel shows.
     tower_focus: bool,
     tower_width: u16,
+    /// News about the tower's sessions it hasn't heard yet.
+    tower_inbox: Vec<Update>,
+    /// The news goes straight to the tower whenever it's idle.
+    tower_autopilot: bool,
+    /// When to press Enter on news typed into the tower.
+    tower_enter_at: Option<Instant>,
+    /// When you last typed into the tower.
+    tower_last_key: Option<Instant>,
+    /// The terminal in the pane you last typed into, and when.
+    pane_last_key: Option<(TabId, Instant)>,
+    /// When to press Enter on messages typed into sessions.
+    enters: Vec<(TabId, Instant)>,
+    /// The tower's sessions whose terminals are gone.
+    ended_missions: Vec<Ended>,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
     next_group_id: GroupId,
@@ -277,6 +293,13 @@ impl App {
             tower_panel: false,
             tower_focus: false,
             tower_width: layout::TOWER_WIDTH,
+            tower_inbox: Vec::new(),
+            tower_autopilot: false,
+            tower_enter_at: None,
+            tower_last_key: None,
+            pane_last_key: None,
+            enters: Vec::new(),
+            ended_missions: Vec::new(),
             next_tab_id: 0,
             next_workspace_id: 0,
             next_group_id: 0,
@@ -316,6 +339,7 @@ impl App {
             }
             self.files_shown = !layout.hide_files;
             self.tower_enabled = layout.tower;
+            self.tower_autopilot = layout.tower_autopilot;
             self.tower_panel = layout.tower && !layout.hide_tower;
             if layout.tower_width > 0 {
                 self.tower_width = layout.tower_width.clamp(layout::TOWER_MIN, layout::TOWER_MAX);
@@ -372,6 +396,7 @@ impl App {
         }
         self.current = state.current.min(self.workspaces.len().saturating_sub(1));
         // Keeping the computer awake survives restarts (and updates).
+        self.ended_missions = state.ended_missions;
         if state.keep_awake {
             self.toggle_awake();
         }
@@ -402,6 +427,14 @@ impl App {
             Ok(mut tab) => {
                 tab.pinned = saved.pinned;
                 tab.custom_prefix = saved.title;
+                // Its session didn't outlive sasha; what it was asked stays.
+                tab.mission = saved.mission.map(|mut mission| {
+                    if mission.state != mission::State::Ended {
+                        let was = mission.state.word();
+                        mission.set(mission::State::Ended, Some(format!("sasha restarted while it was {was}")));
+                    }
+                    mission
+                });
                 tab.group = group.filter(|_| !tab.pinned);
                 let id = tab.id;
                 self.workspaces[index].tabs.push(tab);
@@ -772,6 +805,7 @@ impl App {
                 self.refresh_files();
                 self.check_awake();
                 self.notify();
+                self.tower_tick();
                 self.save();
                 dirty = true;
             }
@@ -819,6 +853,7 @@ impl App {
                 .collect(),
             current: self.current,
             keep_awake: self.awake.is_some(),
+            ended_missions: self.ended_missions.clone(),
             layout: Some(SavedLayout {
                 sidebar_width: self.sidebar_width,
                 collapsed: self.collapsed,
@@ -835,6 +870,7 @@ impl App {
                 tower: self.tower_enabled,
                 hide_tower: !self.tower_panel,
                 tower_width: self.tower_width,
+                tower_autopilot: self.tower_autopilot,
             }),
         };
         let result = store::encode(&state).and_then(|json| {
@@ -984,6 +1020,9 @@ impl App {
         }
         // Dropping the workspace hangs up its shells.
         let removed = self.workspaces.remove(index);
+        for tab in &removed.tabs {
+            self.end_mission(tab, &removed.name);
+        }
         if index < self.current || self.current >= self.workspaces.len() {
             self.current = self.current.saturating_sub(1);
         }
@@ -1230,10 +1269,14 @@ impl App {
             return;
         }
         // Dropping the tab hangs up its shell.
-        let was_pinned = ws.tabs.remove(index).pinned;
+        let removed = ws.tabs.remove(index);
+        let was_pinned = removed.pinned;
         if index < ws.active || ws.active >= ws.tabs.len() {
             ws.active = ws.active.saturating_sub(1);
         }
+        let workspace = self.workspaces[ws_index].name.clone();
+        self.end_mission(&removed, &workspace);
+        drop(removed);
         if was_pinned {
             self.save();
         }
@@ -1622,9 +1665,13 @@ impl App {
     fn notify(&mut self) {
         let watching = self.client.is_some() && self.focused;
         let on_screen = (self.current, self.workspaces.get(self.current).map_or(0, |ws| ws.active));
+        let mut mission_news = Vec::new();
         for (w, ws) in self.workspaces.iter_mut().enumerate() {
             for (t, tab) in ws.tabs.iter_mut().enumerate() {
                 let Some(news) = tab.take_news() else { continue };
+                if tab.mission.is_some() {
+                    mission_news.push((tab.id, news.clone()));
+                }
                 let seen = watching && (w, t) == on_screen;
                 if seen || tab.last_notified.is_some_and(|at| at.elapsed() < NOTIFY_GAP) {
                     continue;
@@ -1636,6 +1683,9 @@ impl App {
                     _ => notify::send(&tab.title(), &news),
                 }
             }
+        }
+        for (id, news) in mission_news {
+            self.mission_news(id, &news);
         }
         // The tower says what it found, unless it's on screen.
         let shown = self.tower_shown();
@@ -2060,6 +2110,7 @@ impl App {
             Mode::Picker(picker) => return picker.query.push_str(line),
             _ => {}
         }
+        self.note_typing();
         if let Some(tab) = self.focused_tab_mut() {
             tab.paste(text);
         }
@@ -2087,6 +2138,7 @@ fn save_workspace(ws: &Workspace, groups: &[Group]) -> SavedWorkspace {
             pinned: tab.pinned,
             group: tab.group.and_then(|id| groups.iter().position(|g| g.id == id)),
             tower: false,
+            mission: tab.mission.clone(),
         })
         .collect();
     SavedWorkspace {
