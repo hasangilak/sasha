@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use anyhow::{Context, Result, bail};
@@ -94,19 +95,93 @@ pub fn spoken(answer: &str) -> String {
 
 /// Says `text`, cutting off whatever it was saying.
 pub fn say(text: &str) {
-    say_parts(&[(text.to_owned(), "warm".to_owned())]);
+    say_parts(&[(text.to_owned(), "warm".to_owned())], None);
 }
 
 /// Says `parts` one after another, each `(text, tone)` in its tone where
-/// the voice can do feeling.
-pub fn say_parts(parts: &[(String, String)]) {
+/// the voice can do feeling, in the voice of `person` (who then speaks
+/// from now on) or of whoever spoke last.
+pub fn say_parts(parts: &[(String, String)], person: Option<&str>) {
+    if let Some(name) = person {
+        set_current(name);
+    }
     if let Some(python) = kokoro_python()
-        && say_with_speaker(&python, parts).is_ok()
+        && say_with_speaker(&python, parts, &speaking()).is_ok()
     {
         return;
     }
     let text: Vec<&str> = parts.iter().map(|(text, _)| text.as_str()).collect();
     say_with_mac(&text.join(" "));
+}
+
+/// One of the tower's voices, which you call by name: in
+/// `voice/people.json`, by name.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Person {
+    #[serde(skip)]
+    pub name: String,
+    /// The model's voice: one of Kokoro's (`af_bella`, `bm_fable`…).
+    pub voice: String,
+    /// `kokoro`, plain, or `chatterbox`, with feeling.
+    #[serde(default = "plain")]
+    pub engine: String,
+    /// Its pace, else the one in `voice/pace`.
+    #[serde(default)]
+    pub pace: Option<f64>,
+    /// How it sounds, for the tower to know.
+    #[serde(default)]
+    pub about: String,
+}
+
+fn plain() -> String {
+    "kokoro".to_owned()
+}
+
+/// The voices you can call by name.
+pub fn people() -> Vec<Person> {
+    let Some(text) = dir().and_then(|dir| std::fs::read_to_string(dir.join("people.json")).ok()) else { return Vec::new() };
+    let people: std::collections::BTreeMap<String, Person> = serde_json::from_str(&text).unwrap_or_default();
+    people
+        .into_iter()
+        .map(|(name, mut person)| {
+            person.name = name;
+            person
+        })
+        .collect()
+}
+
+/// Who speaks now: the one last called, else the first.
+pub fn current_person() -> Option<Person> {
+    let people = people();
+    let current = dir().and_then(|dir| std::fs::read_to_string(dir.join("current")).ok()).unwrap_or_default();
+    let found = people.iter().find(|p| p.name.eq_ignore_ascii_case(current.trim())).cloned();
+    found.or_else(|| people.into_iter().next())
+}
+
+fn set_current(name: &str) {
+    let person = people().into_iter().find(|p| p.name.eq_ignore_ascii_case(name.trim()));
+    if let (Some(person), Some(dir)) = (person, dir()) {
+        let _ = std::fs::write(dir.join("current"), format!("{}\n", person.name));
+    }
+}
+
+/// How the speaker speaks: in which voice, with which model, how fast.
+struct Speaking {
+    voice: String,
+    engine: String,
+    pace: f64,
+}
+
+/// The current person's way of speaking, else the one set in `voice/`.
+fn speaking() -> Speaking {
+    match current_person() {
+        Some(person) => Speaking {
+            pace: person.pace.filter(|p| (0.5..=1.5).contains(p)).unwrap_or_else(chosen_pace),
+            voice: person.voice,
+            engine: person.engine,
+        },
+        None => Speaking { voice: speaker_voice(), engine: chosen_engine(), pace: chosen_pace() },
+    }
 }
 
 /// How fast it talks: `$SASHA_VOICE_PACE`, else the first line of
@@ -146,12 +221,11 @@ fn kokoro_python() -> Option<PathBuf> {
 
 /// Hands `parts` to the speaker, starting it (and loading its model)
 /// first if it isn't running.
-fn say_with_speaker(python: &Path, parts: &[(String, String)]) -> Result<()> {
+fn say_with_speaker(python: &Path, parts: &[(String, String)], how: &Speaking) -> Result<()> {
     let dir = dir().context("no home folder")?;
     let socket = speaker_socket()?;
-    let voice = speaker_voice();
     let parts: Vec<Value> = parts.iter().map(|(text, tone)| json!({"text": text, "tone": tone})).collect();
-    let request = json!({"say": parts, "voice": voice, "engine": chosen_engine(), "pace": chosen_pace()});
+    let request = json!({"say": parts, "voice": how.voice, "engine": how.engine, "pace": how.pace});
     if tell_speaker(&socket, &request).is_ok() {
         return Ok(());
     }
@@ -177,7 +251,8 @@ fn start_speaker(python: &Path, dir: &Path, socket: &Path) -> Result<()> {
     std::fs::write(&script, SPEAKER)?;
     let log = std::fs::File::create(dir.join("speaker.log")).map_or_else(|_| Stdio::null(), Stdio::from);
     let mut command = Command::new(python);
-    command.arg(&script).arg(socket).arg(dir).arg(speaker_voice()).arg(chosen_engine());
+    let how = speaking();
+    command.arg(&script).arg(socket).arg(dir).arg(&how.voice).arg(&how.engine);
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
     // A session of its own: it outlives whoever asked first.
     // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
@@ -262,7 +337,7 @@ pub fn install() -> Result<()> {
         bail!("uv couldn't install Kokoro");
     }
     println!("Loading Kokoro (the first time, it downloads its model)…");
-    say_with_speaker(&python, &[("Hello. This is how the tower sounds now.".to_owned(), "warm".to_owned())])?;
+    say_with_speaker(&python, &[("Hello. This is how the tower sounds now.".to_owned(), "warm".to_owned())], &speaking())?;
     println!("Done. The tower speaks with Kokoro; pick another voice in {}.", dir.join("voice").display());
     Ok(())
 }

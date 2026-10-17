@@ -111,6 +111,7 @@ pub fn role(engine: Engine) -> String {
         role.push('\n');
         role.push_str(DELEGATE);
     }
+    role.push_str(&voices());
     let yours = dir().and_then(|dir| std::fs::read_to_string(dir.join("role.md")).ok()).map(|text| uncommented(&text));
     if let Some(yours) = yours.filter(|text| !text.is_empty()) {
         role.push_str("\n\n## From the user\n\nThe user wrote these instructions for you themselves. Where they differ from the above, follow them.\n\n");
@@ -118,6 +119,37 @@ pub fn role(engine: Engine) -> String {
         role.push('\n');
     }
     role
+}
+
+/// The voices the user can call by name, for the tower's role.
+fn voices() -> String {
+    let people = crate::voice::people();
+    if people.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from(
+        "\n## Your voices\n\nThe user can call you by these names; each is a voice of yours:\n\n",
+    );
+    for person in &people {
+        let about = if person.about.is_empty() { person.voice.clone() } else { person.about.clone() };
+        text.push_str(&format!("- **{}**: {about}\n", capitalised(&person.name)));
+    }
+    text.push_str(
+        "\nWhen the user calls one by name (\"hey Bella\", \"Fable, what's been pushed?\"), answer aloud in that voice: \
+         `speak` with `as` set to the name, along with your written answer. Keep using that voice until they call another, \
+         for every spoken answer. Being called by name means they want to hear the answer. Names may arrive misheard \
+         (\"Bela\", \"Fabel\"), so go by the closest one. It's still you, the tower, whichever voice they call; \
+         let the voice's manner colour how you put things.\n",
+    );
+    if let Some(current) = crate::voice::current_person() {
+        text.push_str(&format!("\nSpeaking now: {}.\n", capitalised(&current.name)));
+    }
+    text
+}
+
+fn capitalised(name: &str) -> String {
+    let mut chars = name.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// `role.md`, made from its template the first time.

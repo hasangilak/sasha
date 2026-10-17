@@ -205,6 +205,7 @@ fn tools() -> Value {
                     "properties": {"text": {"type": "string"}, "tone": {"type": "string", "enum": voice::TONES}},
                     "required": ["text"],
                 }},
+                "as": {"type": "string", "description": "Which of your voices says it, by name (the one the user called); it keeps speaking until another is called"},
             }},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
         },
@@ -398,8 +399,17 @@ fn call(name: &str, args: &Value, progress: &Progress) -> Result<String> {
             }
             let words: usize = parts.iter().map(|(text, _)| text.split_whitespace().count()).sum();
             let tones: Vec<&str> = parts.iter().map(|(_, tone)| tone.as_str()).collect();
-            voice::say_parts(&parts);
-            Ok(format!("Saying it aloud ({words} words; {}).", tones.join(", then ")))
+            let person = args["as"].as_str().filter(|name| !name.trim().is_empty());
+            if let Some(name) = person
+                && !voice::people().is_empty()
+                && !voice::people().iter().any(|p| p.name.eq_ignore_ascii_case(name.trim()))
+            {
+                let names: Vec<String> = voice::people().into_iter().map(|p| p.name).collect();
+                bail!("no voice called {name}: there's {}", names.join(" and "));
+            }
+            voice::say_parts(&parts, person);
+            let who = voice::current_person().map(|p| format!(" as {}", p.name)).unwrap_or_default();
+            Ok(format!("Saying it aloud{who} ({words} words; {}).", tones.join(", then ")))
         }
         "show_terminal" => {
             let id = id(args)?;

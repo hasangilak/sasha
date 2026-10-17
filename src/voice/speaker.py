@@ -140,13 +140,15 @@ def warm_up_next():
     """Gets one more of the voice's moods ready, if any is left; false when
     all are. The model first."""
     try:
-        if ENGINE != "chatterbox" or not VOICE:
+        if ENGINE == "chatterbox" and VOICE:
+            for tone in TONES:
+                if (VOICE, tone) not in conds:
+                    conditionals(VOICE, tone)
+                    return True
+        # Kokoro too: it's small, a voice of its own, and the fallback.
+        if "kokoro" not in models:
             model("kokoro")
-            return False
-        for tone in TONES:
-            if (VOICE, tone) not in conds:
-                conditionals(VOICE, tone)
-                return True
+            return True
     except Exception:
         traceback.print_exc()
     return False

@@ -133,7 +133,20 @@ speaks with feeling: [Chatterbox](https://github.com/resemble-ai/chatterbox) cop
 (from a recording Kokoro makes once) and the tower gives each part of what it says a tone, from
 calm to urgent, changing within a message when the news does. It talks a tenth slower than the
 model would, with a breath after each sentence; set your own pace in `~/.config/sasha/voice/pace`
-(`0.85`, or `1` for the model's own). Without Kokoro it uses your Mac's
+(`0.85`, or `1` for the model's own).
+
+**Call its voices by name.** List voices in `~/.config/sasha/voice/people.json`, by name, each
+with its model voice, `engine` (`kokoro` or `chatterbox`), and optionally `pace` and `about`:
+
+```json
+{
+  "bella": {"voice": "af_bella", "engine": "kokoro", "about": "American, bright and clear"},
+  "fable": {"voice": "bm_fable", "engine": "chatterbox", "about": "British, warm and expressive"}
+}
+```
+
+Then "hey Bella, tell me about the open PRs" or "Fable, what's been pushed to main?" brings that
+voice up: the tower answers in it, and keeps it until you call the other. Without Kokoro it uses your Mac's
 system voice.
 Talk to it with Claude Code's or Codex's own voice input.
 
