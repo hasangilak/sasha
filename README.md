@@ -81,25 +81,27 @@ new terminal and `⋮` for everything else.
 
 ## The tower
 
-`Ctrl+B` then `Shift+T` (or ♜ in the header) opens the tower: [pi](https://pi.dev), the
-coding-agent harness, in a panel at the right edge, with every terminal in sasha as its tools.
-Once opened it keeps running, and starts with sasha: ♜ hides and shows the panel (it lights up
+`Ctrl+B` then `Shift+T` (or ♜ in the header) opens the tower: an agent in a panel at the right
+edge, with every terminal in sasha as its tools. Ask it what your sessions are doing, hand a task
+to the Claude Code in one terminal and a review to the Codex in another, and it types the
+prompts, waits for them to finish, answers their menus when you say so, and comes back with the
+results. It can open terminals for new work and bring one on screen for you.
+
+Once opened it keeps running and starts with sasha: ♜ hides and shows the panel (it lights up
 when the hidden tower has news), and a click on the tower or the pane says where your keys go.
-Drag its edge to resize it. Ask it what your sessions are doing,
-hand a task to the Claude Code in one terminal and a review to the Codex in another, and it types
-the prompts, waits for them to finish, answers their menus when you say so, and comes back with
-the results. It can open terminals for new work and bring one on screen for you.
+Drag its edge to resize it.
 
-It runs on your Claude subscription, or your ChatGPT one through Codex:
+It runs on your Claude plan or your ChatGPT one. Click its name above the panel to switch, or to
+restart it; each picks up its own last conversation.
 
-- The first time, sasha offers to install pi (`npm install -g @earendil-works/pi-coding-agent`).
-  Then sign in inside the tower with `/login`: *Anthropic (Claude Pro/Max)*, *ChatGPT Plus/Pro
-  (Codex)*, or both.
-- `/codex` and `/claude` switch between them mid-conversation, and so does the menu under the
-  tower's name in the header (which also restarts it). It starts on the last one you used. `SASHA_TOWER_CLAUDE_MODEL` and
-  `SASHA_TOWER_CODEX_MODEL` pick the models (`anthropic/claude-opus-5-5` and
-  `openai-codex/gpt-6.1-sol` by default).
-- The tower keeps its conversation across restarts, and its notifications say what it found.
+- **Claude**, the default, runs [Claude Code](https://claude.com/claude-code) itself, so it uses
+  your Claude plan's limits. Third-party harnesses signed in to a Claude plan are billed as extra
+  usage instead.
+- **Codex** runs [pi](https://pi.dev), the coding-agent harness, signed in to your ChatGPT plan.
+  The first time, sasha offers to install it (`npm install -g @earendil-works/pi-coding-agent`);
+  sign in inside the tower with `/login`, then *ChatGPT Plus/Pro (Codex)*.
+- `SASHA_TOWER_CLAUDE_MODEL` and `SASHA_TOWER_CODEX_MODEL` pick the models (Claude Code's own
+  default, and `openai-codex/gpt-6.1-sol`).
 
 Its tools come from `sasha mcp`, an MCP server you can give any agent: `list_terminals`,
 `read_terminal`, `agent_report` (what Claude or Codex last did, from its log), `send_prompt`,

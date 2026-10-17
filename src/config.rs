@@ -25,9 +25,9 @@ OPTIONS:
     -V, --version      Show the version.
 
 COMMANDS:
-    tower              Run pi as the control tower over your terminals, on your
-                       Claude subscription (default) or Codex. The tower's tab
-                       (prefix, then T) runs this.
+    tower              Run the control tower over your terminals: Claude Code on
+                       your Claude plan (default), or pi on Codex. The tower's
+                       panel (prefix, then T) runs this.
     mcp                Serve the terminals as tools over MCP on stdin/stdout:
                        list, read, prompt, wait for, open and close them.
 

@@ -91,8 +91,8 @@ impl App {
             }
             Menu::Tower => vec![
                 match self.tower_engine() {
-                    Engine::Claude => entry("Run on Codex (ChatGPT subscription)", "", Command::TowerOn(Engine::Codex)),
-                    Engine::Codex => entry("Run on Claude (Claude subscription)", "", Command::TowerOn(Engine::Claude)),
+                    Engine::Claude => entry("Run on Codex (pi, ChatGPT)", "", Command::TowerOn(Engine::Codex)),
+                    Engine::Codex => entry("Run on Claude (Claude Code)", "", Command::TowerOn(Engine::Claude)),
                 },
                 entry(if self.tower.is_some() { "Restart the tower" } else { "Start the tower" }, "", Command::TowerRestart),
                 entry("Hide the tower", "", Command::TowerHide),

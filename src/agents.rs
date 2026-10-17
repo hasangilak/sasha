@@ -111,12 +111,23 @@ fn home() -> Option<PathBuf> {
     std::env::home_dir()
 }
 
-/// Claude Code's log of the newest session in `cwd`: in its projects
-/// folder, under the path with everything but letters and digits made `-`.
-fn claude_log(cwd: &Path) -> Option<PathBuf> {
+/// Where Claude Code keeps the sessions of `cwd`: in its projects folder,
+/// under the path with everything but letters and digits made `-`.
+fn claude_project(cwd: &Path) -> Option<PathBuf> {
     let base = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| Some(home()?.join(".claude")))?;
     let name: String = cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    newest(fs::read_dir(base.join("projects").join(name)).ok()?.flatten().map(|e| e.path()))
+    Some(base.join("projects").join(name))
+}
+
+/// Claude Code's log of the newest session in `cwd`.
+fn claude_log(cwd: &Path) -> Option<PathBuf> {
+    newest(fs::read_dir(claude_project(cwd)?).ok()?.flatten().map(|e| e.path()))
+}
+
+/// Whether Claude Code has had a session in `cwd` to continue.
+pub fn claude_has_session(cwd: &Path) -> bool {
+    let entries = claude_project(cwd).and_then(|dir| fs::read_dir(dir).ok());
+    entries.into_iter().flatten().flatten().any(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
 }
 
 /// Codex's log of the newest session in `cwd`: they're filed by the day

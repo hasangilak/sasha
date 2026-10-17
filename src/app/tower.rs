@@ -140,13 +140,12 @@ impl App {
         self.relayout_now();
     }
 
-    /// Runs the tower on Claude or Codex: pi switches and keeps the
-    /// conversation; a tower that isn't running starts on it.
+    /// Runs the tower on Claude (Claude Code) or Codex (pi): starts that
+    /// one in its place, which picks up its own last conversation.
     pub(super) fn tower_on(&mut self, engine: Engine) {
-        match &self.tower {
-            Some(tower) => tower.write(format!("/{}\r", engine.name())),
-            None => self.start_tower(Some(engine)),
-        }
+        // Dropping the tab hangs the other one up.
+        self.tower = None;
+        self.start_tower(Some(engine));
         self.show_tower();
     }
 

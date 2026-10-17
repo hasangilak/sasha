@@ -1,6 +1,8 @@
-//! `sasha tower`: pi, the coding-agent harness, set up as a control tower
-//! over sasha's terminals: on your Claude subscription, or your ChatGPT one
-//! through Codex. It's what the tower's terminal runs.
+//! `sasha tower`: an agent set up as the control tower over sasha's
+//! terminals, with them as its tools (`sasha mcp`). On Claude it's Claude
+//! Code itself, so it runs on your Claude plan; on Codex it's pi, the
+//! coding-agent harness, signed in to your ChatGPT plan. It's what the
+//! tower's panel runs.
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, Write};
@@ -9,18 +11,28 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use serde_json::json;
 
-use crate::store;
+use crate::{agents, store};
 
 const EXTENSION: &str = include_str!("tower/extension.ts");
 const PROMPT: &str = include_str!("tower/prompt.md");
 /// pi's npm package.
 const PACKAGE: &str = "@earendil-works/pi-coding-agent";
+/// The tower's tools Claude Code may use without asking each time: all but
+/// closing a terminal.
+const CLAUDE_ALLOWED: &str = "mcp__sasha__list_terminals,mcp__sasha__read_terminal,mcp__sasha__agent_report,\
+mcp__sasha__send_prompt,mcp__sasha__send_keys,mcp__sasha__wait_for_terminal,mcp__sasha__open_terminal,\
+mcp__sasha__show_terminal";
+/// How long Claude Code lets a tool call run, in ms: waits take a while.
+const CLAUDE_TOOL_TIMEOUT: &str = "3700000";
 
-/// The subscription the tower thinks with.
+/// What the tower thinks with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
+    /// Claude Code, on your Claude plan.
     Claude,
+    /// pi, on your ChatGPT plan through Codex.
     Codex,
 }
 
@@ -47,16 +59,20 @@ impl Engine {
             Engine::Codex => "Codex",
         }
     }
+}
 
-    /// The model pi runs, as `provider/id`: `$SASHA_TOWER_CLAUDE_MODEL` or
-    /// `$SASHA_TOWER_CODEX_MODEL`, else the strongest at the time of writing.
-    fn model(self) -> String {
-        let (var, default) = match self {
-            Engine::Claude => ("SASHA_TOWER_CLAUDE_MODEL", "anthropic/claude-opus-5-5"),
-            Engine::Codex => ("SASHA_TOWER_CODEX_MODEL", "openai-codex/gpt-6.1-sol"),
-        };
-        std::env::var(var).ok().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| default.to_owned())
-    }
+/// `$SASHA_TOWER_CLAUDE_MODEL`: Claude Code's own default otherwise.
+fn claude_model() -> Option<String> {
+    let model = std::env::var("SASHA_TOWER_CLAUDE_MODEL").ok()?;
+    let model = model.trim().trim_start_matches("anthropic/");
+    (!model.is_empty()).then(|| model.to_owned())
+}
+
+/// The model pi runs, as `provider/id`: `$SASHA_TOWER_CODEX_MODEL`, else the
+/// strongest at the time of writing.
+fn codex_model() -> String {
+    let model = std::env::var("SASHA_TOWER_CODEX_MODEL").ok().filter(|m| !m.trim().is_empty());
+    model.unwrap_or_else(|| "openai-codex/gpt-6.1-sol".to_owned())
 }
 
 /// Where the tower keeps its files, beside sasha's state:
@@ -65,15 +81,11 @@ pub fn dir() -> Option<PathBuf> {
     Some(store::path()?.parent()?.join("tower"))
 }
 
-/// Starts pi as the tower, on `engine` or else the one it last ran on
-/// (Claude the first time). Doesn't return unless pi can't start.
+/// Starts the tower on `engine`, else the one it ran on last (Claude the
+/// first time). Doesn't return unless it can't start.
 pub fn run(engine: Option<Engine>) -> Result<()> {
     let dir = dir().context("no home folder to keep the tower's files in")?;
     std::fs::create_dir_all(&dir).with_context(|| format!("can't create {}", dir.display()))?;
-    let extension = dir.join("extension.ts");
-    let prompt = dir.join("prompt.md");
-    std::fs::write(&extension, EXTENSION)?;
-    std::fs::write(&prompt, PROMPT)?;
     let chosen = dir.join("engine");
     let engine = match engine {
         Some(engine) => {
@@ -82,20 +94,74 @@ pub fn run(engine: Option<Engine>) -> Result<()> {
         }
         None => std::fs::read_to_string(&chosen).ok().and_then(|name| Engine::parse(&name)).unwrap_or(Engine::Claude),
     };
-    let Some(pi) = find_pi().or_else(install) else { return Ok(()) };
+    match engine {
+        Engine::Claude => run_claude(&dir),
+        Engine::Codex => run_pi(&dir),
+    }
+}
+
+/// Claude Code with sasha's tools and nothing else's, the tower's
+/// instructions, and its last conversation.
+fn run_claude(dir: &Path) -> Result<()> {
+    let Some(claude) = find_claude() else {
+        println!("The tower runs on Claude through Claude Code, and it isn't installed.\n");
+        println!("Install it from https://claude.com/claude-code, or run the tower on Codex:");
+        println!("click the tower's name above this panel, then Run on Codex.\n");
+        pause("");
+        return Ok(());
+    };
+    let config = dir.join("mcp.json");
+    std::fs::write(&config, serde_json::to_string_pretty(&mcp_config()?)?)?;
+    let mut command = Command::new(&claude);
+    command
+        .current_dir(dir)
+        .arg("--mcp-config")
+        .arg(&config)
+        .arg("--strict-mcp-config")
+        .args(["--allowedTools", CLAUDE_ALLOWED])
+        .args(["--append-system-prompt", PROMPT])
+        .env("MCP_TOOL_TIMEOUT", CLAUDE_TOOL_TIMEOUT);
+    if let Some(model) = claude_model() {
+        command.args(["--model", &model]);
+    }
+    if agents::claude_has_session(dir) {
+        command.arg("--continue");
+    }
+    let err = command.exec();
+    bail!("can't start {}: {err}", claude.display())
+}
+
+/// The MCP server Claude Code starts: this sasha's `sasha mcp`, told which
+/// sasha to reach.
+fn mcp_config() -> Result<serde_json::Value> {
+    let exe = std::env::current_exe().context("can't find the sasha executable")?;
+    let mut env = serde_json::Map::new();
+    for var in ["SASHA_SOCKET", "SASHA"] {
+        if let Ok(value) = std::env::var(var) {
+            env.insert(var.to_owned(), value.into());
+        }
+    }
+    Ok(json!({"mcpServers": {"sasha": {"type": "stdio", "command": exe, "args": ["mcp"], "env": env}}}))
+}
+
+/// pi with the tower's extension (sasha's tools) and instructions, on
+/// Codex, picking its conversation up.
+fn run_pi(dir: &Path) -> Result<()> {
+    let extension = dir.join("extension.ts");
+    let prompt = dir.join("prompt.md");
+    std::fs::write(&extension, EXTENSION)?;
+    std::fs::write(&prompt, PROMPT)?;
+    let Some(pi) = find_pi().or_else(install_pi) else { return Ok(()) };
 
     let mut command = Command::new(&pi);
     command
-        .current_dir(&dir)
+        .current_dir(dir)
         .arg("--extension")
         .arg(&extension)
         .arg("--append-system-prompt")
         .arg(&prompt)
-        .args(["--model", &engine.model(), "--continue"])
-        .env("SASHA_EXE", std::env::current_exe().context("can't find the sasha executable")?)
-        .env("SASHA_TOWER_DIR", &dir)
-        .env("SASHA_TOWER_CLAUDE_MODEL", Engine::Claude.model())
-        .env("SASHA_TOWER_CODEX_MODEL", Engine::Codex.model());
+        .args(["--model", &codex_model(), "--continue"])
+        .env("SASHA_EXE", std::env::current_exe().context("can't find the sasha executable")?);
     // pi is a node script: the node it was installed with sits beside it.
     if let Some(bin) = pi.parent() {
         command.env("PATH", with_first(bin));
@@ -111,8 +177,18 @@ fn with_first(dir: &Path) -> OsString {
     std::env::join_paths(paths).unwrap_or(rest)
 }
 
-/// `$SASHA_PI`, else `pi` on the `$PATH`, else where npm, bun, volta and
-/// Homebrew put it.
+/// `$SASHA_CLAUDE`, else `claude` where it's usually installed.
+fn find_claude() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("SASHA_CLAUDE") {
+        return Some(PathBuf::from(path));
+    }
+    find_program("claude").or_else(|| {
+        let local = std::env::home_dir()?.join(".claude/local/claude");
+        is_executable(&local).then_some(local)
+    })
+}
+
+/// `$SASHA_PI`, else `pi` where it's usually installed.
 fn find_pi() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("SASHA_PI") {
         return Some(PathBuf::from(path));
@@ -120,6 +196,8 @@ fn find_pi() -> Option<PathBuf> {
     find_program("pi")
 }
 
+/// `name` on the `$PATH`, else where npm, bun, volta and Homebrew put
+/// programs.
 fn find_program(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
@@ -154,8 +232,8 @@ fn is_executable(path: &Path) -> bool {
 
 /// pi isn't installed: offers to install it with npm, and returns where it
 /// went.
-fn install() -> Option<PathBuf> {
-    println!("The tower runs pi, the coding-agent harness from pi.dev, and pi isn't installed.\n");
+fn install_pi() -> Option<PathBuf> {
+    println!("The tower runs on Codex through pi, the coding-agent harness from pi.dev, and pi isn't installed.\n");
     let Some(npm) = find_program("npm") else {
         println!("Install Node.js 22 or newer (nodejs.org), then:\n\n    npm install -g {PACKAGE}\n");
         pause("Then open the tower again.");
@@ -187,7 +265,10 @@ fn install() -> Option<PathBuf> {
 }
 
 fn pause(message: &str) {
-    println!("{message}\n\nPress Enter to close.");
+    if !message.is_empty() {
+        println!("{message}\n");
+    }
+    println!("Press Enter to close.");
     let _ = io::stdin().lock().read_line(&mut String::new());
 }
 
@@ -201,8 +282,7 @@ mod tests {
         assert_eq!(Engine::parse("codex"), Some(Engine::Codex));
         assert_eq!(Engine::parse("chatgpt"), Some(Engine::Codex));
         assert_eq!(Engine::parse("gemini"), None);
-        assert!(Engine::Claude.model().starts_with("anthropic/"));
-        assert!(Engine::Codex.model().starts_with("openai-codex/"));
+        assert!(codex_model().contains('/'));
     }
 
     #[test]
@@ -210,5 +290,13 @@ mod tests {
         let mut bins = ["v9.1.0", "v24.19.0", "v22.3.1"].map(|v| PathBuf::from(format!("/n/{v}/bin")));
         bins.sort_by_key(|bin| version_of(bin));
         assert_eq!(bins[2], PathBuf::from("/n/v24.19.0/bin"));
+    }
+
+    #[test]
+    fn claude_code_may_use_every_tool_but_closing() {
+        let names: Vec<&str> = CLAUDE_ALLOWED.split(',').collect();
+        assert_eq!(names.len(), 8);
+        assert!(names.iter().all(|n| n.starts_with("mcp__sasha__")));
+        assert!(!names.contains(&"mcp__sasha__close_terminal"));
     }
 }

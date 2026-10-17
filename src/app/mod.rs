@@ -38,6 +38,7 @@ use crate::protocol::{self, Hello};
 use crate::server::{self, Attached, ClientId};
 use crate::store::{self, SavedGroup, SavedLayout, SavedTab, SavedWorkspace, State};
 use crate::tab::{Tab, TabId};
+use crate::tower::Engine;
 use crate::workspace::{self, Group, GroupId, Workspace, WorkspaceId};
 use crate::{clipboard, notify, theme, ui};
 
@@ -1638,14 +1639,19 @@ impl App {
         }
         // The tower says what it found, unless it's on screen.
         let shown = self.tower_shown();
+        let tower_engine = self.tower_engine();
         if let Some(tower) = &mut self.tower
             && let Some(news) = tower.take_news()
             && !(watching && shown)
             && !tower.last_notified.is_some_and(|at| at.elapsed() < NOTIFY_GAP)
         {
             tower.last_notified = Some(Instant::now());
+            let agent = match tower_engine {
+                Engine::Claude => Agent::Claude,
+                Engine::Codex => Agent::Pi,
+            };
             match tower.program_cwd() {
-                Some(cwd) => notify::send_agent(Agent::Pi, cwd, "tower".to_owned(), "tower".to_owned(), news),
+                Some(cwd) => notify::send_agent(agent, cwd, "tower".to_owned(), "tower".to_owned(), news),
                 None => notify::send("tower", &news),
             }
         }
