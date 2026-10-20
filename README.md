@@ -43,7 +43,8 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `S` | stop the tower talking |
 | `V` | the voice's control center: what it's saying, ▶ ■, and everything it said |
 | `i` | show / hide the ports and pull request bars |
-| `q` | quit |
+| `U` | update sasha to the one on disk: every terminal keeps running |
+| `q` | quit: ends what's running in every terminal |
 | `?` | every key |
 
 The mouse works too: click and drag tabs, double-click to rename, right-click to pin, click a
@@ -62,7 +63,14 @@ new terminal and `⋮` for everything else.
   workspace's badge to bring its terminals in. A group stays, even empty, until you delete it
   (`×` on its header; `+` opens a terminal in it).
 - **Sessions that last**: close the window or detach, then run `sasha` again and everything is
-  still there. After a restart, your tabs come back as fresh shells.
+  still there. After a quit or a restart, your tabs come back as fresh shells, and where Claude
+  Code or Codex was running, it picks its conversation up again (`claude --resume`, `codex
+  resume`).
+- **Updates that keep everything running**: a rebuilt or upgraded sasha takes over the running
+  one in place (prefix, then `U`, or `sasha update`, or just opening a window on it). Every
+  terminal, the programs in it, its screen and scrollback carry on; the new sasha takes over the
+  same process, so nothing it runs notices. It checks first that it can, and if not, everything
+  stays as it was.
 - **Notifications** when a background tab finishes, rings the bell, or goes quiet. For Claude
   Code and Codex they say what happened, read from the agent's own session log: the gist of its
   answer and how many files it changed, or the command waiting for your OK.

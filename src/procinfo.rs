@@ -102,6 +102,32 @@ pub fn cwd(pid: i32) -> Option<PathBuf> {
     (len > 0).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&raw[..len])))
 }
 
+/// The process group `pid` is in.
+#[cfg(target_os = "macos")]
+pub fn group(pid: i32) -> Option<i32> {
+    // SAFETY: proc_bsdshortinfo is plain old data, all-zero is a valid value.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: we pass a pointer to a correctly sized, writable struct.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+            size,
+        )
+    };
+    (n == size).then_some(info.pbsi_pgid as i32)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn group(pid: i32) -> Option<i32> {
+    // SAFETY: getpgid has no memory-safety preconditions.
+    let group = unsafe { libc::getpgid(pid) };
+    (group > 0).then_some(group)
+}
+
 #[cfg(target_os = "linux")]
 fn comm(pid: i32) -> Option<String> {
     let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;

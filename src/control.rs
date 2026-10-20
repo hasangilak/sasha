@@ -2,11 +2,12 @@
 //! they show, typing into them, and opening, showing and closing them. The
 //! tower's tools (`sasha mcp`) are built on it.
 
+use std::io;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::mission::{Ended, Mission, Signal, Update};
@@ -15,8 +16,11 @@ use crate::tab::TabId;
 
 /// A request's answer comes back within this, or something is stuck.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How many times a request dropped by an update is asked again, a fifth
+/// of a second apart.
+const UPDATE_WAIT: usize = 25;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     /// Every terminal that's running.
     List,
@@ -62,6 +66,8 @@ pub enum Request {
         ids: Option<Vec<TabId>>,
         take: bool,
     },
+    /// Update to the sasha on disk, keeping every terminal running.
+    Update,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,15 +107,24 @@ pub struct Terminal {
     pub mission: Option<Mission>,
 }
 
-/// Asks the running sasha.
+/// Asks the running sasha. A sasha updating in place drops what it was
+/// asked: it's asked again, of the new one.
 pub fn call(request: Request) -> Result<Reply> {
     let path = socket()?;
-    let mut stream =
-        UnixStream::connect(&path).with_context(|| format!("sasha isn't running (no server at {})", path.display()))?;
-    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
-    protocol::send(&mut stream, &ClientMessage::Control(request))?;
-    let (tag, payload) = protocol::read_frame(&mut stream)
-        .map_err(|_| anyhow!("the sasha running doesn't take requests: quit it (prefix, q q) and start it again"))?;
+    let mut answer = ask(&path, &request);
+    for _ in 0..UPDATE_WAIT {
+        if !matches!(&answer, Err(err) if err.kind() == io::ErrorKind::UnexpectedEof) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        answer = ask(&path, &request);
+    }
+    let (tag, payload) = answer.map_err(|err| match err.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+            anyhow!("sasha isn't running (no server at {})", path.display())
+        }
+        _ => anyhow!("the sasha running is older and doesn't take this: update it (prefix, then U)"),
+    })?;
     if tag != protocol::REPLY {
         bail!("unexpected answer from sasha");
     }
@@ -117,6 +132,14 @@ pub fn call(request: Request) -> Result<Reply> {
         Reply::Error(err) => bail!(err),
         reply => Ok(reply),
     }
+}
+
+/// One request, on a connection of its own: the reply's frame.
+fn ask(path: &Path, request: &Request) -> io::Result<(u8, Vec<u8>)> {
+    let mut stream = UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
+    protocol::send(&mut stream, &ClientMessage::Control(request.clone()))?;
+    protocol::read_frame(&mut stream)
 }
 
 /// The server of the sasha this runs in (its terminals say in `$SASHA`),

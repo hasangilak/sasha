@@ -3,6 +3,7 @@
 
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
@@ -12,7 +13,9 @@ use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use unicode_width::UnicodeWidthStr;
 
+use crate::agents::{Agent, Conversation};
 use crate::app::AppEvent;
+use crate::handoff::{self, HandedChild, HandedPty, HandedTab};
 use crate::mission::Mission;
 use crate::{notify, procinfo};
 use crate::workspace::GroupId;
@@ -26,6 +29,10 @@ const QUIET: Duration = Duration::from_secs(3);
 /// notification when they end.
 const LONG_WORK: Duration = Duration::from_secs(15);
 const LONG_COMMAND: Duration = Duration::from_secs(10);
+/// How long a tab waits for the agent it's resuming to start.
+const RESUME_WAIT: Duration = Duration::from_secs(60);
+/// How often Codex's logs are searched for its conversation, until found.
+const CODEX_LOOKUP: Duration = Duration::from_secs(30);
 
 /// Handles the escape sequences vt100 parses but leaves to the embedder:
 /// queries that need a reply, titles, bells, clipboard and cursor shape.
@@ -151,6 +158,12 @@ pub struct Tab {
     command_since: Option<Instant>,
     last_command: String,
     pub last_notified: Option<Instant>,
+    /// The Claude Code or Codex conversation in it, to resume if sasha
+    /// stops; or the one it's resuming, since then.
+    conversation: Option<Conversation>,
+    resuming_since: Option<Instant>,
+    /// The Codex it last searched the logs for, and when.
+    codex_lookup: Option<(i32, Instant)>,
 }
 
 impl Tab {
@@ -187,43 +200,141 @@ impl Tab {
 
         let child = pair.slave.spawn_command(cmd).context("failed to spawn shell")?;
         drop(pair.slave);
-
-        let mut reader = pair.master.try_clone_reader()?;
-        let output_events = events.clone();
-        thread::spawn(move || {
-            let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if output_events.send(AppEvent::Output(id, buf[..n].to_vec())).is_err() {
-                            return;
-                        }
-                    }
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    // EIO once the shell is gone.
-                    Err(_) => break,
-                }
-            }
-            let _ = output_events.send(AppEvent::Exited(id));
-        });
-
-        // Writes go through a thread so a child that stops reading can't freeze the UI.
-        let mut writer = pair.master.take_writer()?;
-        let (input, input_rx) = mpsc::channel::<Vec<u8>>();
-        thread::spawn(move || {
-            for bytes in input_rx {
-                if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
-                    break;
-                }
-            }
-        });
-
+        let input = start_io(id, pair.master.as_ref(), events)?;
         let shell_pid = child.process_id().map(|pid| pid as i32);
-        let mut tab = Self {
+        let parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, Callbacks::default());
+        let mut tab = Self::with(id, parser, pair.master, input, child, shell_pid, cwd.map(Path::to_path_buf));
+        tab.refresh_info();
+        Ok(tab)
+    }
+
+    /// Takes over a terminal the sasha before handed over, still running,
+    /// showing again what `screen` (from `dump`) draws.
+    pub fn adopt(handed: HandedTab, screen: &[u8], groups: &[GroupId], events: Sender<AppEvent>) -> Result<Self> {
+        // SAFETY: the descriptor was handed over for this terminal alone.
+        let fd = unsafe { OwnedFd::from_raw_fd(handed.fd) };
+        // Not into the programs this sasha starts.
+        handoff::keep_on_exec(handed.fd, false)?;
+        let master: Box<dyn MasterPty + Send> = Box::new(HandedPty(fd));
+        let input = start_io(handed.id, master.as_ref(), events)?;
+        let (rows, cols) = handed.size;
+        let callbacks = Callbacks { title: handed.title, cursor_style: handed.cursor_style, ..Callbacks::default() };
+        let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, callbacks);
+        parser.process(screen);
+        // Drawing it again isn't news, nor a question to answer.
+        let callbacks = parser.callbacks_mut();
+        callbacks.replies.clear();
+        (callbacks.bell, callbacks.title_changed, callbacks.clipboard, callbacks.notice) = (false, false, None, None);
+        let child = Box::new(HandedChild::new(handed.pid));
+        let mut tab = Self::with(handed.id, parser, master, input, child, handed.shell_pid, handed.cwd);
+        tab.custom_prefix = handed.custom_prefix;
+        tab.pinned = handed.pinned;
+        tab.group = handed.group.and_then(|g| groups.get(g).copied());
+        tab.group_before_pin = handed.group_before_pin.and_then(|g| groups.get(g).copied());
+        tab.mission = handed.mission;
+        tab.mailbox = handed.mailbox;
+        tab.conversation = handed.conversation;
+        tab.refresh_info();
+        tab.title_owner = handed.title_owner;
+        Ok(tab)
+    }
+
+    /// The terminal, for the next sasha to take over: `None` without a pty
+    /// to hand. Groups by their place in `groups`.
+    pub fn handed(&self, groups: &[GroupId]) -> Option<HandedTab> {
+        let place = |group: Option<GroupId>| group.and_then(|id| groups.iter().position(|&g| g == id));
+        Some(HandedTab {
+            id: self.id,
+            fd: self.master.as_raw_fd()?,
+            pid: self.child.process_id()?,
+            shell_pid: self.shell_pid,
+            size: self.size(),
+            title: self.parser.callbacks().title.clone(),
+            title_owner: self.title_owner,
+            cursor_style: self.cursor_style(),
+            custom_prefix: self.custom_prefix.clone(),
+            pinned: self.pinned,
+            group: place(self.group),
+            group_before_pin: place(self.group_before_pin),
+            mission: self.mission.clone(),
+            mailbox: self.mailbox.clone(),
+            cwd: self.cwd.clone(),
+            conversation: self.conversation.clone(),
+        })
+    }
+
+    /// What the terminal shows, and what has scrolled off its top, as the
+    /// bytes that draw it all again in a new emulator of its size.
+    pub fn dump(&mut self) -> Vec<u8> {
+        // A full-screen program draws on the alternate screen: that, after
+        // the screen underneath.
+        let alternate = self.screen().alternate_screen().then(|| self.screen().state_formatted());
+        if alternate.is_some() {
+            self.parser.process(b"\x1b[?1049l");
+        }
+        let screen = self.parser.screen_mut();
+        let (rows, cols) = screen.size();
+        let mut out = Vec::new();
+        // Each line that scrolled off, oldest first, pushed up by the next.
+        screen.set_scrollback(usize::MAX);
+        let mut offset = screen.scrollback();
+        let lines = offset;
+        while offset > 0 {
+            screen.set_scrollback(offset);
+            for row in screen.rows_formatted(0, cols).take(offset.min(usize::from(rows))) {
+                out.extend_from_slice(&row);
+                out.extend_from_slice(b"\x1b[m\r\n");
+            }
+            offset = offset.saturating_sub(usize::from(rows));
+        }
+        screen.set_scrollback(0);
+        // Enough more to push the last of them off the screen.
+        if lines > 0 {
+            for _ in 1..rows {
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+        out.extend_from_slice(&screen.state_formatted());
+        if let Some(alternate) = alternate {
+            out.extend_from_slice(b"\x1b[?1049h");
+            out.extend_from_slice(&alternate);
+            // And back, should the update not happen.
+            self.parser.process(b"\x1b[?1049h");
+            self.parser.process(&alternate);
+        }
+        out
+    }
+
+    /// The Claude Code or Codex conversation in it, to resume if sasha
+    /// stops.
+    pub fn conversation(&self) -> Option<&Conversation> {
+        self.conversation.as_ref()
+    }
+
+    /// Picks `conversation` up again: types the command that resumes it.
+    /// Returns whether it could.
+    pub fn resume(&mut self, conversation: Conversation) -> bool {
+        let Some(command) = conversation.resume_command() else { return false };
+        // The shell reads it once it's up.
+        self.write(format!("{command}\r"));
+        self.conversation = Some(conversation);
+        self.resuming_since = Some(Instant::now());
+        true
+    }
+
+    fn with(
+        id: TabId,
+        parser: vt100::Parser<Callbacks>,
+        master: Box<dyn MasterPty + Send>,
+        input: Sender<Vec<u8>>,
+        child: Box<dyn Child + Send + Sync>,
+        shell_pid: Option<i32>,
+        cwd: Option<PathBuf>,
+    ) -> Self {
+        Self {
             id,
-            parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, Callbacks::default()),
-            master: pair.master,
+            parser,
+            master,
             input,
             child,
             shell_pid,
@@ -236,7 +347,7 @@ impl Tab {
             fg_name: String::new(),
             fg_pgid: shell_pid,
             title_owner: None,
-            cwd: cwd.map(Path::to_path_buf),
+            cwd,
             last_activity: Instant::now(),
             settle_until: Instant::now() + Duration::from_secs(2),
             unseen: false,
@@ -248,9 +359,10 @@ impl Tab {
             command_since: None,
             last_command: String::new(),
             last_notified: None,
-        };
-        tab.refresh_info();
-        Ok(tab)
+            conversation: None,
+            resuming_since: None,
+            codex_lookup: None,
+        }
     }
 
     pub fn screen(&self) -> &vt100::Screen {
@@ -383,6 +495,35 @@ impl Tab {
         if self.is_running_command() {
             self.last_command.clone_from(&self.fg_name);
         }
+        self.refresh_conversation();
+    }
+
+    /// Follows the conversation of the agent in the foreground. Claude Code
+    /// says which it's having, so that's read each time (`/resume` switches
+    /// it); Codex's logs are searched once a run, and again now and then
+    /// until it's found.
+    fn refresh_conversation(&mut self) {
+        let agent = if self.is_running_command() { Agent::of(&self.fg_name) } else { None };
+        let (Some(agent), Some(group)) = (agent, self.fg_pgid) else {
+            // The agent has left, unless it's still to start.
+            if self.resuming_since.is_none_or(|since| since.elapsed() >= RESUME_WAIT) {
+                self.conversation = None;
+                self.resuming_since = None;
+            }
+            return;
+        };
+        self.resuming_since = None;
+        if agent == Agent::Codex {
+            let searched = self.codex_lookup.filter(|&(searched, _)| searched == group);
+            if searched.is_some_and(|(_, at)| self.conversation.is_some() || at.elapsed() < CODEX_LOOKUP) {
+                return;
+            }
+            self.codex_lookup = Some((group, Instant::now()));
+        }
+        let cwd = self.program_cwd().unwrap_or_default();
+        if let Some(conversation) = Conversation::of(agent, group, &cwd) {
+            self.conversation = Some(conversation);
+        }
     }
 
     /// Records output that is news (not the shell starting or redrawing).
@@ -475,6 +616,40 @@ impl Tab {
             None => Some(self.fg_name.clone()),
         }
     }
+}
+
+/// Reads what the program writes, as events, until it's gone; returns
+/// where to send what's typed, which a thread writes so a program that
+/// stops reading can't freeze sasha.
+fn start_io(id: TabId, master: &(dyn MasterPty + Send), events: Sender<AppEvent>) -> Result<Sender<Vec<u8>>> {
+    let mut reader = master.try_clone_reader()?;
+    thread::spawn(move || {
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if events.send(AppEvent::Output(id, buf[..n].to_vec())).is_err() {
+                        return;
+                    }
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                // EIO once the shell is gone.
+                Err(_) => break,
+            }
+        }
+        let _ = events.send(AppEvent::Exited(id));
+    });
+    let mut writer = master.take_writer()?;
+    let (input, input_rx) = mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        for bytes in input_rx {
+            if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(input)
 }
 
 impl Drop for Tab {

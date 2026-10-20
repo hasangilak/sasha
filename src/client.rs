@@ -108,6 +108,14 @@ fn connect_or_start(path: &Path) -> Result<UnixStream> {
     }
 }
 
+/// `sasha update`: the running sasha becomes this one, keeping every
+/// terminal and what runs in it.
+pub fn update() -> Result<()> {
+    crate::control::call(crate::control::Request::Update)?;
+    println!("updating sasha in place · your terminals keep running");
+    Ok(())
+}
+
 /// `sasha --kill-server`: closes every tab and stops the server.
 pub fn kill_server() -> Result<()> {
     let path = protocol::socket_path()?;

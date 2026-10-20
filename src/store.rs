@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::agents::Conversation;
 use crate::mission::{Ended, Mission};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -140,6 +141,10 @@ pub struct SavedTab {
     /// What the tower set it to do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission: Option<Mission>,
+    /// The Claude Code or Codex conversation it was having: it's resumed
+    /// when the tab comes back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Conversation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -31,6 +31,8 @@ COMMANDS:
     mcp                Serve the terminals as tools over MCP on stdin/stdout:
                        list, read, prompt, wait for, open and close them.
     event, inbox       Run by agents' hooks and the tower's, to pass news on.
+    update             Update the running sasha to this one: every terminal keeps
+                       running, and so does whatever runs in it.
     voice install      Set Kokoro up, a natural voice for the tower (needs uv).
     hush               Stop the tower talking, from anywhere.
 
@@ -40,9 +42,14 @@ Press the prefix, then ? inside sasha to see every key binding.";
 pub enum Command {
     /// Show the tabs, starting the server first if it isn't running.
     Attach(Config),
-    /// Be the server (clients start it).
-    Server,
+    /// Be the server (clients start it), or take over from the one that
+    /// handed this process its terminals (`--take-over FILE`).
+    Server(Option<std::path::PathBuf>),
+    /// Whether this sasha can take over from what's handed over in FILE.
+    CanTakeOver(std::path::PathBuf),
     KillServer,
+    /// Update the running sasha to this one, keeping every terminal.
+    Update,
     /// Be the tower: pi, steering the terminals.
     Tower(Option<Engine>),
     /// Serve the terminals as MCP tools.
@@ -68,6 +75,12 @@ pub struct Config {
     pub prefix: Prefix,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Config { prefix: Prefix('b') }
+    }
+}
+
 impl Config {
     /// Parses the command line. Returns `None` when sasha should exit
     /// right away (after printing help or the version).
@@ -83,6 +96,7 @@ impl Config {
                 return Ok(Some(Command::Inbox(prompt)));
             }
             Some("speak") => return Ok(Some(Command::Speak)),
+            Some("update") => return Ok(Some(Command::Update)),
             Some("hush") => return Ok(Some(Command::Hush)),
             Some("voice") => {
                 args.next();
@@ -113,7 +127,14 @@ impl Config {
         }
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--server" => return Ok(Some(Command::Server)),
+                "--server" => {
+                    let handed = (args.next().as_deref() == Some("--take-over")).then(|| args.next()).flatten();
+                    return Ok(Some(Command::Server(handed.map(Into::into))));
+                }
+                "--can-take-over" => match args.next() {
+                    Some(path) => return Ok(Some(Command::CanTakeOver(path.into()))),
+                    None => bail!("--can-take-over needs the file handed over"),
+                },
                 "--kill-server" => return Ok(Some(Command::KillServer)),
                 "-h" | "--help" => {
                     println!("{USAGE}");

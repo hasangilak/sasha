@@ -2,7 +2,8 @@
 //! sasha window is open, and draws them for whichever client is attached.
 
 use std::fs::File;
-use std::io::{self, BufReader, Write};
+use std::io::{self, Write};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -20,6 +21,7 @@ use ratatui::layout::{Position, Rect, Size};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::app::{App, AppEvent};
+use crate::handoff::{self, Handoff};
 use crate::protocol::{self, ClientMessage};
 
 pub type ClientId = u64;
@@ -58,20 +60,25 @@ pub fn spawn(socket: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run() -> Result<()> {
-    // Logging out or shutting down sends SIGTERM: stop cleanly, so the tabs
-    // are saved and come back next time.
+/// Logging out or shutting down sends SIGTERM: stop cleanly, so the tabs
+/// are saved and come back next time.
+fn stop_on_signals() {
     for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
         // SAFETY: the handler only stores to an atomic.
         unsafe {
             libc::signal(signal, request_stop as *const () as libc::sighandler_t);
         }
     }
+}
+
+pub fn run() -> Result<()> {
+    stop_on_signals();
     let path = protocol::socket_path()?;
     let listener = bind(&path)?;
+    let listener_fd = listener.as_raw_fd();
     let (events_tx, events) = mpsc::channel();
     let accept_tx = events_tx.clone();
-    thread::spawn(move || accept(&listener, &accept_tx));
+    thread::spawn(move || accept(&listener, &accept_tx, 1));
 
     // The client that started the server connects right away.
     let (id, hello, stream) = loop {
@@ -86,11 +93,50 @@ pub fn run() -> Result<()> {
     };
     let (cols, rows) = hello.size;
     let mut app = App::new(hello.config.clone(), Size::new(cols, rows), events_tx, events);
+    app.set_listener(listener_fd);
     app.attach(id, *hello, stream);
+    finish(app, &path)
+}
+
+/// Carries on from the sasha that handed this process over (see
+/// `handoff`): its socket, its window, and its terminals, still running.
+pub fn take_over(handed: &Path) -> Result<()> {
+    stop_on_signals();
+    let path = protocol::socket_path()?;
+    let (mut handoff, screens) = Handoff::read(handed)?;
+    if let Some(dir) = handed.parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let adopt = |fd: RawFd| handoff::keep_on_exec(fd, false);
+    adopt(handoff.listener)?;
+    // SAFETY: handed over as the listening socket, for this alone.
+    let listener = unsafe { UnixListener::from_raw_fd(handoff.listener) };
+    let (events_tx, events) = mpsc::channel();
+    let mut first = 1;
+    let client = match handoff.client.take() {
+        Some(handed) => {
+            adopt(handed.fd)?;
+            // SAFETY: handed over as the window's connection, for this alone.
+            let stream = unsafe { UnixStream::from_raw_fd(handed.fd) };
+            let input = stream.try_clone()?;
+            let (id, input_tx) = (handed.id, events_tx.clone());
+            thread::spawn(move || read_client(id, input, None, &input_tx));
+            first = handed.id + 1;
+            Some((handed, stream))
+        }
+        None => None,
+    };
+    let accept_tx = events_tx.clone();
+    thread::spawn(move || accept(&listener, &accept_tx, first));
+    let app = App::taken_over(handoff, screens, client, events_tx, events);
+    finish(app, &path)
+}
+
+fn finish(mut app: App, path: &Path) -> Result<()> {
     let result = app.run();
     // Stop answering before the client goes, so a sasha started right away
     // starts a new server instead of reaching this one on its way out.
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path);
     app.dismiss_client();
     result
 }
@@ -112,19 +158,21 @@ fn bind(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-fn accept(listener: &UnixListener, events: &Sender<AppEvent>) {
-    for (id, stream) in (1..).zip(listener.incoming()) {
+/// Takes connections, numbering their clients from `first`.
+fn accept(listener: &UnixListener, events: &Sender<AppEvent>, first: ClientId) {
+    for (id, stream) in (first..).zip(listener.incoming()) {
         let Ok(stream) = stream else { continue };
+        let Ok(input) = stream.try_clone() else { continue };
         let events = events.clone();
-        thread::spawn(move || read_client(id, stream, &events));
+        thread::spawn(move || read_client(id, input, Some(stream), &events));
     }
 }
 
-/// Turns one client's messages into app events, until it hangs up.
-fn read_client(id: ClientId, stream: UnixStream, events: &Sender<AppEvent>) {
-    let Ok(input) = stream.try_clone() else { return };
-    let mut input = BufReader::new(input);
-    let mut stream = Some(stream);
+/// Turns one client's messages into app events, until it hangs up. Its
+/// first message may hand `stream` over, to draw on or answer on. Read
+/// unbuffered: an update hands the connection on with nothing of it read
+/// ahead.
+fn read_client(id: ClientId, mut input: UnixStream, mut stream: Option<UnixStream>, events: &Sender<AppEvent>) {
     loop {
         let event = match protocol::receive(&mut input) {
             Ok(ClientMessage::Attach(hello)) => match stream.take() {
@@ -173,6 +221,11 @@ impl Attached {
         // The client's terminal may have rewrapped what was on screen.
         self.terminal = blank_terminal(&self.stream, size, &self.gone)?;
         Ok(())
+    }
+
+    /// The connection, for an update to hand over.
+    pub fn fd(&self) -> RawFd {
+        self.stream.as_raw_fd()
     }
 
     /// Sends bytes straight to the client's terminal.

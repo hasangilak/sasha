@@ -147,6 +147,8 @@ pub enum Command {
     Hush,
     /// The voice's control center: what it's saying, and its library.
     Voice,
+    /// Update sasha in place, keeping every terminal.
+    Update,
     SideBars,
     Narrower,
     Wider,
@@ -208,6 +210,7 @@ impl Command {
             KeyCode::Char('T') => Command::Tower,
             KeyCode::Char('S') => Command::Hush,
             KeyCode::Char('V') => Command::Voice,
+            KeyCode::Char('U') => Command::Update,
             KeyCode::Char('i') => Command::SideBars,
             KeyCode::Char('<') => Command::Narrower,
             KeyCode::Char('>') => Command::Wider,
@@ -235,6 +238,7 @@ impl Command {
             | Command::TowerVoice
             | Command::TowerRole
             | Command::Hush
+            | Command::Update
             | Command::Leave => {
                 After::Leave
             }

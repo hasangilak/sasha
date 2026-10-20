@@ -154,6 +154,10 @@ impl App {
             Command::Help => self.enter(Mode::Help),
             Command::Detach => self.detach(),
             Command::Quit => self.request_quit(),
+            Command::Update => {
+                self.set_status("updating sasha · your terminals keep running");
+                self.update_requested = true;
+            }
             Command::Leave => {}
         }
     }

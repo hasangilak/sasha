@@ -9,6 +9,7 @@ mod config;
 mod control;
 mod files;
 mod github;
+mod handoff;
 mod header;
 mod highlight;
 mod hooks;
@@ -41,7 +42,10 @@ fn main() -> Result<()> {
     let Some(command) = config::Config::from_args()? else { return Ok(()) };
     match command {
         Command::Attach(config) => client::run(config),
-        Command::Server => server::run(),
+        Command::Server(None) => server::run(),
+        Command::Server(Some(handed)) => server::take_over(&handed),
+        Command::CanTakeOver(handed) => handoff::Handoff::read(&handed).map(|_| ()),
+        Command::Update => client::update(),
         Command::KillServer => client::kill_server(),
         Command::Tower(engine) => tower::run(engine),
         Command::Mcp => mcp::run(),

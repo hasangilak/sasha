@@ -9,9 +9,10 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::notify;
+use crate::{notify, procinfo};
 
 /// How much of the end of a session log is read.
 const TAIL: u64 = 2 * 1024 * 1024;
@@ -26,6 +27,38 @@ pub enum Agent {
     Codex,
     /// pi, as the tower.
     Pi,
+}
+
+/// A Claude Code or Codex conversation, to pick up again where it was.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    /// `claude` or `codex`.
+    pub agent: String,
+    pub id: String,
+}
+
+impl Conversation {
+    /// The conversation of the agent running as process group `group`, in
+    /// `cwd`.
+    pub fn of(agent: Agent, group: i32, cwd: &Path) -> Option<Self> {
+        let (agent, id) = match agent {
+            Agent::Claude => ("claude", claude_session(group)?),
+            Agent::Codex => ("codex", codex_session(cwd)?),
+            Agent::Pi => return None,
+        };
+        Some(Conversation { agent: agent.to_owned(), id })
+    }
+
+    /// The command that picks it up again, typed into a shell: only for
+    /// ids that are plainly ids.
+    pub fn resume_command(&self) -> Option<String> {
+        let plain = !self.id.is_empty() && self.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        match self.agent.as_str() {
+            "claude" if plain => Some(format!("claude --resume {}", self.id)),
+            "codex" if plain => Some(format!("codex resume {}", self.id)),
+            _ => None,
+        }
+    }
 }
 
 impl Agent {
@@ -127,12 +160,34 @@ fn home() -> Option<PathBuf> {
     std::env::home_dir()
 }
 
+fn claude_home() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| Some(home()?.join(".claude")))
+}
+
 /// Where Claude Code keeps the sessions of `cwd`: in its projects folder,
 /// under the path with everything but letters and digits made `-`.
 fn claude_project(cwd: &Path) -> Option<PathBuf> {
-    let base = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| Some(home()?.join(".claude")))?;
     let name: String = cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    Some(base.join("projects").join(name))
+    Some(claude_home()?.join("projects").join(name))
+}
+
+/// The conversation of the Claude Code running as process group `group`:
+/// Claude Code files each one it runs under its process id, and it's one
+/// to resume once it has said something.
+fn claude_session(group: i32) -> Option<String> {
+    let dir = claude_home()?.join("sessions");
+    let read = |pid: i32| -> Option<String> {
+        let entry: Value = serde_json::from_str(&fs::read_to_string(dir.join(format!("{pid}.json"))).ok()?).ok()?;
+        let id = entry["sessionId"].as_str()?;
+        let cwd = Path::new(entry["cwd"].as_str()?);
+        claude_project(cwd)?.join(format!("{id}.jsonl")).exists().then(|| id.to_owned())
+    };
+    if let Some(id) = read(group) {
+        return Some(id);
+    }
+    // Started by another program in the group.
+    let pids = fs::read_dir(&dir).ok()?.flatten().filter_map(|e| e.path().file_stem()?.to_str()?.parse::<i32>().ok());
+    pids.filter(|&pid| pid != group && procinfo::group(pid) == Some(group)).find_map(read)
 }
 
 /// Claude Code's log of the newest session in `cwd`.
@@ -149,8 +204,15 @@ pub fn claude_has_session(cwd: &Path) -> bool {
 /// Codex's log of the newest session in `cwd`: they're filed by the day
 /// they started, and the first line says where.
 fn codex_log(cwd: &Path) -> Option<PathBuf> {
+    let mut logs: Vec<(SystemTime, PathBuf)> = fresh_jsonl(codex_logs()?.into_iter()).collect();
+    logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    logs.into_iter().map(|(_, path)| path).find(|path| codex_cwd(path).as_deref() == Some(cwd))
+}
+
+/// Codex's logs of the last week's days.
+fn codex_logs() -> Option<Vec<PathBuf>> {
     let base = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| Some(home()?.join(".codex")))?;
-    // sessions/YYYY/MM/DD: the last week's days.
+    // sessions/YYYY/MM/DD.
     let mut days = Vec::new();
     for year in sorted_dirs(&base.join("sessions")).into_iter().rev().take(2) {
         for month in sorted_dirs(&year).into_iter().rev().take(2) {
@@ -159,9 +221,21 @@ fn codex_log(cwd: &Path) -> Option<PathBuf> {
     }
     days.sort();
     let logs = days.iter().rev().take(7).flat_map(|day| fs::read_dir(day).into_iter().flatten().flatten()).map(|e| e.path());
-    let mut logs: Vec<(SystemTime, PathBuf)> = fresh_jsonl(logs).collect();
+    Some(logs.filter(|p| p.extension().is_some_and(|e| e == "jsonl")).collect())
+}
+
+/// The newest Codex conversation in `cwd`, by the id its log is named
+/// after (`rollout-<time>-<id>.jsonl`).
+fn codex_session(cwd: &Path) -> Option<String> {
+    let mut logs: Vec<(SystemTime, PathBuf)> = codex_logs()?
+        .into_iter()
+        .filter_map(|path| Some((fs::metadata(&path).and_then(|m| m.modified()).ok()?, path)))
+        .collect();
     logs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    logs.into_iter().map(|(_, path)| path).find(|path| codex_cwd(path).as_deref() == Some(cwd))
+    let log = logs.into_iter().map(|(_, path)| path).find(|path| codex_cwd(path).as_deref() == Some(cwd))?;
+    let stem = log.file_stem()?.to_str()?;
+    let id = stem.get(stem.len().checked_sub(36)?..)?;
+    (id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')).then(|| id.to_owned())
 }
 
 /// pi's log of the newest session in `cwd`: in its sessions folder, under

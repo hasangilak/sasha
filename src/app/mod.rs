@@ -7,6 +7,7 @@ mod mouse;
 mod panels;
 mod state;
 mod tower;
+mod update;
 mod voice;
 
 pub use panels::{Loadable, OpenPr, Panel, PortsPanel, PrList, PrPanel, VoicePanel};
@@ -163,6 +164,12 @@ pub struct App {
     focused: bool,
     /// This server's `protocol::build_id`.
     build: u64,
+    /// The socket clients connect to, for an update to hand over.
+    listener: Option<std::os::fd::RawFd>,
+    /// The client terminal's colours, likewise.
+    colors: (Option<theme::Rgb>, Option<theme::Rgb>),
+    /// Update in place at the next chance.
+    update_requested: bool,
     /// Whether a client has attached before (the first one opens a tab).
     attached_before: bool,
     /// The state file as last written.
@@ -254,6 +261,17 @@ impl App {
     /// Restores the saved workspaces and pinned tabs; the first `attach`
     /// opens a tab where sasha was started.
     pub fn new(config: Config, size: Size, events_tx: Sender<AppEvent>, events: Receiver<AppEvent>) -> Self {
+        let mut app = Self::blank(config, size, events_tx, events);
+        let (state, warning) = store::load();
+        app.restore(state);
+        if let Some(warning) = warning {
+            app.set_status(warning);
+        }
+        app
+    }
+
+    /// No workspaces yet.
+    fn blank(config: Config, size: Size, events_tx: Sender<AppEvent>, events: Receiver<AppEvent>) -> Self {
         let mut app = Self {
             config,
             client: None,
@@ -273,6 +291,9 @@ impl App {
             files_scanned: None,
             focused: true,
             build: protocol::build_id(),
+            listener: None,
+            colors: (None, None),
+            update_requested: false,
             attached_before: false,
             saved: String::new(),
             mode: Mode::Normal,
@@ -327,13 +348,42 @@ impl App {
             quit: false,
         };
         app.relayout(size);
-
-        let (state, warning) = store::load();
-        app.restore(state);
-        if let Some(warning) = warning {
-            app.set_status(warning);
-        }
         app
+    }
+
+    /// Where clients connect, for an update to hand over.
+    pub fn set_listener(&mut self, fd: std::os::fd::RawFd) {
+        self.listener = Some(fd);
+    }
+
+    /// The bars' sizes and what shows, as saved.
+    fn restore_layout(&mut self, layout: SavedLayout) {
+        self.sidebar_width = layout.sidebar_width.max(layout::MIN_WIDTH);
+        self.collapsed = layout.collapsed;
+        self.activity_width = layout.activity_width.min(layout::ACTIVITY_MAX);
+        self.wide_activity_width = layout.wide_activity_width.clamp(layout::ACTIVITY_WIDE_MIN, layout::ACTIVITY_MAX);
+        self.current_only = layout.current_only;
+        self.ports_shown = !layout.hide_side_bars && !layout.hide_ports;
+        self.prs_shown = !layout.hide_side_bars && !layout.hide_prs;
+        if layout.ports_width > 0 {
+            self.ports_width = layout.ports_width.clamp(layout::PORTS_MIN, layout::PORTS_MAX);
+        }
+        if layout.prs_width > 0 {
+            self.prs_width = layout.prs_width.clamp(layout::PRS_MIN, layout::PRS_MAX);
+        }
+        self.files_shown = !layout.hide_files;
+        self.tower_enabled = layout.tower;
+        self.tower_autopilot = layout.tower_autopilot;
+        self.voice_replies = layout.tower_voice;
+        crate::voice::set_replies(self.voice_replies);
+        self.tower_panel = layout.tower && !layout.hide_tower;
+        if layout.tower_width > 0 {
+            self.tower_width = layout.tower_width.clamp(layout::TOWER_MIN, layout::TOWER_MAX);
+        }
+        if layout.files_width > 0 {
+            self.files_width = layout.files_width.clamp(layout::FILES_MIN, layout::FILES_MAX);
+        }
+        self.relayout_now();
     }
 
     /// Brings back the saved workspaces, groups and layout. Pinned and
@@ -341,32 +391,7 @@ impl App {
     /// it's first opened (see `wake`).
     fn restore(&mut self, state: State) {
         if let Some(layout) = state.layout {
-            self.sidebar_width = layout.sidebar_width.max(layout::MIN_WIDTH);
-            self.collapsed = layout.collapsed;
-            self.activity_width = layout.activity_width.min(layout::ACTIVITY_MAX);
-            self.wide_activity_width = layout.wide_activity_width.clamp(layout::ACTIVITY_WIDE_MIN, layout::ACTIVITY_MAX);
-            self.current_only = layout.current_only;
-            self.ports_shown = !layout.hide_side_bars && !layout.hide_ports;
-            self.prs_shown = !layout.hide_side_bars && !layout.hide_prs;
-            if layout.ports_width > 0 {
-                self.ports_width = layout.ports_width.clamp(layout::PORTS_MIN, layout::PORTS_MAX);
-            }
-            if layout.prs_width > 0 {
-                self.prs_width = layout.prs_width.clamp(layout::PRS_MIN, layout::PRS_MAX);
-            }
-            self.files_shown = !layout.hide_files;
-            self.tower_enabled = layout.tower;
-            self.tower_autopilot = layout.tower_autopilot;
-            self.voice_replies = layout.tower_voice;
-            crate::voice::set_replies(self.voice_replies);
-            self.tower_panel = layout.tower && !layout.hide_tower;
-            if layout.tower_width > 0 {
-                self.tower_width = layout.tower_width.clamp(layout::TOWER_MIN, layout::TOWER_MAX);
-            }
-            if layout.files_width > 0 {
-                self.files_width = layout.files_width.clamp(layout::FILES_MIN, layout::FILES_MAX);
-            }
-            self.relayout_now();
+            self.restore_layout(layout);
         }
         let mut group_ids = Vec::new();
         for group in state.groups {
@@ -455,6 +480,12 @@ impl App {
                     mission
                 });
                 tab.group = group.filter(|_| !tab.pinned);
+                // Its Claude Code or Codex picks up its conversation.
+                if let Some(conversation) = saved.agent
+                    && tab.resume(conversation)
+                {
+                    self.set_status("resuming the conversations your terminals were having");
+                }
                 let id = tab.id;
                 self.workspaces[index].tabs.push(tab);
                 Some(id)
@@ -472,7 +503,13 @@ impl App {
     /// one takes over from the last, like `tmux attach -d`.
     pub fn attach(&mut self, id: ClientId, hello: Hello, mut stream: UnixStream) {
         if hello.version != protocol::VERSION {
-            let message = "[this sasha doesn't match the one running · stop it with sasha --kill-server]";
+            // The sasha on disk may be the one that matches: it takes over.
+            let message = if self.rebuilt() {
+                self.update_requested = true;
+                "[sasha is updating to this version, keeping every terminal · run sasha again]"
+            } else {
+                "[this sasha doesn't match the one running · stop it with sasha --kill-server]"
+            };
             let _ = protocol::write_frame(&mut stream, protocol::EXIT, message.as_bytes());
             return;
         }
@@ -496,6 +533,7 @@ impl App {
         self.reset_modes();
         self.focused = true;
         theme::init(hello.colors.0, hello.colors.1);
+        self.colors = hello.colors;
         self.config = hello.config;
         // A fresh terminal has the default cursor.
         self.cursor_style = 0;
@@ -514,9 +552,9 @@ impl App {
             self.start_tower(None);
         }
         self.tower_focus = self.tower_enabled && self.tower_panel;
-        if hello.build != self.build {
-            let prefix = self.config.prefix.label();
-            self.set_status(format!("sasha was rebuilt · {prefix} q and reopen to update"));
+        // A rebuilt sasha takes over, keeping every terminal running.
+        if self.rebuilt() {
+            self.update_requested = true;
         }
     }
 
@@ -822,6 +860,10 @@ impl App {
                 self.set_status("opening link");
                 dirty = true;
             }
+            if std::mem::take(&mut self.update_requested) {
+                self.update();
+                dirty = true;
+            }
             if last_refresh.elapsed() >= INFO_REFRESH {
                 last_refresh = Instant::now();
                 self.refresh_tabs();
@@ -884,25 +926,7 @@ impl App {
             current: self.current,
             keep_awake: self.awake.is_some(),
             ended_missions: self.ended_missions.clone(),
-            layout: Some(SavedLayout {
-                sidebar_width: self.sidebar_width,
-                collapsed: self.collapsed,
-                activity_width: self.activity_width,
-                wide_activity_width: self.wide_activity_width,
-                current_only: self.current_only,
-                hide_side_bars: !self.ports_shown && !self.prs_shown,
-                hide_ports: !self.ports_shown,
-                hide_prs: !self.prs_shown,
-                ports_width: self.ports_width,
-                prs_width: self.prs_width,
-                hide_files: !self.files_shown,
-                files_width: self.files_width,
-                tower: self.tower_enabled,
-                hide_tower: !self.tower_panel,
-                tower_width: self.tower_width,
-                tower_autopilot: self.tower_autopilot,
-                tower_voice: self.voice_replies,
-            }),
+            layout: Some(self.layout_state()),
         };
         let result = store::encode(&state).and_then(|json| {
             // Only touch the disk when something changed.
@@ -914,6 +938,29 @@ impl App {
         });
         if let Err(err) = result {
             self.set_status(format!("couldn't save workspaces: {err:#}"));
+        }
+    }
+
+    /// The bars' sizes and what shows, to save.
+    fn layout_state(&self) -> SavedLayout {
+        SavedLayout {
+            sidebar_width: self.sidebar_width,
+            collapsed: self.collapsed,
+            activity_width: self.activity_width,
+            wide_activity_width: self.wide_activity_width,
+            current_only: self.current_only,
+            hide_side_bars: !self.ports_shown && !self.prs_shown,
+            hide_ports: !self.ports_shown,
+            hide_prs: !self.prs_shown,
+            ports_width: self.ports_width,
+            prs_width: self.prs_width,
+            hide_files: !self.files_shown,
+            files_width: self.files_width,
+            tower: self.tower_enabled,
+            hide_tower: !self.tower_panel,
+            tower_width: self.tower_width,
+            tower_autopilot: self.tower_autopilot,
+            tower_voice: self.voice_replies,
         }
     }
 
@@ -2170,6 +2217,7 @@ fn save_workspace(ws: &Workspace, groups: &[Group]) -> SavedWorkspace {
             group: tab.group.and_then(|id| groups.iter().position(|g| g.id == id)),
             tower: false,
             mission: tab.mission.clone(),
+            agent: tab.conversation().cloned(),
         })
         .collect();
     SavedWorkspace {

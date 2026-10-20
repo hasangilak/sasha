@@ -470,8 +470,9 @@ fn render_confirm_quit(frame: &mut Frame, app: &App) {
     let key = |label, bg| Span::styled(label, Style::new().fg(p.on_accent).bg(bg).add_modifier(Modifier::BOLD));
     let lines = vec![
         Line::styled(format!("Quit and stop what's running in {count} tabs?"), Style::new().fg(p.text)),
-        Line::styled("The tabs reopen next time, as fresh shells.", Style::new().fg(p.text_dim)),
-        Line::styled("Detaching keeps them running.", Style::new().fg(p.text_dim)),
+        Line::styled("The tabs reopen next time as fresh shells, and", Style::new().fg(p.text_dim)),
+        Line::styled("Claude and Codex pick their conversations up.", Style::new().fg(p.text_dim)),
+        Line::styled("Detaching keeps everything running.", Style::new().fg(p.text_dim)),
         Line::default(),
         Line::from(vec![
             key(" y ", p.red),

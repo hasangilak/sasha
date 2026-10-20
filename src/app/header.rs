@@ -132,7 +132,8 @@ impl App {
                 entry("Workspace bar: names or badges", "a", Command::CycleWorkspaceBar),
                 entry("Keys", "?", Command::Help),
                 entry("Detach: terminals keep running", "d", Command::Detach),
-                entry("Quit", "q", Command::Quit),
+                entry("Update sasha: terminals keep running", "U", Command::Update),
+                entry("Quit: closes every terminal", "q", Command::Quit),
             ],
         };
         let query = self.typed().to_lowercase();

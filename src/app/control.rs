@@ -25,6 +25,11 @@ impl App {
     fn control(&mut self, request: Request) -> Result<Reply, String> {
         match request {
             Request::List => Ok(Reply::Terminals(self.terminals(), self.ended_missions.clone())),
+            Request::Update => {
+                // Once this is answered.
+                self.update_requested = true;
+                Ok(Reply::Done)
+            }
             Request::Read { id, lines } => Ok(Reply::Text(self.control_tab(id)?.text(lines.clamp(1, MAX_LINES)))),
             Request::Paste { id, text, tower } => {
                 self.control_tab(id)?.paste(&text);
