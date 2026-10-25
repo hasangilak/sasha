@@ -97,6 +97,11 @@ impl App {
                 },
                 entry(if self.voice_replies() { "Voice replies off" } else { "Voice replies on: hear the gist" }, "", Command::TowerVoice),
                 entry(
+                    if crate::voice::listening_on() { "Stop listening for “hush”" } else { "Listen for “hush” while it talks" },
+                    "",
+                    Command::TowerListen,
+                ),
+                entry(
                     if self.tower_autopilot() { "Auto-reply off: news waits for you" } else { "Auto-reply on: tower acts on news" },
                     "",
                     Command::TowerAutopilot,

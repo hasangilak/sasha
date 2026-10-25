@@ -164,6 +164,10 @@ impl App {
             ws.section_hidden = handed.section_hidden;
         }
         app.tower = handoff.tower.and_then(&mut adopt);
+        // The tower's voice does what this sasha's does, once it's quiet.
+        if app.tower.is_some() {
+            std::thread::spawn(crate::voice::renew);
+        }
         app.tower_focus = handoff.tower_focus && app.tower.is_some();
         app.next_tab_id = handoff.next_tab_id;
         app.current = handoff.current.min(app.workspaces.len().saturating_sub(1));

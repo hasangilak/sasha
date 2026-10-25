@@ -33,7 +33,8 @@ COMMANDS:
     event, inbox       Run by agents' hooks and the tower's, to pass news on.
     update             Update the running sasha to this one: every terminal keeps
                        running, and so does whatever runs in it.
-    voice install      Set Kokoro up, a natural voice for the tower (needs uv).
+    voice install      Set Kokoro up, a natural voice for the tower (needs uv),
+                       and Whisper, to hear you say “hush” while it talks.
     hush               Stop the tower talking, from anywhere.
 
 Press the prefix, then ? inside sasha to see every key binding.";
@@ -68,6 +69,9 @@ pub enum Command {
     Hush,
     /// Set Kokoro up, the tower's natural voice.
     VoiceInstall,
+    /// Prints the speaker's script, for a sasha started before an update
+    /// to start this one's.
+    VoiceSpeaker,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,6 +106,7 @@ impl Config {
                 args.next();
                 return match args.next().as_deref() {
                     Some("install") => Ok(Some(Command::VoiceInstall)),
+                    Some("speaker") => Ok(Some(Command::VoiceSpeaker)),
                     _ => bail!("sasha voice install sets Kokoro up, the tower's natural voice"),
                 };
             }

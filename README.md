@@ -137,7 +137,7 @@ session, and it says a short summary aloud (its `speak` tool). With **voice repl
 menu) it says the gist of every answer. `sasha voice install` sets up
 [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), a natural neural voice that runs on your
 Mac (it needs `uv`): a small speaker process keeps it loaded, so it starts talking in a fraction
-of a second. Pick its voice by name in `~/.config/sasha/voice/voice` (`af_heart` by default;
+of a second. It also fetches Whisper's small English model, to hear you say "hush" (below). Pick its voice by name in `~/.config/sasha/voice/voice` (`af_heart` by default;
 `bm_george`, `am_michael`, `bf_emma`…). Put `chatterbox` in `~/.config/sasha/voice/engine` and it
 speaks with feeling: [Chatterbox](https://github.com/resemble-ai/chatterbox) copies that voice
 (from a recording Kokoro makes once) and the tower gives each part of what it says a tone, from
@@ -164,12 +164,16 @@ running past as it's said, ▶ play and ■ stop, and a library of
 everything the tower has said, kept in `~/.config/sasha/voice/library` (compact AAC, about 120 KB
 for 15 seconds, with an index of who said what, when): pick one and press ⏎ to hear it again.
 
-**Stop it talking** by saying "hush" ("Bella, hush", "Fable, shh", "stop talking"), with `Ctrl+B`
-then `Shift+S`, the **■ stop** beside the tower's name while it talks, or by starting to type to
-it; `sasha hush` does it from anywhere (a keyboard shortcut, say). A spoken "hush" is all the tower
-gets on Claude Code: it stops the voice and the message goes no further. "Stop!" alone stops the
-voice too, but the tower still hears it, in case you meant more. Without Kokoro it uses your Mac's
-system voice.
+**Stop it talking** by saying "hush" out loud while it talks ("Bella, hush", "shh", "stop
+talking", "be quiet"): it listens while it talks, and only then, with
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) on your Mac (`brew install whisper-cpp`).
+It hears itself too, so a word for quiet counts only if it isn't saying it itself, and a plain
+"stop" has to be heard twice. Nothing it hears is kept or sent anywhere. **Stop listening for
+“hush”** in the tower's menu turns it off. Or press `Ctrl+B` then `Shift+S`, click the **■ stop**
+beside the tower's name while it talks, or start typing to it; `sasha hush` does it from anywhere
+(a keyboard shortcut, say). Say "hush" to Claude Code's own voice input and that's all the tower
+gets: it stops the voice and the message goes no further. "Stop!" alone stops the voice too, but
+the tower still hears it, in case you meant more. Without Kokoro it uses your Mac's system voice.
 Talk to it with Claude Code's or Codex's own voice input.
 
 **Sessions talk to each other.** Each agent the tower starts can see the others by name, read what

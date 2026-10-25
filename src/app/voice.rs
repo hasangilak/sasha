@@ -1,5 +1,6 @@
 //! Hearing the tower: with voice replies on, it says the big picture of
-//! each answer aloud; prefix, then S, or saying "hush", stops it. And its
+//! each answer aloud; prefix, then S, or saying "hush" (to Claude Code, or
+//! out loud while it talks: the speaker listens), stops it. And its
 //! control center (prefix, then V): what it's saying, with its sound
 //! drawn as it plays, ▶ and ■, and every message it has said, to play
 //! again.
@@ -9,7 +10,10 @@ use ratatui::layout::Position;
 
 use super::state::Mode;
 use super::{App, Panel, VoicePanel};
-use crate::{panel_view, voice};
+use crate::{agents, panel_view, voice};
+
+/// How long after it heard you a newly opened sasha still says so.
+const HEARD_SHOWN: f64 = 10.0;
 
 impl App {
     pub fn voice_replies(&self) -> bool {
@@ -35,8 +39,19 @@ impl App {
         if !self.tower_enabled && !self.voice_panel_open() {
             return;
         }
-        self.voice_now = voice::now();
+        let status = voice::status();
+        self.voice_now = status.playing;
         self.voice_speaking = self.voice_now.is_some() || voice::mac_speaking();
+        // It heard you say "hush": say so, once.
+        if let Some(heard) = status.heard
+            && heard.time > self.voice_heard
+        {
+            let fresh = self.voice_heard > 0.0 || crate::mission::now() as f64 - heard.time < HEARD_SHOWN;
+            self.voice_heard = heard.time;
+            if fresh {
+                self.set_status(format!("stopped: heard “{}”", agents::clip(&heard.text, 60)));
+            }
+        }
         // A message just finished joins the library.
         if let Mode::Panel(Panel::Voice(panel)) = &mut self.mode
             && self.voice_now.is_none()
@@ -117,6 +132,18 @@ impl App {
         } else {
             panel.selected = index;
         }
+    }
+
+    /// Listening for "hush" while it talks, or not.
+    pub(super) fn toggle_listening(&mut self) {
+        let on = !voice::listening_on();
+        voice::set_listening(on);
+        let state = match voice::hearing_missing() {
+            _ if !on => "off".to_owned(),
+            Some(missing) => format!("on, once it can: {missing}"),
+            None => "on: say “hush” while it talks".to_owned(),
+        };
+        self.set_status(format!("listening for “hush” {state}"));
     }
 
     /// Voice replies: the tower says the big picture of its answers.

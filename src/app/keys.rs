@@ -143,6 +143,7 @@ impl App {
             Command::TowerAutopilot => self.toggle_autopilot(),
             Command::TowerVoice => self.toggle_voice(),
             Command::TowerRole => self.edit_tower_role(),
+            Command::TowerListen => self.toggle_listening(),
             Command::Hush => self.hush(),
             Command::Voice => self.open_voice(),
             Command::SideBars => self.toggle_side_bars(),

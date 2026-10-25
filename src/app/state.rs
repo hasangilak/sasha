@@ -143,6 +143,8 @@ pub enum Command {
     TowerVoice,
     /// Opens your instructions for the tower in your editor.
     TowerRole,
+    /// It listens for "hush" while it talks, or doesn't.
+    TowerListen,
     /// Stops the tower talking.
     Hush,
     /// The voice's control center: what it's saying, and its library.
@@ -237,6 +239,7 @@ impl Command {
             | Command::TowerAutopilot
             | Command::TowerVoice
             | Command::TowerRole
+            | Command::TowerListen
             | Command::Hush
             | Command::Update
             | Command::Leave => {

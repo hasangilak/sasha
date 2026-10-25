@@ -335,8 +335,9 @@ fn render_voice(buf: &mut Buffer, app: &App, area: Rect, panel: &VoicePanel) {
             moods.dedup();
             let again = if now.replay { " · again" } else { "" };
             let line = format!("● {who} · {}{again}", moods.join(" → "));
-            buf.set_stringn(area.x, area.y, &line, area.width as usize, Style::new().fg(p.pink).bg(bg).add_modifier(Modifier::BOLD));
             let clock = format!("{} / {}", minutes(now.position), minutes(now.duration));
+            let room = usize::from(area.width).saturating_sub(clock.width() + 1);
+            buf.set_stringn(area.x, area.y, &line, room, Style::new().fg(p.pink).bg(bg).add_modifier(Modifier::BOLD));
             let x = area.right().saturating_sub(clock.width() as u16);
             buf.set_string(x, area.y, &clock, Style::new().fg(p.text_dim).bg(bg));
         }
@@ -406,6 +407,12 @@ fn render_voice(buf: &mut Buffer, app: &App, area: Rect, panel: &VoicePanel) {
         let hot = |hit: bool| if hit { p.accent } else { p.button_bg };
         buf.set_string(play.x, play.y, " ▶ play ", Style::new().fg(p.text).bg(hot(false)));
         buf.set_string(stop.x, stop.y, " ■ stop ", Style::new().fg(p.text).bg(if now.is_some() { p.red } else { hot(false) }));
+        // While it listens for "hush", that saying it stops it too.
+        let x = stop.right() + 2;
+        if now.is_some_and(|n| n.listening) && x < area.right() {
+            let room = usize::from(area.right() - x);
+            buf.set_stringn(x, stop.y, "or say “hush”", room, Style::new().fg(p.text_dim).bg(bg));
+        }
     }
     // The library.
     let list = voice_list(area);

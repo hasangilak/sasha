@@ -3,7 +3,8 @@
 //! With Kokoro set up (`sasha voice install`), a neural voice close to a
 //! person's, kept loaded by a small speaker process; with Chatterbox chosen
 //! (`voice/engine`), that voice with feeling, a tone per part. Else
-//! macOS's own.
+//! macOS's own. While the speaker talks it listens for "hush", with
+//! whisper.cpp, and stops when it hears it.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -39,6 +40,13 @@ pub const TONES: [&str; 16] = [
 ];
 /// How long a starting speaker gets to load Kokoro.
 const SPEAKER_START: Duration = Duration::from_secs(30);
+/// How long an updated sasha waits for the older speaker to finish
+/// talking before it's replaced.
+const SPEAKER_RENEW: Duration = Duration::from_secs(5 * 60);
+/// What hears you say "hush" while it talks: Whisper's small English
+/// model, quick enough to hear the last few seconds twice a second.
+const WHISPER_MODEL: &str = "ggml-base.en.bin";
+const WHISPER_MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
 /// What Kokoro needs, beside mlx-audio: its English text processing.
 const KOKORO_PACKAGES: [&str; 3] = [
     "mlx-audio",
@@ -68,6 +76,58 @@ pub fn set_replies(on: bool) {
 
 fn replies_on() -> bool {
     on_flag().is_some_and(|flag| flag.is_file())
+}
+
+/// Whether it listens for "hush" while it talks: unless `voice/listen`
+/// says off.
+pub fn listening_on() -> bool {
+    let setting = dir().and_then(|dir| std::fs::read_to_string(dir.join("listen")).ok()).unwrap_or_default();
+    !setting.trim().eq_ignore_ascii_case("off")
+}
+
+pub fn set_listening(on: bool) {
+    let Some(dir) = dir() else { return };
+    if on {
+        let _ = std::fs::remove_file(dir.join("listen"));
+    } else {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("listen"), "off\n");
+    }
+}
+
+/// Whisper's model for hearing "hush": `$SASHA_WHISPER_MODEL`, else the
+/// one `sasha voice install` fetches, else any other in the voice folder.
+fn whisper_model() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("SASHA_WHISPER_MODEL") {
+        return Some(PathBuf::from(path)).filter(|p| p.is_file());
+    }
+    let dir = dir()?;
+    let preferred = dir.join(WHISPER_MODEL);
+    if preferred.is_file() {
+        return Some(preferred);
+    }
+    let mut models: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "bin") && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("ggml-")))
+        .collect();
+    models.sort();
+    models.into_iter().next()
+}
+
+/// What's missing for it to hear you say "hush", said how to fix it.
+pub fn hearing_missing() -> Option<String> {
+    if kokoro_python().is_none() {
+        return Some("hearing “hush” needs the tower's voice set up: run `sasha voice install`".to_owned());
+    }
+    if tower::find_program("whisper-stream").is_none() {
+        return Some("hearing “hush” needs whisper.cpp: brew install whisper-cpp".to_owned());
+    }
+    if whisper_model().is_none() {
+        return Some("no Whisper model yet: run `sasha voice install`".to_owned());
+    }
+    None
 }
 
 /// `sasha speak tower`, from the tower's hook once it has answered: says
@@ -364,12 +424,13 @@ fn speaker_voice() -> String {
 /// Starts the speaker, which gets the chosen voice ready straight away.
 fn start_speaker(python: &Path, dir: &Path, socket: &Path) -> Result<()> {
     let script = dir.join("speaker.py");
-    std::fs::write(&script, SPEAKER)?;
+    let source = speaker_source();
+    std::fs::write(&script, &source)?;
     let log = std::fs::File::create(dir.join("speaker.log")).map_or_else(|_| Stdio::null(), Stdio::from);
     let mut command = Command::new(python);
     let how = speaking();
     command.arg(&script).arg(socket).arg(dir).arg(&how.voice).arg(&how.engine);
-    command.env("SASHA_SPEAKER_VERSION", speaker_version());
+    command.env("SASHA_SPEAKER_VERSION", fingerprint(&source));
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
     // A session of its own: it outlives whoever asked first.
     // SAFETY: setsid is async-signal-safe, so it may run between fork and exec.
@@ -395,10 +456,46 @@ pub fn warm_up() {
     let _ = start_speaker(&python, &dir, &socket);
 }
 
+/// Gets this sasha's speaker running once the one there is done talking:
+/// one left by an older sasha is replaced, and with none, this one's
+/// starts, before the tower's tools, still the older sasha's, start
+/// theirs.
+pub fn renew() {
+    let started = Instant::now();
+    while started.elapsed() < SPEAKER_RENEW {
+        match speaker_status() {
+            Some(status) if status["speaking"].as_bool() == Some(true) => std::thread::sleep(Duration::from_millis(500)),
+            _ => return warm_up(),
+        }
+    }
+}
+
 /// Which speaker this sasha writes: a fingerprint of its script.
 fn speaker_version() -> String {
-    let hash = SPEAKER.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    fingerprint(SPEAKER)
+}
+
+fn fingerprint(script: &str) -> String {
+    let hash = script.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
     format!("{hash:016x}")
+}
+
+/// The speaker's script the sasha on disk has: a sasha that has been
+/// running since before an update (the tower's tools, say) starts the new
+/// speaker, not its own.
+fn speaker_source() -> String {
+    let exe = std::env::current_exe().ok();
+    let disk = exe.and_then(|exe| Command::new(exe).args(["voice", "speaker"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok());
+    disk.filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .filter(|source| source.contains("sasha's speaker"))
+        .unwrap_or_else(|| SPEAKER.to_owned())
+}
+
+/// `sasha voice speaker`: the speaker's script.
+pub fn print_speaker() -> Result<()> {
+    std::io::stdout().write_all(SPEAKER.as_bytes())?;
+    Ok(())
 }
 
 /// What the speaker says of itself, if it's running and answers.
@@ -461,15 +558,34 @@ pub struct Playing {
     /// A message from the library, played again.
     #[serde(default)]
     pub replay: bool,
+    /// It's listening for "hush" while it plays.
+    #[serde(default)]
+    pub listening: bool,
 }
 
-/// What the tower's voice is doing: talking or not, and what it's playing.
-pub fn now() -> Option<Playing> {
-    let status = speaker_status()?;
-    if status["speaking"].as_bool() != Some(true) {
-        return None;
+/// When the speaker last heard you ask for quiet, and what it heard.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Heard {
+    pub text: String,
+    /// Seconds since 1970.
+    pub time: f64,
+}
+
+/// What the tower's voice is doing: what it's playing, if it's talking,
+/// and when it last heard you ask for quiet.
+#[derive(Default)]
+pub struct Status {
+    pub playing: Option<Playing>,
+    pub heard: Option<Heard>,
+}
+
+pub fn status() -> Status {
+    let Some(status) = speaker_status() else { return Status::default() };
+    let speaking = status["speaking"].as_bool() == Some(true);
+    Status {
+        playing: speaking.then(|| serde_json::from_value(status["now"].clone()).unwrap_or_default()),
+        heard: serde_json::from_value(status["heard"].clone()).ok(),
     }
-    Some(serde_json::from_value(status["now"].clone()).unwrap_or_default())
 }
 
 /// A message the tower said, kept in the library.
@@ -574,9 +690,30 @@ pub fn install() -> Result<()> {
     if !installed.success() {
         bail!("uv couldn't install Kokoro");
     }
+    fetch_whisper(&dir)?;
     println!("Loading Kokoro (the first time, it downloads its model)…");
     say_with_speaker(&python, &[("Hello. This is how the tower sounds now.".to_owned(), "warm".to_owned())], &speaking())?;
     println!("Done. The tower speaks with Kokoro; pick another voice in {}.", dir.join("voice").display());
+    match tower::find_program("whisper-stream") {
+        Some(_) => println!("Say “hush” while it talks and it stops."),
+        None => println!("To stop it by saying “hush”: brew install whisper-cpp"),
+    }
+    Ok(())
+}
+
+/// Fetches Whisper's model, for hearing "hush", unless one is there.
+fn fetch_whisper(dir: &Path) -> Result<()> {
+    if whisper_model().is_some() {
+        return Ok(());
+    }
+    let part = dir.join(format!("{WHISPER_MODEL}.part"));
+    println!("Fetching Whisper's model, to hear you say “hush” ({WHISPER_MODEL}, about 150 MB)…");
+    let status = Command::new("curl").args(["-fL", "--progress-bar", "-o"]).arg(&part).arg(WHISPER_MODEL_URL).status()?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&part);
+        bail!("couldn't fetch Whisper's model");
+    }
+    std::fs::rename(&part, dir.join(WHISPER_MODEL))?;
     Ok(())
 }
 

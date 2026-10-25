@@ -9,7 +9,8 @@ of JSON, either
 or {"play": FILE, "who": ..., "parts": [...], "words": [...]} to play a
 kept message again,
 or {"stop": true}, or {"status": true}, answered with {"speaking": true or
-false, "version": ..., "now": what's playing}, or {"quit": true}.
+false, "version": ..., "now": what's playing, "heard": the last time it
+heard you ask for quiet}, or {"quit": true}.
 
 Every message said is kept in VOICE_DIR/library, compact, with a line in
 its index.jsonl: when, who, the words and their moods, when each word is
@@ -25,8 +26,15 @@ sentence while the next is made, so it starts in about a second. All the
 voice work happens on one thread, since MLX keeps a model to the thread
 that loaded it; the moods are readied in idle moments. The speaker
 leaves after a couple of hours with nothing to say.
+
+While it talks it listens for "hush", with whisper.cpp's whisper-stream
+and a small English model (VOICE_DIR/ggml-base.en.bin), unless
+VOICE_DIR/listen says off: a word for quiet that it isn't saying itself
+stops it. The microphone is on only while it talks, and what it hears
+stays in memory.
 """
 
+import glob
 import json
 import os
 import queue
@@ -67,6 +75,22 @@ LIBRARY = os.path.join(VOICE_DIR, "library")
 # this many points.
 LEVEL_EVERY = 0.05
 LEVELS_MAX = 400
+# What hears you say "hush": whisper.cpp's whisper-stream (tests set a
+# stand-in that prints what it "heard"), and its model.
+WHISPER = os.environ.get("SASHA_LISTENER") or shutil.which("whisper-stream") or next(
+    (p for p in ("/opt/homebrew/bin/whisper-stream", "/usr/local/bin/whisper-stream") if os.path.exists(p)), None
+)
+WHISPER_MODEL = os.environ.get("SASHA_WHISPER_MODEL")
+# It hears the last few seconds again every half second.
+HEAR_STEP, HEAR_LENGTH = "500", "3000"
+# Words for quiet: a shush as Whisper writes it down, or two words, say
+# it; a word it could mishear its own voice as, like "stop", has to be
+# heard twice.
+SHUSH = re.compile(r"h+u+s+h+(es|ed|ing|y)?|hus{2,}|s+h{2,}|sh+u+sh+(es|ed|ing)?")
+QUIET_PAIRS = {("stop", "talking"), ("stop", "speaking"), ("be", "quiet"), ("shut", "up"), ("stop", "it")}
+QUIET_WORDS = {"stop", "quiet", "silence"}
+# How far apart, in lines whisper-stream writes, the two can be.
+TWICE_WITHIN = 8
 
 # Each tone: how much feeling (Chatterbox's exaggeration), how deliberate
 # the pace (its cfg_weight: lower is slower), and what the voice reads in
@@ -101,8 +125,11 @@ loading = threading.Lock()
 # Chatterbox's take on each mood recording, worked out once.
 conds = {}
 lock = threading.Lock()
-# Which request is current, and the player playing it.
-current = {"id": 0, "player": None, "busy": False, "track": None}
+# Which request is current, the player playing it, and what listens
+# while it does.
+current = {"id": 0, "player": None, "busy": False, "track": None, "ears": None}
+# The last time it heard you ask for quiet: what, and when.
+heard = {}
 last_used = time.time()
 # What there is to say, for the worker, newest last.
 jobs = queue.Queue()
@@ -268,10 +295,132 @@ def stop():
     with lock:
         current["id"] += 1
         player = current["player"]
+        ears = current["ears"]
         current["player"] = None
+        current["ears"] = None
         current["busy"] = False
     if player:
         player.cut()
+    if ears:
+        ears.close()
+
+
+def words_of(text):
+    return re.findall(r"[a-z']+", text.lower())
+
+
+def asks_quiet(text, said):
+    """Whether `text`, something heard, asks for quiet in a way `said`
+    (the words it's saying, which it hears too) doesn't: "sure", "maybe"
+    for a word that has to be heard twice, or None."""
+    words = words_of(text)
+    said_words = set(words_of(said))
+    said_pairs = set(zip(words_of(said), words_of(said)[1:]))
+    shushed = any(SHUSH.fullmatch(word) for word in said_words)
+    maybe = None
+    for word, after in zip(words, words[1:] + [""]):
+        if SHUSH.fullmatch(word) and not shushed:
+            return "sure"
+        if (word, after) in QUIET_PAIRS and (word, after) not in said_pairs:
+            return "sure"
+        if word in QUIET_WORDS and word not in said_words:
+            maybe = "maybe"
+    return maybe
+
+
+def whisper_model():
+    """Whisper's model: `$SASHA_WHISPER_MODEL`, else the small English one
+    `sasha voice install` fetches, else any other beside it."""
+    if WHISPER_MODEL:
+        return WHISPER_MODEL if os.path.exists(WHISPER_MODEL) else None
+    preferred = os.path.join(VOICE_DIR, "ggml-base.en.bin")
+    if os.path.exists(preferred):
+        return preferred
+    others = sorted(glob.glob(os.path.join(VOICE_DIR, "ggml-*.bin")))
+    return others[0] if others else None
+
+
+def listening_wanted():
+    try:
+        with open(os.path.join(VOICE_DIR, "listen")) as setting:
+            return setting.read().strip().lower() != "off"
+    except OSError:
+        return True
+
+
+class Ears:
+    """Listens for "hush" while it says `said`: whisper-stream hears the
+    microphone, the last few seconds every half second, and a word for
+    quiet stops it. It hears itself too: only a word it isn't saying
+    counts."""
+
+    def __init__(self, said, mine):
+        self.said, self.mine, self.process = said, mine, None
+        model = whisper_model()
+        if not WHISPER or not model or not listening_wanted():
+            return
+        command = [WHISPER, "-m", model, "--step", HEAR_STEP, "--length", HEAR_LENGTH, "--keep", "200", "-l", "en"]
+        mic = os.environ.get("SASHA_MIC", "")
+        if mic.isdigit():
+            command += ["-c", mic]
+        try:
+            self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError:
+            traceback.print_exc()
+            return
+        threading.Thread(target=self.hear, args=(self.process,), daemon=True).start()
+
+    def listening(self):
+        return self.process is not None and self.process.poll() is None
+
+    def hear(self, process):
+        # Each step writes over the last one's line, all at once: what it
+        # heard is what follows a return or a new line, and the line so
+        # far counts already.
+        pending, line, maybes = "", 0, set()
+        while True:
+            try:
+                chunk = os.read(process.stdout.fileno(), 4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            pending += chunk.decode("utf-8", "replace")
+            *done, pending = re.split(r"[\r\n]", pending)
+            for number, piece in enumerate(done + [pending], start=line):
+                text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\[BLANK_AUDIO\]", "", piece).strip()
+                quiet = text and asks_quiet(text, self.said)
+                twice = quiet == "maybe" and any(number - TWICE_WITHIN <= other < number for other in maybes)
+                if quiet == "sure" or twice:
+                    return hushed(text, self.mine)
+                if quiet == "maybe":
+                    maybes.add(number)
+            line += len(done)
+
+    def close(self):
+        process, self.process = self.process, None
+        if process and process.poll() is None:
+            process.terminate()
+            threading.Thread(target=process.wait, daemon=True).start()
+
+
+def listen(parts, mine):
+    """Listens for quiet while `parts` are said."""
+    ears = Ears(" ".join(part.get("text", "") for part in parts), mine)
+    with lock:
+        if current["id"] == mine:
+            ears, current["ears"] = current["ears"], ears
+    if ears:
+        ears.close()
+
+
+def hushed(text, mine):
+    """It heard you ask for quiet while it said `mine`."""
+    if not still(mine):
+        return
+    with lock:
+        heard.update(text=text, time=round(time.time(), 2))
+    stop()
 
 
 def still(mine):
@@ -413,6 +562,7 @@ def say(parts, voice, engine, mine, pace, who):
             return
         current["player"] = out
         current["track"] = track
+    listen(parts, mine)
 
     def emit(audio, rate):
         out.add(audio, rate)
@@ -455,6 +605,7 @@ def play(path, who, parts, words, mine):
             return
         current["player"] = out
         current["track"] = track
+    listen(parts, mine)
     try:
         audio, rate = decode(path)
         # Kept before its words' timing was: spread them over it.
@@ -472,9 +623,13 @@ def played(out, mine):
 
     def finished():
         out.finish()
+        ears = None
         with lock:
             if current["id"] == mine:
                 current["busy"] = False
+                ears, current["ears"] = current["ears"], None
+        if ears:
+            ears.close()
 
     threading.Thread(target=finished, daemon=True).start()
 
@@ -546,9 +701,13 @@ def handle(conn):
             with lock:
                 speaking = current["busy"]
                 track = current["track"]
+                ears = current["ears"]
+                last_heard = dict(heard)
             answer = {"speaking": speaking, "version": os.environ.get("SASHA_SPEAKER_VERSION", "")}
             if speaking and track is not None:
-                answer["now"] = track.summary()
+                answer["now"] = {**track.summary(), "listening": bool(ears and ears.listening())}
+            if last_heard:
+                answer["heard"] = last_heard
             conn.sendall((json.dumps(answer) + "\n").encode())
             return
         if request.get("quit"):
@@ -622,4 +781,5 @@ def main():
         threading.Thread(target=handle, args=(conn,), daemon=True).start()
 
 
-main()
+if __name__ == "__main__":
+    main()

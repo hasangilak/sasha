@@ -58,5 +58,6 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::VoiceInstall => voice::install(),
+        Command::VoiceSpeaker => voice::print_speaker(),
     }
 }

@@ -246,6 +246,8 @@ pub struct App {
     voice_speaking: bool,
     /// What it's playing, as last checked.
     voice_now: Option<crate::voice::Playing>,
+    /// When it last heard you say "hush", as last said.
+    voice_heard: f64,
     voice_polled: Instant,
     next_tab_id: TabId,
     next_workspace_id: WorkspaceId,
@@ -337,6 +339,7 @@ impl App {
             voice_replies: false,
             voice_speaking: false,
             voice_now: None,
+            voice_heard: 0.0,
             voice_polled: Instant::now(),
             next_tab_id: 0,
             next_workspace_id: 0,
