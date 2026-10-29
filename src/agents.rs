@@ -35,6 +35,10 @@ pub struct Conversation {
     /// `claude` or `codex`.
     pub agent: String,
     pub id: String,
+    /// The flags it was started with that it's started with again
+    /// (`--model opus`, `--dangerously-skip-permissions`…).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<String>,
 }
 
 impl Conversation {
@@ -46,19 +50,158 @@ impl Conversation {
             Agent::Codex => ("codex", codex_session(cwd)?),
             Agent::Pi => return None,
         };
-        Some(Conversation { agent: agent.to_owned(), id })
+        Some(Conversation { agent: agent.to_owned(), id, flags: Vec::new() })
     }
 
     /// The command that picks it up again, typed into a shell: only for
     /// ids that are plainly ids.
     pub fn resume_command(&self) -> Option<String> {
         let plain = !self.id.is_empty() && self.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-        match self.agent.as_str() {
-            "claude" if plain => Some(format!("claude --resume {}", self.id)),
-            "codex" if plain => Some(format!("codex resume {}", self.id)),
-            _ => None,
+        let command = match self.agent.as_str() {
+            "claude" if plain => format!("claude --resume {}", self.id),
+            "codex" if plain => format!("codex resume {}", self.id),
+            _ => return None,
+        };
+        Some(with_flags(command, &self.flags))
+    }
+}
+
+/// Claude Code's flags that keep: on their own, and with a value.
+const CLAUDE_SWITCHES: &[&str] = &[
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "--chrome",
+    "--no-chrome",
+    "--ide",
+    "--verbose",
+    "--strict-mcp-config",
+    "--brief",
+    "--disable-slash-commands",
+    "--ax-screen-reader",
+];
+const CLAUDE_VALUED: &[&str] = &[
+    "--model",
+    "--permission-mode",
+    "--effort",
+    "--agent",
+    "--fallback-model",
+    "--settings",
+    "--setting-sources",
+    "--append-system-prompt",
+    "--system-prompt",
+    "--add-dir",
+    "--mcp-config",
+    "--plugin-dir",
+    "--allowedTools",
+    "--allowed-tools",
+    "--disallowedTools",
+    "--disallowed-tools",
+];
+/// Codex's, of those `codex resume` takes too.
+const CODEX_SWITCHES: &[&str] = &[
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--approve-for-me",
+    "--search",
+    "--oss",
+    "--no-alt-screen",
+    "--no-daemon",
+];
+const CODEX_VALUED: &[&str] = &[
+    "-m",
+    "--model",
+    "-c",
+    "--config",
+    "-p",
+    "--profile",
+    "-s",
+    "--sandbox",
+    "-a",
+    "--ask-for-approval",
+    "--add-dir",
+    "--enable",
+    "--disable",
+    "--local-provider",
+];
+
+/// Of the arguments an agent was started with (its name first), the flags
+/// to start it with again. What isn't known to keep is left out: a prompt,
+/// `--continue`, `--resume` and the like.
+pub fn kept_flags(agent: Agent, args: &[String]) -> Vec<String> {
+    let (switches, valued) = match agent {
+        Agent::Claude => (CLAUDE_SWITCHES, CLAUDE_VALUED),
+        Agent::Codex => (CODEX_SWITCHES, CODEX_VALUED),
+        Agent::Pi => return Vec::new(),
+    };
+    let mut kept = Vec::new();
+    let mut args = args.iter().skip(1).peekable();
+    while let Some(arg) = args.next() {
+        // A value can't go through a shell unless it's plain or quotes simply.
+        let quotable = |value: &str| !value.contains(['\'', '\\']);
+        if switches.contains(&arg.as_str()) {
+            kept.push(arg.clone());
+        } else if let Some((flag, value)) = arg.split_once('=').filter(|(flag, _)| valued.contains(flag)) {
+            if quotable(value) {
+                kept.extend([flag.to_owned(), value.to_owned()]);
+            }
+        } else if valued.contains(&arg.as_str())
+            && let Some(value) = args.next_if(|value| !value.starts_with('-'))
+            && quotable(value)
+        {
+            kept.extend([arg.clone(), value.clone()]);
         }
     }
+    kept
+}
+
+/// The command that starts `agent` afresh, with `flags`.
+pub fn start_command(agent: Agent, flags: &[String]) -> Option<String> {
+    let name = match agent {
+        Agent::Claude => "claude",
+        Agent::Codex => "codex",
+        Agent::Pi => return None,
+    };
+    Some(with_flags(name.to_owned(), flags))
+}
+
+fn with_flags(mut command: String, flags: &[String]) -> String {
+    for flag in flags {
+        command.push(' ');
+        command.push_str(&quote(flag));
+    }
+    command
+}
+
+/// `arg` as a shell reads it back: as it is if it's plain, else in single
+/// quotes (it has none of its own).
+fn quote(arg: &str) -> String {
+    let plain = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
+    if plain { arg.to_owned() } else { format!("'{arg}'") }
+}
+
+/// The version of the agent running as `pid` that's installed in its
+/// place ("2.1.312"), when that's another one than it runs.
+pub fn newer_version(agent: Agent, pid: i32) -> Option<String> {
+    let name = match agent {
+        Agent::Claude => "claude",
+        Agent::Codex => "codex",
+        Agent::Pi => return None,
+    };
+    let running = procinfo::exe(pid)?;
+    let installed = fs::canonicalize(crate::tower::find_program(name)?).ok()?;
+    let running = fs::canonicalize(&running).unwrap_or(running);
+    let version = version_in(&installed)?;
+    (installed != running).then_some(version)
+}
+
+/// The version a program's path is named after: Claude Code keeps
+/// `versions/2.1.312`, Codex `releases/0.165.0-aarch64-apple-darwin/bin`,
+/// Homebrew `Cellar/codex/0.165.0/bin`.
+fn version_in(path: &Path) -> Option<String> {
+    path.iter().rev().filter_map(|part| part.to_str()).find_map(|part| {
+        let version: String = part.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let version = version.trim_end_matches('.');
+        (version.contains('.') && version.starts_with(|c: char| c.is_ascii_digit())).then(|| version.to_owned())
+    })
 }
 
 impl Agent {
@@ -188,6 +331,20 @@ fn claude_session(group: i32) -> Option<String> {
     // Started by another program in the group.
     let pids = fs::read_dir(&dir).ok()?.flatten().filter_map(|e| e.path().file_stem()?.to_str()?.parse::<i32>().ok());
     pids.filter(|&pid| pid != group && procinfo::group(pid) == Some(group)).find_map(read)
+}
+
+/// Whether the agent in `cwd` waits for you to allow or answer something,
+/// by its conversation's log (else the newest there).
+pub fn waits_for_you(agent: Agent, conversation: Option<&Conversation>, cwd: &Path) -> bool {
+    let log = match (agent, conversation) {
+        (Agent::Claude, Some(conversation)) => claude_project(cwd).map(|dir| dir.join(format!("{}.jsonl", conversation.id))),
+        _ => None,
+    };
+    let report = match log {
+        Some(log) => agent.report_from(&log),
+        None => agent.report(cwd),
+    };
+    report.is_some_and(|report| report.waiting.is_some())
 }
 
 /// Claude Code's log of the newest session in `cwd`.
@@ -590,6 +747,53 @@ pub fn clip(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(line: &[&str]) -> Vec<String> {
+        line.iter().map(|&a| a.to_owned()).collect()
+    }
+
+    #[test]
+    fn a_restart_keeps_the_flags_it_knows_and_drops_the_rest() {
+        let claude = args(&["claude", "--model", "opus", "--continue", "--dangerously-skip-permissions", "fix the bug"]);
+        assert_eq!(kept_flags(Agent::Claude, &claude), ["--model", "opus", "--dangerously-skip-permissions"]);
+        let claude = args(&["claude", "--resume", "--permission-mode=plan", "--add-dir", "../web", "--verbose"]);
+        assert_eq!(kept_flags(Agent::Claude, &claude), ["--permission-mode", "plan", "--add-dir", "../web", "--verbose"]);
+        // A value it can't quote, and a flag missing its value, are left out.
+        let claude = args(&["claude", "--append-system-prompt", "it's", "--model", "--verbose"]);
+        assert_eq!(kept_flags(Agent::Claude, &claude), ["--verbose"]);
+        let codex = args(&["codex", "-m", "gpt-5", "--search", "-c", "model_reasoning_effort=\"high\"", "exec", "do it"]);
+        assert_eq!(kept_flags(Agent::Codex, &codex), ["-m", "gpt-5", "--search", "-c", "model_reasoning_effort=\"high\""]);
+    }
+
+    #[test]
+    fn the_command_that_resumes_carries_the_flags_quoted() {
+        let mut conversation = Conversation { agent: "codex".into(), id: "6a-1".into(), flags: Vec::new() };
+        assert_eq!(conversation.resume_command().as_deref(), Some("codex resume 6a-1"));
+        conversation.flags = args(&["-c", "effort=\"high\"", "--add-dir", "my dir"]);
+        assert_eq!(conversation.resume_command().as_deref(), Some("codex resume 6a-1 -c 'effort=\"high\"' --add-dir 'my dir'"));
+        conversation.id = "a b".into();
+        assert_eq!(conversation.resume_command(), None);
+        assert_eq!(start_command(Agent::Claude, &args(&["--model", "opus"])).as_deref(), Some("claude --model opus"));
+    }
+
+    #[test]
+    fn versions_are_read_from_where_programs_are_installed() {
+        let version = |path: &str| version_in(Path::new(path));
+        assert_eq!(version("/Users/me/.local/share/claude/versions/2.1.312").as_deref(), Some("2.1.312"));
+        let codex = "/Users/me/.codex/packages/standalone/releases/0.165.0-aarch64-apple-darwin/bin/codex";
+        assert_eq!(version(codex).as_deref(), Some("0.165.0"));
+        assert_eq!(version("/opt/homebrew/Cellar/codex/0.165.0/bin/codex").as_deref(), Some("0.165.0"));
+        assert_eq!(version("/usr/local/lib/node_modules/@openai/codex/bin/codex.js"), None);
+    }
+
+    #[test]
+    fn conversations_saved_before_flags_still_load() {
+        let old: Conversation = serde_json::from_str(r#"{"agent":"claude","id":"abc"}"#).unwrap();
+        assert!(old.flags.is_empty());
+        let plain = serde_json::to_string(&old).unwrap();
+        assert!(!plain.contains("flags"));
+    }
+
 
     fn lines(text: &str) -> Vec<Value> {
         text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()

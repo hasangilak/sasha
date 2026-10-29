@@ -44,6 +44,7 @@ Run `sasha` in a project folder. Press `Ctrl+B`, then a key (`Esc` goes back to 
 | `V` | the voice's control center: what it's saying, ▶ ■, and everything it said |
 | `i` | show / hide the ports and pull request bars |
 | `U` | update sasha to the one on disk: every terminal keeps running |
+| `R` | restart the terminal's Claude Code or Codex, say once you've updated it: same conversation |
 | `q` | quit: ends what's running in every terminal |
 | `?` | every key |
 
@@ -66,6 +67,11 @@ new terminal and `⋮` for everything else.
   still there. After a quit or a restart, your tabs come back as fresh shells, and where Claude
   Code or Codex was running, it picks its conversation up again (`claude --resume`, `codex
   resume`).
+- **Agents that restart in place**: once Claude Code or Codex has updated, prefix then `R` (or
+  the terminal's menu, which says which version is waiting) restarts the one in that terminal
+  on the new version, back on the same conversation and with the flags it was started with
+  (`--model`, `--dangerously-skip-permissions`…). One in the middle of a turn, or waiting for
+  your approval, restarts once that's over (`R` again: now). `⋮` restarts them all.
 - **Updates that keep everything running**: a rebuilt or upgraded sasha takes over the running
   one in place (prefix, then `U`, or `sasha update`, or just opening a window on it). Every
   terminal, the programs in it, its screen and scrollback carry on; the new sasha takes over the

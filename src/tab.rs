@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use unicode_width::UnicodeWidthStr;
 
-use crate::agents::{Agent, Conversation};
+use crate::agents::{self, Agent, Conversation};
 use crate::app::AppEvent;
 use crate::handoff::{self, HandedChild, HandedPty, HandedTab};
 use crate::mission::Mission;
@@ -33,6 +33,16 @@ const LONG_COMMAND: Duration = Duration::from_secs(10);
 const RESUME_WAIT: Duration = Duration::from_secs(60);
 /// How often Codex's logs are searched for its conversation, until found.
 const CODEX_LOOKUP: Duration = Duration::from_secs(30);
+/// An agent that's drawn nothing for this long has finished its turn.
+const TURN_OVER: Duration = Duration::from_secs(3);
+/// How long an agent told to stop has to go before it's made to, and how
+/// long after that it's given up on.
+const STOP_WAIT: Duration = Duration::from_secs(5);
+const KILL_WAIT: Duration = Duration::from_secs(3);
+/// How often the agent running is compared with the one installed, and
+/// its log read for whether it waits for you.
+const VERSION_CHECK: Duration = Duration::from_secs(20);
+const WAITS_CHECK: Duration = Duration::from_secs(2);
 
 /// Handles the escape sequences vt100 parses but leaves to the embedder:
 /// queries that need a reply, titles, bells, clipboard and cursor shape.
@@ -164,6 +174,35 @@ pub struct Tab {
     resuming_since: Option<Instant>,
     /// The Codex it last searched the logs for, and when.
     codex_lookup: Option<(i32, Instant)>,
+    /// The flags its agent was started with that a restart keeps, for the
+    /// process group it runs as.
+    agent_flags: Option<(i32, Vec<String>)>,
+    /// The version installed in place of the agent it runs, when that's
+    /// another; and which run it was looked up for, when.
+    newer: Option<String>,
+    newer_checked: Option<(i32, Instant)>,
+    /// Whether its agent waited for you, as its log said, and when it was
+    /// read.
+    waits: Option<(Instant, bool)>,
+    /// Its agent being restarted on its conversation.
+    restart: Option<Restart>,
+    /// What came of that, to say.
+    restarted: Option<String>,
+}
+
+/// Restarting a tab's agent: it's told to stop, once its turn is over,
+/// and started again in the same shell on the same conversation.
+struct Restart {
+    agent: Agent,
+    /// The process group it runs as.
+    group: i32,
+    /// What the shell is given to start it again.
+    command: String,
+    conversation: Option<Conversation>,
+    /// Waiting for its turn to end first.
+    wait: bool,
+    /// When it was told to stop, and whether it had to be made to.
+    stopping: Option<(Instant, bool)>,
 }
 
 impl Tab {
@@ -362,6 +401,12 @@ impl Tab {
             conversation: None,
             resuming_since: None,
             codex_lookup: None,
+            agent_flags: None,
+            newer: None,
+            newer_checked: None,
+            waits: None,
+            restart: None,
+            restarted: None,
         }
     }
 
@@ -495,6 +540,7 @@ impl Tab {
         if self.is_running_command() {
             self.last_command.clone_from(&self.fg_name);
         }
+        self.drive_restart();
         self.refresh_conversation();
     }
 
@@ -503,8 +549,8 @@ impl Tab {
     /// it); Codex's logs are searched once a run, and again now and then
     /// until it's found.
     fn refresh_conversation(&mut self) {
-        let agent = if self.is_running_command() { Agent::of(&self.fg_name) } else { None };
-        let (Some(agent), Some(group)) = (agent, self.fg_pgid) else {
+        let (Some(agent), Some(group)) = (self.agent(), self.fg_pgid) else {
+            self.newer = None;
             // The agent has left, unless it's still to start.
             if self.resuming_since.is_none_or(|since| since.elapsed() >= RESUME_WAIT) {
                 self.conversation = None;
@@ -513,6 +559,10 @@ impl Tab {
             return;
         };
         self.resuming_since = None;
+        if self.newer_checked.is_none_or(|(checked, at)| checked != group || at.elapsed() >= VERSION_CHECK) {
+            self.newer = agents::newer_version(agent, group);
+            self.newer_checked = Some((group, Instant::now()));
+        }
         if agent == Agent::Codex {
             let searched = self.codex_lookup.filter(|&(searched, _)| searched == group);
             if searched.is_some_and(|(_, at)| self.conversation.is_some() || at.elapsed() < CODEX_LOOKUP) {
@@ -521,9 +571,162 @@ impl Tab {
             self.codex_lookup = Some((group, Instant::now()));
         }
         let cwd = self.program_cwd().unwrap_or_default();
-        if let Some(conversation) = Conversation::of(agent, group, &cwd) {
+        if let Some(mut conversation) = Conversation::of(agent, group, &cwd) {
+            conversation.flags = self.flags_of(agent, group);
             self.conversation = Some(conversation);
         }
+    }
+
+    /// The flags the agent running as `group` keeps when it's started
+    /// again; its arguments are read once a run.
+    fn flags_of(&mut self, agent: Agent, group: i32) -> Vec<String> {
+        if let Some((read, flags)) = &self.agent_flags
+            && *read == group
+        {
+            return flags.clone();
+        }
+        let flags = procinfo::args(group).map(|args| agents::kept_flags(agent, &args)).unwrap_or_default();
+        self.agent_flags = Some((group, flags.clone()));
+        flags
+    }
+
+    /// The agent in the foreground, if one is.
+    pub fn agent(&self) -> Option<Agent> {
+        if self.is_running_command() { Agent::of(&self.fg_name) } else { None }
+    }
+
+    /// The version installed in place of the agent it runs, when that's
+    /// another (it's been updated since it started).
+    pub fn newer_agent(&self) -> Option<&str> {
+        self.newer.as_deref()
+    }
+
+    /// Whether its agent is in the middle of a turn, or waits for you to
+    /// allow something. Claude Code's title starts ◐ or ◑ while it works
+    /// (a braille spinner, before) and ✳ once it's done; otherwise an agent
+    /// is working while it draws.
+    pub fn agent_busy(&mut self) -> bool {
+        let Some(agent) = self.agent() else { return false };
+        let title = self.running();
+        let working = match title.as_deref().and_then(|title| split_glyph(title).0) {
+            Some(glyph) if agent == Agent::Claude => {
+                glyph.starts_with(|c| matches!(c, '◐' | '◑') || ('\u{2800}'..='\u{28ff}').contains(&c))
+            }
+            _ => self.last_activity.elapsed() < TURN_OVER,
+        };
+        if working {
+            return true;
+        }
+        if let Some((read, waits)) = self.waits
+            && read.elapsed() < WAITS_CHECK
+        {
+            return waits;
+        }
+        let waits = agents::waits_for_you(agent, self.conversation.as_ref(), &self.program_cwd().unwrap_or_default());
+        self.waits = Some((Instant::now(), waits));
+        waits
+    }
+
+    /// Restarts the agent in the foreground, on its conversation and with
+    /// the flags it was started with: at once, or once its turn is over
+    /// (`wait`). False when there's no agent, or no way to start it again.
+    pub fn restart_agent(&mut self, wait: bool) -> bool {
+        let (Some(agent), Some(group)) = (self.agent(), self.fg_pgid) else { return false };
+        if let Some(restart) = &mut self.restart
+            && restart.group == group
+        {
+            restart.wait &= wait;
+        } else {
+            let flags = self.flags_of(agent, group);
+            let conversation = self.conversation.clone().map(|conversation| Conversation { flags: flags.clone(), ..conversation });
+            let command = match &conversation {
+                Some(conversation) => conversation.resume_command(),
+                None => agents::start_command(agent, &flags),
+            };
+            let Some(command) = command else { return false };
+            self.restart = Some(Restart { agent, group, command, conversation, wait, stopping: None });
+        }
+        self.drive_restart();
+        true
+    }
+
+    /// Whether its agent is to restart once its turn is over.
+    pub fn restart_waiting(&self) -> bool {
+        self.restart.as_ref().is_some_and(|r| r.wait && r.stopping.is_none())
+    }
+
+    /// Forgets a restart that's still waiting for the turn to end.
+    pub fn cancel_restart(&mut self) {
+        if self.restart_waiting() {
+            self.restart = None;
+        }
+    }
+
+    /// What came of a restart since the last call.
+    pub fn take_restarted(&mut self) -> Option<String> {
+        self.restarted.take()
+    }
+
+    /// Moves a restart along: tells the agent to stop once it may, makes it
+    /// if it doesn't, and once the shell has the terminal again, starts it.
+    fn drive_restart(&mut self) {
+        let Some(restart) = &self.restart else { return };
+        let (agent, group, wait, stopping) = (restart.agent, restart.group, restart.wait, restart.stopping);
+        let name = agent.name();
+        let here = self.fg_pgid == Some(group);
+        match stopping {
+            // It left by itself.
+            None if !here => self.restart = None,
+            None if wait && self.agent_busy() => {}
+            None => {
+                if self.signal_group(group, libc::SIGTERM) {
+                    self.set_stopping(Instant::now(), false);
+                } else {
+                    self.restart = None;
+                    self.restarted = Some(format!("can't stop {name}"));
+                }
+            }
+            // The shell's back: it starts the agent again.
+            Some(_) if !self.is_running_command() => {
+                let Some(restart) = self.restart.take() else { return };
+                self.write(format!("{}\r", restart.command));
+                self.restarted = Some(match restart.conversation {
+                    Some(conversation) => {
+                        self.conversation = Some(conversation);
+                        self.resuming_since = Some(Instant::now());
+                        format!("restarted {name} on the same conversation")
+                    }
+                    None => format!("restarted {name}"),
+                });
+            }
+            Some((since, false)) if here && since.elapsed() >= STOP_WAIT => {
+                self.set_stopping(since, true);
+                self.signal_group(group, libc::SIGKILL);
+            }
+            Some((since, _)) if since.elapsed() >= STOP_WAIT + KILL_WAIT => {
+                self.restart = None;
+                self.restarted = Some(format!("{name} didn't stop, so it wasn't restarted"));
+            }
+            Some(_) => {}
+        }
+    }
+
+    fn set_stopping(&mut self, since: Instant, made_to: bool) {
+        if let Some(restart) = &mut self.restart {
+            restart.stopping = Some((since, made_to));
+        }
+    }
+
+    /// Sends `signal` to process group `group`: never the shell's, nor
+    /// sasha's own.
+    fn signal_group(&self, group: i32, signal: libc::c_int) -> bool {
+        // SAFETY: getpgrp has no preconditions.
+        let own = unsafe { libc::getpgrp() };
+        if group <= 1 || Some(group) == self.shell_pid || group == own {
+            return false;
+        }
+        // SAFETY: kill has no memory-safety preconditions.
+        unsafe { libc::kill(-group, signal) == 0 }
     }
 
     /// Records output that is news (not the shell starting or redrawing).

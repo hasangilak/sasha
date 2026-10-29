@@ -151,6 +151,13 @@ pub enum Command {
     Voice,
     /// Update sasha in place, keeping every terminal.
     Update,
+    /// Restarts the Claude Code or Codex in this terminal on its
+    /// conversation: once its turn is over, or now.
+    RestartAgent,
+    /// The same in every terminal.
+    RestartAgents,
+    /// Forgets a restart waiting for the turn to end.
+    CancelRestart,
     SideBars,
     Narrower,
     Wider,
@@ -213,6 +220,7 @@ impl Command {
             KeyCode::Char('S') => Command::Hush,
             KeyCode::Char('V') => Command::Voice,
             KeyCode::Char('U') => Command::Update,
+            KeyCode::Char('R') => Command::RestartAgent,
             KeyCode::Char('i') => Command::SideBars,
             KeyCode::Char('<') => Command::Narrower,
             KeyCode::Char('>') => Command::Wider,
@@ -242,6 +250,9 @@ impl Command {
             | Command::TowerListen
             | Command::Hush
             | Command::Update
+            | Command::RestartAgent
+            | Command::RestartAgents
+            | Command::CancelRestart
             | Command::Leave => {
                 After::Leave
             }

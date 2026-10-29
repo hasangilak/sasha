@@ -159,6 +159,9 @@ impl App {
                 self.set_status("updating sasha · your terminals keep running");
                 self.update_requested = true;
             }
+            Command::RestartAgent => self.restart_agent(),
+            Command::RestartAgents => self.restart_agents(),
+            Command::CancelRestart => self.cancel_restart(),
             Command::Leave => {}
         }
     }

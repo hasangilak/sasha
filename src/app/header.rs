@@ -86,6 +86,23 @@ impl App {
                     entries.push(entry("Take out of its group", "u", Command::Ungroup));
                 }
                 entries.push(entry("Scroll back", "[", Command::Scroll));
+                if let Some(tab) = tab
+                    && let Some(agent) = tab.agent()
+                {
+                    let name = agent.name();
+                    let restart = |label: String| MenuEntry { label, key: "R", command: Command::RestartAgent };
+                    if tab.restart_waiting() {
+                        entries.push(restart(format!("Restart {name} now")));
+                        entries.push(MenuEntry { label: format!("Don't restart {name}"), key: "", command: Command::CancelRestart });
+                    } else {
+                        // On the version installed since, if it's been updated.
+                        entries.push(restart(match tab.newer_agent() {
+                            Some(version) => format!("Restart {name} on {version}"),
+                            None if tab.conversation().is_some() => format!("Restart {name}, same conversation"),
+                            None => format!("Restart {name}"),
+                        }));
+                    }
+                }
                 entries.push(entry("Close", "x", Command::Close));
                 entries
             }
@@ -116,7 +133,8 @@ impl App {
                 }
                 entries
             }
-            Menu::More => vec![
+            Menu::More => {
+                let mut entries = vec![
                 entry("New terminal", "t", Command::NewTab),
                 entry(if self.tower_focused() { "Hide the tower" } else { "Tower: steer every terminal" }, "T", Command::Tower),
                 entry("Search terminals", "/", Command::Search),
@@ -139,7 +157,18 @@ impl App {
                 entry("Detach: terminals keep running", "d", Command::Detach),
                 entry("Update sasha: terminals keep running", "U", Command::Update),
                 entry("Quit: closes every terminal", "q", Command::Quit),
-            ],
+                ];
+                // After the update, before the quit.
+                let (agents, old) = self.agents_running();
+                if agents > 1 {
+                    let label = match old {
+                        0 => format!("Restart all {agents} Claude & Codex"),
+                        old => format!("Restart {agents} Claude & Codex ({old} old)"),
+                    };
+                    entries.insert(entries.len() - 1, MenuEntry { label, key: "", command: Command::RestartAgents });
+                }
+                entries
+            }
         };
         let query = self.typed().to_lowercase();
         entries.into_iter().filter(|e| query.split_whitespace().all(|word| e.label.to_lowercase().contains(word))).collect()

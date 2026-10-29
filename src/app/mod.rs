@@ -5,6 +5,7 @@ mod keys;
 mod missions;
 mod mouse;
 mod panels;
+mod restart;
 mod state;
 mod tower;
 mod update;
@@ -1966,6 +1967,7 @@ impl App {
         for tab in self.workspaces.iter_mut().flat_map(|w| &mut w.tabs) {
             tab.refresh_info();
         }
+        self.report_restarts();
         self.rehome_tabs();
     }
 

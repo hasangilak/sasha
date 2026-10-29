@@ -134,6 +134,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("T", "tower: show it and type there; T again hides it (it keeps running)"),
         ("S", "stop the tower talking (so does typing to it, or ■ stop)"),
         ("V", "voice control center: what it's saying, ▶ ■, every message it said"),
+        ("R", "restart this terminal's Claude or Codex on the same conversation"),
         ("i", "show / hide the ports and pull request bars"),
         ("< >", "narrower / wider sidebar"),
         ("{p}", "send {p} to the shell"),
